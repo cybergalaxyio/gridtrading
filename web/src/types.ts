@@ -1,0 +1,44 @@
+export type StrategyConfig = {
+  name: string; exchangeAccountId: string; symbol: string; positionMode: 'ONE_WAY';
+  centerSuggestionMode: 'CURRENT_MID' | 'VWAP_EMA' | 'MANUAL'; autoRestart: false;
+  maxLevelsPerSide: number; workingEntriesPerSide: number; initialGapPoints: string;
+  gridSpacingPoints: string; gridSpacingStepPoints: string; takeProfitPoints: string;
+  baseLotSize: string; lotSizeIncreasePercent: string; maxTradeLot: string; maxNetLot: string;
+  basketTakeProfitUsdt: string; basketStopLossUsdt: string; makerFeeRate: string;
+  takerFeeRate: string; estimatedExitSlippagePct: string; includeFunding: true;
+  postOnlyEntries: boolean; postOnlyTakeProfits: boolean; reconcileIntervalSeconds: number;
+  marketDataStaleSeconds: number; orderCommandTimeoutSeconds: number; maxOrderFrequency: number;
+}
+
+export type Cycle = {
+  cycleId: string; strategyId: string; state: string; stateVersion: number; isTerminal: boolean;
+  operatorResetRequired: boolean; fixedCenterPrice: string; startedAt: string; endedAt?: string;
+}
+
+export type Strategy = {
+  strategyId: string; name: string; exchangeAccountId: string; symbol: string; version: number;
+  archived: boolean; configuration: StrategyConfig; activeCycle: Cycle | null; createdAt: string; updatedAt: string;
+}
+
+export type Candle = { time: number; open: string; high: string; low: string; close: string; volume: string }
+export type Order = { id: string; cycleId: string; clientOrderId: string; exchangeOrderId: string; symbol: string;
+  side: string; kind: string; status: string; gridLevel: number; price: string; quantity: string;
+  filledQuantity: string; createdAt: string }
+export type Alert = { id: string; cycleId?: string; severity: string; code: string; message: string; acknowledged: boolean; createdAt: string }
+export type GridLevel = { side: string; levelIndex: number; entryPrice: string; takeProfitDistance: string; plannedQuantity: string;
+  orderNotional: string; cumulativeQuantity: string; cumulativeNotional: string }
+export type Preview = { previewId: string; expiresAt: string; strategyVersion: number; confirmedCenterPrice: string;
+  outermostBuyPrice: string; outermostSellPrice: string; coverageBelowPct: string; coverageAbovePct: string;
+  maximumPlannedQuantityPerSide: string; maximumPlannedNotionalPerSide: string; startEligible: boolean; levels: GridLevel[] }
+
+export type Snapshot = {
+  cycle: Cycle & { fixedCenterPrice: string };
+  market: { bid: string; ask: string; mid: string; asOf: string; isStale: boolean };
+  orders: { activeEntryCount: number; activeTakeProfitCount: number; unknownCount: number };
+  position: { actualNetQuantity: string; reconstructedNetQuantity: string; absoluteMaxNetLotUsagePct: string; netNotionalUsdt: string };
+  basketPnl: { realisedCyclePnl: string; unrealisedAtExecutablePrice: string; paidFees: string; accruedFunding: string;
+    estimatedFinalTakerFee: string; estimatedExitSlippage: string; liquidationPnl: string; takeProfitTarget: string; stopLossLimit: string };
+  risk: { color: string; reasons: string[]; usedBuyLevels: number; remainingBuyLevels: number; usedSellLevels: number; remainingSellLevels: number };
+  health: { exchange: string; marketData: string; reconciliation: string; lastReconciledAt: string };
+  allowedCommands: string[];
+}

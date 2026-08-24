@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/GridTrading.Domain/GridTrading.Domain.csproj" />
+  <Project Path="src/GridTrading.Api/GridTrading.Api.csproj" />
+  <Project Path="tests/GridTrading.Domain.Tests/GridTrading.Domain.Tests.csproj" />
+</Solution>
