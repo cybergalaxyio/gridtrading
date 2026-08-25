@@ -15,6 +15,13 @@ public sealed class TradingService(TradingDbContext db, PreviewStore previews, H
 {
     public static readonly InstrumentRules SolRules = new("SOLUSDT", .001m, .1m, .1m, 5m, 500);
 
+    public static InstrumentRules RulesFor(GridConfiguration config) => new(config.Symbol,
+        config.TickSize > 0m ? config.TickSize : SolRules.TickSize,
+        config.QuantityStep > 0m ? config.QuantityStep : SolRules.QuantityStep,
+        config.MinOrderQuantity > 0m ? config.MinOrderQuantity : SolRules.MinOrderQuantity,
+        config.MinOrderNotional > 0m ? config.MinOrderNotional : SolRules.MinOrderNotional,
+        config.MaxActiveOrders > 0 ? config.MaxActiveOrders : SolRules.MaxActiveOrders);
+
     public Task<StrategyEntity> CreateStrategy(StrategyRequest request, CancellationToken ct) => paper.CreateStrategy(request, ct);
     public Task<StrategyEntity?> UpdateStrategy(string id, StrategyRequest request, CancellationToken ct) => paper.UpdateStrategy(id, request, ct);
     public Task<PreviewCacheItem> CreatePreview(PreviewRequest request, CancellationToken ct) => paper.CreatePreview(request, ct);
@@ -41,7 +48,7 @@ public sealed class TradingService(TradingDbContext db, PreviewStore previews, H
         if (await db.Cycles.AnyAsync(x => x.StrategyId == strategyId && !x.IsTerminal, ct))
             throw Problem(409, "ACTIVE_CYCLE_EXISTS", "Only one active cycle is allowed per strategy.");
 
-        await testnet.PreflightStartAsync(strategy.ExchangeAccountId, strategy.Symbol, ct);
+        var book = await testnet.PreflightStartAsync(strategy.ExchangeAccountId, strategy.Symbol, ct);
         var operation = await NewOperation("START_CYCLE", strategyId, key, request, ct);
         if (operation.Status == "COMPLETED")
             return (operation, await db.Cycles.SingleAsync(x => x.Id == operation.ResourceId, ct));
@@ -56,10 +63,12 @@ public sealed class TradingService(TradingDbContext db, PreviewStore previews, H
         };
         db.Cycles.Add(cycle); await db.SaveChangesAsync(ct);
         var reservations = new List<ActiveOrderReservation>();
-        foreach (var level in preview.Plan.Levels.Where(x => x.LevelIndex < preview.Configuration.WorkingEntriesPerSide))
+        foreach (var side in new[] { OrderSide.Buy, OrderSide.Sell })
         {
+            var level = GridMath.SelectWorkingEntryLevel(preview.Plan, side, book.Mid, []);
+            if (level is null) continue;
             var allowed = GridMath.AllowedOrderQuantity(level.Side, level.PlannedQuantity, 0m, reservations,
-                preview.Configuration.MaxNetLot, SolRules);
+                preview.Configuration.MaxNetLot, RulesFor(preview.Configuration));
             if (allowed <= 0m) continue;
             db.Orders.Add(CreateOrder(cycle, strategy.Symbol, level, allowed));
             reservations.Add(new ActiveOrderReservation(level.Side, allowed));
@@ -108,9 +117,8 @@ public sealed class TradingService(TradingDbContext db, PreviewStore previews, H
             case "RESUME_ENTRIES":
                 EnsureState(cycle, "PAUSED", command);
                 cycle.State = "RUNNING";
-                var replacements = await ReplenishEntries(cycle, config, ct);
                 await db.SaveChangesAsync(ct);
-                await testnet.PlacePendingOrdersAsync(strategy.ExchangeAccountId, config, replacements, ct);
+                await testnet.MaintainEntryOrdersAsync(strategy, cycle, config, book: null, ct);
                 break;
             case "CLOSE":
             case "EMERGENCY_FLATTEN":
@@ -139,23 +147,6 @@ public sealed class TradingService(TradingDbContext db, PreviewStore previews, H
         cycle.StateVersion++; operation.Status = "COMPLETED"; operation.CompletedAt = DateTimeOffset.UtcNow;
         db.AuditLogs.Add(Audit(cycleId, command, string.IsNullOrWhiteSpace(reason) ? "Operator command." : reason));
         await db.SaveChangesAsync(ct); await Broadcast(cycle, ct); return operation;
-    }
-
-    private async Task<List<OrderEntity>> ReplenishEntries(CycleEntity cycle, GridConfiguration config, CancellationToken ct)
-    {
-        var plan = JsonSerializer.Deserialize<GridPlan>(cycle.FrozenPlanJson, JsonSupport.Options)!;
-        var active = await ActiveOrders(cycle.Id, null, ct); var created = new List<OrderEntity>();
-        foreach (var level in plan.Levels.Where(x => x.LevelIndex < config.WorkingEntriesPerSide))
-        {
-            var side = level.Side.ToString().ToUpperInvariant();
-            if (active.Any(x => x.Kind == "ENTRY" && x.Side == side && x.GridLevel == level.LevelIndex)) continue;
-            if (await db.VirtualLots.AnyAsync(x => x.CycleId == cycle.Id && x.Side == side && x.GridLevel == level.LevelIndex && x.Status != "CLOSED", ct)) continue;
-            var reservations = active.Select(x => new ActiveOrderReservation(Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
-            var quantity = GridMath.AllowedOrderQuantity(level.Side, level.PlannedQuantity, cycle.ActualNetQuantity, reservations, config.MaxNetLot, SolRules);
-            if (quantity <= 0m) continue;
-            var order = CreateOrder(cycle, config.Symbol, level, quantity); db.Orders.Add(order); active.Add(order); created.Add(order);
-        }
-        return created;
     }
 
     private async Task<List<OrderEntity>> ActiveOrders(string cycleId, string? kind, CancellationToken ct) =>

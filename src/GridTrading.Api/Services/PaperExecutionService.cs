@@ -59,10 +59,11 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
             await db.SaveChangesAsync(ct);
 
             var liquidationPnl = cycle.RealisedCyclePnl - cycle.PaidFees - cycle.AccruedFunding;
-            if (cycle.State is "RUNNING" or "PAUSED" &&
-                (liquidationPnl >= config.BasketTakeProfitUsdt || liquidationPnl <= -config.BasketStopLossUsdt))
+            var takeProfitTriggered = liquidationPnl >= config.BasketTakeProfitUsdt;
+            var stopLossTriggered = GridMath.BasketStopLossTriggered(liquidationPnl, config.BasketStopLossUsdt);
+            if (cycle.State is "RUNNING" or "PAUSED" && (takeProfitTriggered || stopLossTriggered))
             {
-                var reason = liquidationPnl >= config.BasketTakeProfitUsdt ? "BASKET_TAKE_PROFIT" : "BASKET_STOP_LOSS";
+                var reason = takeProfitTriggered ? "BASKET_TAKE_PROFIT" : "BASKET_STOP_LOSS";
                 await service.Command(cycle.Id, "CLOSE", reason, $"basket-{cycle.Id}-{cycle.StateVersion}", null, false, ct);
             }
         }
@@ -72,10 +73,11 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
     {
         var entrySide = Enum.Parse<OrderSide>(entry.Side, true);
         var tpSide = entrySide == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-        var price = GridMath.TakeProfitPrice(entrySide, entry.Price, config.TakeProfitPoints, TradingService.SolRules.TickSize);
+        var rules = TradingService.RulesFor(config);
+        var price = GridMath.TakeProfitPrice(entrySide, entry.Price, config.TakeProfitPoints, rules.TickSize);
         var active = db.Orders.Local.Where(x => x.CycleId == cycle.Id && x.Status == "NEW")
             .Select(x => new ActiveOrderReservation(Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
-        var quantity = GridMath.AllowedOrderQuantity(tpSide, entry.Quantity, cycle.ActualNetQuantity, active, config.MaxNetLot, TradingService.SolRules);
+        var quantity = GridMath.AllowedOrderQuantity(tpSide, entry.Quantity, cycle.ActualNetQuantity, active, config.MaxNetLot, rules);
         if (quantity <= 0m) return;
         var tp = new OrderEntity
         {
@@ -105,7 +107,7 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
         var level = plan.Levels.Single(x => x.Side == side && x.LevelIndex == lot.GridLevel);
         var activeOrders = db.Orders.Local.Where(x => x.CycleId == cycle.Id && x.Status == "NEW")
             .Select(x => new ActiveOrderReservation(Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
-        var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, cycle.ActualNetQuantity, activeOrders, config.MaxNetLot, TradingService.SolRules);
+        var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, cycle.ActualNetQuantity, activeOrders, config.MaxNetLot, TradingService.RulesFor(config));
         if (quantity <= 0m) return;
         db.Orders.Add(new OrderEntity
         {

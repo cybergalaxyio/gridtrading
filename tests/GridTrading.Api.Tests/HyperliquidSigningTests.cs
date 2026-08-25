@@ -1,4 +1,7 @@
 using GridTrading.Api.Exchange;
+using GridTrading.Api.Services;
+using MessagePack;
+using System.Text.Json;
 
 namespace GridTrading.Api.Tests;
 
@@ -33,4 +36,56 @@ public sealed class HyperliquidSigningTests
     [InlineData("0.0123456", 2, "0.0123")]
     public void PriceUsesFiveSignificantFigures(string value, int sizeDecimals, string expected) =>
         Assert.Equal(expected, HyperliquidWireCodec.PriceToWire(decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture), sizeDecimals));
+
+    [Theory]
+    [InlineData("103.375", 2, "0.01")]
+    [InlineData("1234.5", 2, "0.1")]
+    [InlineData("0.001234", 0, "0.000001")]
+    public void TickSizeFollowsPriceMagnitudeAndSizeDecimals(string referencePrice, int sizeDecimals, string expected) =>
+        Assert.Equal(
+            decimal.Parse(expected, System.Globalization.CultureInfo.InvariantCulture),
+            HyperliquidWireCodec.TickSize(
+                decimal.Parse(referencePrice, System.Globalization.CultureInfo.InvariantCulture),
+                sizeDecimals));
+
+    [Fact]
+    public void StrategyOrderUsesPlainLimitWithoutReduceOnly()
+    {
+        var order = new HyperliquidLimitOrder(5, true, "99.1", "0.2", false, "Alo",
+            "0x11111111111111111111111111111111");
+
+        var reader = new MessagePackReader(HyperliquidWireCodec.PackOrderAction([order]));
+        Assert.Equal(3, reader.ReadMapHeader());
+        Assert.Equal("type", reader.ReadString());
+        Assert.Equal("order", reader.ReadString());
+        Assert.Equal("orders", reader.ReadString());
+        Assert.Equal(1, reader.ReadArrayHeader());
+        Assert.Equal(7, reader.ReadMapHeader());
+        Assert.Equal("a", reader.ReadString()); Assert.Equal(5, reader.ReadInt32());
+        Assert.Equal("b", reader.ReadString()); Assert.True(reader.ReadBoolean());
+        Assert.Equal("p", reader.ReadString()); Assert.Equal("99.1", reader.ReadString());
+        Assert.Equal("s", reader.ReadString()); Assert.Equal("0.2", reader.ReadString());
+        Assert.Equal("r", reader.ReadString()); Assert.False(reader.ReadBoolean());
+        Assert.Equal("t", reader.ReadString()); Assert.Equal(1, reader.ReadMapHeader());
+        Assert.Equal("limit", reader.ReadString()); Assert.Equal(1, reader.ReadMapHeader());
+        Assert.Equal("tif", reader.ReadString()); Assert.Equal("Alo", reader.ReadString());
+        Assert.Equal("c", reader.ReadString()); Assert.Equal(order.Cloid, reader.ReadString());
+        Assert.Equal("grouping", reader.ReadString());
+        Assert.Equal("na", reader.ReadString());
+        Assert.True(reader.End);
+    }
+
+    [Theory]
+    [InlineData("waitingForFill")]
+    [InlineData("waitingForTrigger")]
+    public void StringWaitingStatusDoesNotCrashOrderParser(string exchangeStatus)
+    {
+        using var json = JsonDocument.Parse($"\"{exchangeStatus}\"");
+
+        var result = HyperliquidTradingClient.ParseOrderStatus(json.RootElement, "0xchild");
+
+        Assert.Equal("WAITING", result.Status);
+        Assert.Null(result.Error);
+        Assert.Equal("0xchild", result.Cloid);
+    }
 }

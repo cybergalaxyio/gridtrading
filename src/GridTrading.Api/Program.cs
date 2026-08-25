@@ -22,6 +22,7 @@ builder.Services.AddScoped<HyperliquidNonceManager>();
 builder.Services.AddHttpClient<HyperliquidTradingClient>();
 builder.Services.AddHttpClient<HyperliquidMarketDataClient>();
 builder.Services.AddScoped<HyperliquidAccountStatusService>();
+builder.Services.AddScoped<HyperliquidOrderOwnershipService>();
 builder.Services.AddScoped<HyperliquidCycleCoordinator>();
 builder.Services.AddHostedService<HyperliquidReconciliationService>();
 builder.Services.AddHostedService<HyperliquidAccountBootstrap>();
@@ -90,7 +91,7 @@ api.MapGet("/system/status", async (TradingDbContext db, CancellationToken ct) =
 });
 api.MapGet("/system/capabilities", () => new
 {
-    positionModes = new[] { "ONE_WAY" }, executionEnvironments = new[] { "REPLAY", "PAPER", "TESTNET" },
+    gridModes = new[] { "BUY_ONLY", "SELL_ONLY", "TWO_WAY" }, executionEnvironments = new[] { "REPLAY", "PAPER", "TESTNET" },
     liveTradingEnabled = false, autoRestartSupported = false, takeProfitModes = new[] { "POINTS" },
     automaticRegimeGateSupported = false
 });
@@ -126,9 +127,18 @@ api.MapGet("/exchange-accounts/{id}/balances", (string id) => IsAccount(id)
 api.MapGet("/exchange-accounts/{id}/positions", async (string id, string? symbol, TradingDbContext db, CancellationToken ct) =>
     IsAccount(id) ? Results.Ok(await db.Cycles.Where(x => !x.IsTerminal && (symbol == null || x.FrozenConfigurationJson.Contains(symbol)))
         .Select(x => new { cycleId = x.Id, symbol = symbol ?? "SOLUSDT", netQuantity = x.ActualNetQuantity, reconstructedQuantity = x.ReconstructedNetQuantity }).ToListAsync(ct)) : Results.NotFound());
-api.MapGet("/exchange-accounts/{id}/instruments/{symbol}", (string id, string symbol) => IsAccount(id) && symbol.Equals("SOLUSDT", StringComparison.OrdinalIgnoreCase)
-    ? Results.Ok(new { symbol = "SOLUSDT", tickSize = .001m, quantityStep = .1m, minOrderQuantity = .1m, minOrderNotional = 5m, maxActiveOrders = 500, asOf = DateTimeOffset.UtcNow })
-    : Results.NotFound());
+api.MapGet("/exchange-accounts/{id}/instruments/{symbol}", async (string id, string symbol, decimal? referencePrice,
+    TradingDbContext db, HyperliquidInfoClient instruments, CancellationToken ct) =>
+{
+    if (id == "acct_paper_01" && symbol.Equals("SOLUSDT", StringComparison.OrdinalIgnoreCase))
+        return Results.Ok(new ExchangeInstrumentMetadata("SOLUSDT", "PAPER", 0, 1, referencePrice is > 0m ? referencePrice.Value : 145.25m,
+            .001m, .1m, .1m, 5m, 500, .0002m, .00055m, "PAPER_SIMULATOR", DateTimeOffset.UtcNow));
+    var account = await db.HyperliquidAccounts.SingleOrDefaultAsync(x => x.Id == id && x.Enabled && x.Environment == "TESTNET", ct);
+    if (account is null)
+        return Results.NotFound();
+    try { return Results.Ok(await instruments.GetPerpetualInstrument(symbol, referencePrice, account.AccountAddress, ct)); }
+    catch (HttpRequestException) { return Results.Problem(statusCode: 503, title: "Hyperliquid Testnet metadata is unavailable."); }
+});
 
 api.MapGet("/market-data/{accountId}/{symbol}/snapshot", (string accountId, string symbol, MarketState market) =>
     IsAccount(accountId) ? Results.Ok(market.Snapshot(symbol)) : Results.NotFound());
@@ -261,15 +271,20 @@ static long? IfMatch(HttpRequest request)
 }
 static bool IsAccount(string id) => id == "acct_paper_01";
 static object OperationDto(OperationEntity x) => new { operationId = x.Id, x.CommandId, x.ResourceId, type = x.Type, status = x.Status, x.AcceptedAt, x.CompletedAt };
-static object CycleDto(CycleEntity x) => new { cycleId = x.Id, x.StrategyId, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired, x.FixedCenterPrice, x.StartedAt, x.EndedAt, x.ExitReason };
+static object CycleDto(CycleEntity x) => new
+{
+    cycleId = x.Id, x.StrategyId, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired,
+    x.FixedCenterPrice, frozenConfiguration = JsonSerializer.Deserialize<GridConfiguration>(x.FrozenConfigurationJson, JsonSupport.Options),
+    x.StartedAt, x.EndedAt, x.ExitReason
+};
 static object StrategyDto(StrategyEntity x, CycleEntity? cycle) => new { strategyId = x.Id, x.Name, x.ExchangeAccountId, x.Symbol, x.Version, x.Archived, configuration = TradingService.DeserializeStrategy(x), activeCycle = cycle is null ? null : CycleDto(cycle), x.CreatedAt, x.UpdatedAt };
 static object PreviewDto(PreviewCacheItem x) => new
 {
     previewId = x.Id, x.ExpiresAt, strategyVersion = x.StrategyVersion, marketDataAsOf = DateTimeOffset.UtcNow,
     confirmedCenterPrice = x.Plan.CenterPrice, x.Plan.OutermostBuyPrice, x.Plan.OutermostSellPrice,
     x.Plan.CoverageBelowPct, x.Plan.CoverageAbovePct,
-    maximumPlannedQuantityPerSide = x.Plan.Levels.Where(l => l.Side == OrderSide.Buy).Sum(l => l.PlannedQuantity),
-    maximumPlannedNotionalPerSide = x.Plan.Levels.Where(l => l.Side == OrderSide.Buy).Sum(l => l.OrderNotional),
+    maximumPlannedQuantityPerSide = x.Plan.Levels.GroupBy(l => l.Side).Select(g => g.Sum(l => l.PlannedQuantity)).DefaultIfEmpty(0m).Max(),
+    maximumPlannedNotionalPerSide = x.Plan.Levels.GroupBy(l => l.Side).Select(g => g.Sum(l => l.OrderNotional)).DefaultIfEmpty(0m).Max(),
     startEligible = true, blockingErrors = Array.Empty<object>(), warnings = Array.Empty<object>(), x.Plan.Levels
 };
 
@@ -291,7 +306,7 @@ static async Task InitializeDatabase(IServiceProvider services, string connectio
         db.RiskAlerts.AddRange(
             new RiskAlertEntity { Id = "alert_001", Severity = "CRITICAL", Code = "MARKET_DATA_STALE", Message = "行情曾短暂超过新鲜度阈值，已阻止创建新敞口。", CreatedAt = now.AddMinutes(-42) },
             new RiskAlertEntity { Id = "alert_002", Severity = "WARNING", Code = "VOLATILITY_ELEVATED", Message = "近期波动率升高，建议复核网格间距。", CreatedAt = now.AddMinutes(-18) },
-            new RiskAlertEntity { Id = "alert_003", Severity = "INFO", Code = "RECONCILIATION_OK", Message = "Paper 账户订单与仓位对账完成。", CreatedAt = now.AddMinutes(-2) });
+            new RiskAlertEntity { Id = "alert_003", Severity = "INFO", Code = "RECONCILIATION_OK", Message = "Paper 账户订单与仓位 Sync 完成。", CreatedAt = now.AddMinutes(-2) });
         await db.SaveChangesAsync();
     }
 }

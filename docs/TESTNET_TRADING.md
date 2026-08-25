@@ -46,9 +46,10 @@ export GRID_TRADING_HL_TESTNET_VAULT_ADDRESS='0xVault地址'
 1. 打开“设置 → 交易所账户”，确认 Testnet 显示“可交易”。
 2. 新建策略时选择 `Hyperliquid Testnet` 账户，点击“获取建议”读取真实 Testnet 盘口。
 3. 保存策略，在控制台点击“确认预览并开启”。后端会再次检查 Agent 授权、测试资金、实际仓位为零和无残留挂单，然后才提交 Entry。
-4. Cycle 运行后，成交由后台按策略的对账间隔（默认 10 秒）同步；Entry 成交会按实际成交价和数量创建 reduce-only TP，TP 完成后再回补对应层。
-5. “暂停 Entry”只撤 Entry，保留已有 TP；“继续”恢复缺失层；“关闭 Cycle”先撤全部策略单，再用 reduce-only IOC 清零实际仓位。若仍有残余仓位，Cycle 会保持非终态并报错，绝不会假装关闭成功。
-6. Basket TP/SL 阈值目前在 Testnet 只用于监控，达到阈值不会自动发出真实清仓指令；请使用“关闭 Cycle”人工确认。若要启用自动阈值清仓，需要另行明确授权。
+4. Cycle 运行后，成交由后台按策略的 Sync 间隔（默认 10 秒）处理；Entry 成交后按实际成交价和数量提交一张反方向普通 TP Limit。Entry 与 TP 都是非 reduce-only 普通 Limit。
+5. 系统按当前中间价在冻结 Grid 中选择最近的下方 BUY 与上方 SELL，各维持一张未成交 Entry；已有未关闭 Lot 的层不会重复挂 Entry，越过最外层后停止该方向补单。TP 完成后释放原层，由下一次 Sync 按当前价格重新选层。
+6. “暂停 Entry”只撤 Entry，保留已有 TP；“继续”按当前价格恢复工作 Entry；“关闭 Cycle”先撤全部策略单，再用非 reduce-only IOC Limit 尝试清零实际仓位。若仍有残余仓位，Cycle 会保持非终态并报错，绝不会假装关闭成功。
+7. Basket TP/SL 阈值目前在 Testnet 只用于监控，达到阈值不会自动发出真实清仓指令；请使用“关闭 Cycle”人工确认。若要启用自动阈值清仓，需要另行明确授权。
 
 ## Nonce 与安全边界
 

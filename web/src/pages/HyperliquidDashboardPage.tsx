@@ -2,16 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { TradingChart } from '../components/TradingChart'
 import { Icon } from '../components/Icon'
-import type { Candle, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidOpenOrder, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
+import { Modal } from '../components/Modal'
+import { StrategyParameters } from '../components/StrategyParameters'
+import type { Candle, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
 type AccountPanelTab = 'balances' | 'positions' | 'orders' | 'history' | 'events' | 'alerts'
 
-export function DashboardPage({ strategies, reload, notify, reportError }: {
-  strategies: Strategy[]; reload: () => Promise<void>; notify: (message: string) => void; reportError: (message: string) => void
+export function DashboardPage({ strategies, loadedStrategyId, reload, notify, reportError }: {
+  strategies: Strategy[]; loadedStrategyId?: string | null; reload: () => Promise<void>; notify: (message: string) => void; reportError: (message: string) => void
 }) {
-  const strategy = strategies.find(x => x.activeCycle)
+  const strategy = strategies.find(x => x.strategyId === loadedStrategyId)
+    ?? strategies.find(x => x.activeCycle)
     ?? strategies.find(x => x.exchangeAccountId !== 'acct_paper_01')
     ?? strategies[0]
   const cycle = strategy?.activeCycle
@@ -26,9 +29,11 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   const [exchangeOpenOrders, setExchangeOpenOrders] = useState<HyperliquidOpenOrder[] | null>(null)
   const [exchangeOrderHistory, setExchangeOrderHistory] = useState<HyperliquidHistoricalOrder[] | null>(null)
   const [busy, setBusy] = useState(false)
+  const [parametersOpen, setParametersOpen] = useState(false)
   const [accountPanelTab, setAccountPanelTab] = useState<AccountPanelTab>('balances')
   const [marketLoading, setMarketLoading] = useState(false)
   const [instruments, setInstruments] = useState<string[]>([])
+  const [instrumentRules, setInstrumentRules] = useState<ExchangeInstrumentRules | null>(null)
   const [symbol, setSymbol] = useState(() => localStorage.getItem('grid.dashboardSymbol') ?? '')
   const [timeframe, setTimeframe] = useState<Timeframe>(() => {
     const stored = localStorage.getItem('grid.dashboardTimeframe')
@@ -40,8 +45,8 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
 
 
   useEffect(() => {
-    if (!symbol && strategy?.symbol) setSymbol(strategy.symbol)
-  }, [strategy?.symbol, symbol])
+    if (strategy?.symbol) setSymbol(strategy.symbol)
+  }, [strategy?.strategyId])
 
   useEffect(() => {
     localStorage.setItem('grid.dashboardSymbol', marketSymbol)
@@ -62,6 +67,18 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
     })
     return () => { active = false }
   }, [isTestnet, strategy?.symbol])
+
+  useEffect(() => {
+    if (!strategy) { setInstrumentRules(null); return }
+    let active = true
+    setInstrumentRules(null)
+    void api.instrumentRules(strategy.exchangeAccountId, marketSymbol).then(value => {
+      if (active) setInstrumentRules(value)
+    }).catch(() => {
+      if (active) setInstrumentRules(null)
+    })
+    return () => { active = false }
+  }, [strategy?.exchangeAccountId, marketSymbol])
 
   useEffect(() => {
     if (!isTestnet || !strategy) {
@@ -171,13 +188,15 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
         {instruments.map(item => <option key={item} value={item}>{displaySymbol(item, isTestnet)}</option>)}
       </select></label> 永续 <span className="mono">{format(mid, 3)}</span> <em className={change < 0 ? 'negative' : ''}>{change >= 0 ? '+' : ''}{change.toFixed(2)}%</em></h1>
         <p>Strategy: {strategy?.name ?? '尚未创建'} <b className={`state ${state.toLowerCase()}`}>{state}</b>
-          <span>{isTestnet ? 'Hyperliquid Testnet · 官方 API' : 'Paper · 本地模拟'} · 单向 · 1x | 上次同步 {isTestnet ? time(accountState?.asOf) : snapshot ? '刚刚' : '—'}</span>
+          <span>{isTestnet ? 'Hyperliquid Testnet · 官方 API' : 'Paper · 本地模拟'} · {gridModeLabel(strategy)} · 1x | 上次同步 {isTestnet ? time(accountState?.asOf) : snapshot ? '刚刚' : '—'}</span>
+          <span>Tick {instrumentRules?.tickSize ?? '—'} · Qty Step {instrumentRules?.quantityStep ?? '—'}</span>
           {!strategyMatchesMarket && <span className="market-view-note">仅浏览行情 · 策略运行于 {displaySymbol(strategy?.symbol ?? '', isTestnet)}</span>}</p></div>
       <div className="control-buttons">
+        {strategy && <button className="secondary" onClick={() => setParametersOpen(true)}>查看参数</button>}
         {!cycle && <button className="primary" disabled={!strategy || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : '确认预览并开启'}</button>}
         {cycle?.state === 'RUNNING' && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>暂停 Entry</button>}
         {cycle?.state === 'PAUSED' && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', '已按固定中心恢复 Entry')}>继续</button>}
-        {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', '人工对账完成')}>对账</button>}
+        {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
         {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>关闭 Cycle</button>}
       </div>
     </section>
@@ -189,12 +208,12 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
       </section>
       <aside className="metric-stack">
         <MetricCard title="策略摘要" rows={[
-          ['固定中心', snapshot ? format(snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${strategy.configuration.maxLevelsPerSide * 2} 层` : '—'],
+          ['固定中心', snapshot ? format(snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${plannedLevelCount(strategy)} 层` : '—'],
           ['Entry / TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'], ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
         ]} />
         <MetricCard title="账户与持仓" rows={[
-          ['权益', isTestnet ? unifiedUsdc ? `${format(unifiedUsdc.total)} USDC` : '—' : '13,420.50 USDT'],
-          ['可提余额', isTestnet ? unifiedAvailable !== null ? `${format(unifiedAvailable)} USDC` : '—' : '8,420.00 USDT'],
+          ['权益', isTestnet ? unifiedUsdc ? `${format(unifiedUsdc.total)} USDC` : '—' : '13,420.50 USDC'],
+          ['可提余额', isTestnet ? unifiedAvailable !== null ? `${format(unifiedAvailable)} USDC` : '—' : '8,420.00 USDC'],
           ['净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['保证金使用', isTestnet ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
         ]} />
@@ -219,6 +238,9 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
         {accountPanelTab === 'alerts' && <Empty text="当前 Cycle 暂无风险告警" />}
       </section>
     </div>
+    {parametersOpen && strategy && <Modal title="策略参数" icon="strategy" className="strategy-modal" onClose={() => setParametersOpen(false)}>
+      <StrategyParameters strategy={strategy} tickSize={strategyMatchesMarket ? instrumentRules?.tickSize : null} onClose={() => setParametersOpen(false)} />
+    </Modal>}
   </div>
 }
 
@@ -247,20 +269,47 @@ function PositionRow({ position }: { position: HyperliquidPosition }) {
 
 function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
   if (!rows) return <Empty text="正在加载 Hyperliquid frontendOpenOrders…" />
-  return <div className="table-wrap"><table><thead><tr><th>时间</th><th>市场</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>Reduce Only</th><th>订单 ID</th></tr></thead>
+  return <div className="table-wrap"><table><thead><tr><th>时间</th><th>市场</th><th>Strategy</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>Reduce Only</th><th>订单 ID</th></tr></thead>
     <tbody>{rows.slice(0, 50).map(order => <tr key={order.oid}><td>{exchangeTime(order.timestamp)}</td><td><strong>{order.coin}-USDC</strong></td>
-      <td className={order.side === 'B' ? 'positive' : 'negative'}>{order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{order.orderType}</td><td>{format(order.limitPx, 4)}</td>
+      <StrategyOwnership value={order} /><td className={order.side === 'B' ? 'positive' : 'negative'}>{order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{order.orderType}</td><td>{format(order.limitPx, 4)}</td>
       <td>{order.origSz}</td><td>{order.sz}</td><td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td></tr>)}</tbody>
   </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
 }
 
 function OrderHistoryTable({ rows }: { rows: HyperliquidHistoricalOrder[] | null }) {
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'FILLED'>(() => localStorage.getItem('grid.orderHistoryStatus') === 'FILLED' ? 'FILLED' : 'ALL')
+  const [page, setPage] = useState(1)
   if (!rows) return <Empty text="正在加载 Hyperliquid historicalOrders…" />
-  return <div className="table-wrap"><table><thead><tr><th>更新时间</th><th>市场</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>状态</th><th>订单 ID</th></tr></thead>
-    <tbody>{rows.slice(0, 100).map(item => <tr key={`${item.order.oid}-${item.statusTimestamp}`}><td>{exchangeTime(item.statusTimestamp)}</td><td><strong>{item.order.coin}-USDC</strong></td>
-      <td className={item.order.side === 'B' ? 'positive' : 'negative'}>{item.order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{item.order.orderType ?? 'Limit'}</td><td>{format(item.order.limitPx, 4)}</td>
+  const filledCount = rows.filter(item => item.status.toLowerCase() === 'filled').length
+  const visibleRows = statusFilter === 'FILLED' ? rows.filter(item => item.status.toLowerCase() === 'filled') : rows
+  const pageSize = 20
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / pageSize))
+  const currentPage = Math.min(page, pageCount)
+  const pageRows = visibleRows.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+  const firstRow = visibleRows.length === 0 ? 0 : (currentPage - 1) * pageSize + 1
+  const lastRow = Math.min(currentPage * pageSize, visibleRows.length)
+  function selectStatus(value: 'ALL' | 'FILLED') { setStatusFilter(value); setPage(1); localStorage.setItem('grid.orderHistoryStatus', value) }
+  return <><div className="history-filterbar" role="group" aria-label="Order History 状态筛选"><span>状态</span>
+    <button type="button" className={statusFilter === 'ALL' ? 'active' : ''} aria-pressed={statusFilter === 'ALL'} onClick={() => selectStatus('ALL')}>All <i>{rows.length}</i></button>
+    <button type="button" className={statusFilter === 'FILLED' ? 'active' : ''} aria-pressed={statusFilter === 'FILLED'} onClick={() => selectStatus('FILLED')}>Filled <i>{filledCount}</i></button>
+  </div><div className="table-wrap history-table-scroll"><table><thead><tr><th>更新时间</th><th>市场</th><th>Strategy</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>状态</th><th>订单 ID</th></tr></thead>
+    <tbody>{pageRows.map(item => <tr key={`${item.order.oid}-${item.statusTimestamp}`}><td>{exchangeTime(item.statusTimestamp)}</td><td><strong>{item.order.coin}-USDC</strong></td>
+      <StrategyOwnership value={item} /><td className={item.order.side === 'B' ? 'positive' : 'negative'}>{item.order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{item.order.orderType ?? 'Limit'}</td><td>{format(item.order.limitPx, 4)}</td>
       <td>{item.order.origSz}</td><td>{item.order.sz}</td><td><span className={`tag ${item.status.toLowerCase()}`}>{item.status}</span></td><td className="dim">{item.order.oid}</td></tr>)}</tbody>
-  </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有历史订单" />}</div>
+  </table>{visibleRows.length === 0 && <Empty text={statusFilter === 'FILLED' ? '当前没有 Filled 历史订单' : 'Hyperliquid 当前没有历史订单'} />}</div>
+  <div className="history-pagination" aria-label="Order History 分页">
+    <span>{firstRow}–{lastRow} / {visibleRows.length}</span>
+    <div><button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>上一页</button>
+      <b>{currentPage} / {pageCount}</b>
+      <button type="button" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}>下一页</button></div>
+  </div></>
+}
+
+function StrategyOwnership({ value }: { value: HyperliquidOrderAttribution }) {
+  if (!value.strategyId) return <td><span className="tag external">EXTERNAL</span></td>
+  return <td className="order-owner" title={`${value.strategyName ?? 'Strategy'} · ${value.strategyId}`}>
+    <strong>{value.strategyName ?? 'Strategy'}</strong><span className="dim">{shortId(value.strategyId)}</span>
+  </td>
 }
 
 function MetricCard({ title, rows, accent }: { title: string; rows: [string, string][]; accent?: boolean }) {
@@ -269,9 +318,12 @@ function MetricCard({ title, rows, accent }: { title: string; rows: [string, str
 export function Empty({ text }: { text: string }) { return <div className="empty"><span>◇</span>{text}</div> }
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
+function plannedLevelCount(strategy: Strategy) { const config = strategy.activeCycle?.frozenConfiguration ?? strategy.configuration; return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }
+function gridModeLabel(strategy?: Strategy) { const mode = (strategy?.activeCycle?.frozenConfiguration ?? strategy?.configuration)?.gridMode ?? 'TWO_WAY'; return mode === 'BUY_ONLY' ? 'Buy Only' : mode === 'SELL_ONLY' ? 'Sell Only' : 'Two-Way' }
 function availableBalance(total: string, hold: string) { return String(Math.max(0, +total - +hold)) }
 function time(value?: string) { return value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—' }
 function exchangeTime(value: number) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
+function shortId(value: string) { return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value }
 function coinFromSymbol(symbol?: string) { return (symbol ?? '').toUpperCase().replace(/[-_/]?(USDC|USDT)$/, '') }
 function sameCoin(left?: string, right?: string) { return !!left && !!right && coinFromSymbol(left) === coinFromSymbol(right) }
 function displaySymbol(symbol: string, isTestnet: boolean) { const coin = coinFromSymbol(symbol); return isTestnet ? `${coin}-USDC` : symbol.toUpperCase() }

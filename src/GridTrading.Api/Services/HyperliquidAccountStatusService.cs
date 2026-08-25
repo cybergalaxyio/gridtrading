@@ -12,8 +12,10 @@ public sealed class HyperliquidAccountStatusService(TradingDbContext db, Credent
         var state = await client.PreflightAsync(id, null, ct);
         return new { accountId = account.Id, account.Name, account.AccountAddress, account.AgentAddress, account.VaultAddress,
             account.Environment, account.Enabled, credentialEncryption = protector.IsConfigured ? "CONFIGURED" : "MISSING",
-            state.AgentApproved, state.AgentRole, state.AccountValue, state.NetPosition, state.OpenOrderCount, state.AsOf,
-            tradingReady = account.Enabled && state.AgentApproved && protector.IsConfigured };
+            state.AgentApproved, state.AgentRole, state.AccountMode, state.TradingEquity, state.AvailableBalance,
+            state.PerpAccountValue, state.NetPosition, state.OpenOrderCount, state.AsOf,
+            tradingReady = account.Enabled && state.AgentApproved && protector.IsConfigured &&
+                state.TradingEquity > 0m && state.AvailableBalance > 0m };
     }
 
     public static object Public(HyperliquidAccountEntity account) => new

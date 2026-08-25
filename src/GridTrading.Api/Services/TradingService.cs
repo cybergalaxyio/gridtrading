@@ -16,7 +16,8 @@ public sealed class PreviewStore
     public ConcurrentDictionary<string, PreviewCacheItem> Items { get; } = new();
 }
 
-public sealed class LegacyTradingService(TradingDbContext db, MarketState market, PreviewStore previews, IHubContext<TradingHub> hub, HyperliquidCycleCoordinator testnet)
+public sealed class LegacyTradingService(TradingDbContext db, MarketState market, PreviewStore previews, IHubContext<TradingHub> hub,
+    HyperliquidCycleCoordinator testnet, HyperliquidInfoClient instruments)
 {
     public static readonly InstrumentRules SolRules = new("SOLUSDT", .001m, .1m, .1m, 5m, 500);
 
@@ -43,8 +44,12 @@ public sealed class LegacyTradingService(TradingDbContext db, MarketState market
         await testnet.EnsureKnownAccountAsync(request.ExchangeAccountId, ct);
         var entity = await db.Strategies.FindAsync([id], ct);
         if (entity is null || entity.Archived) return null;
-        if (await db.Cycles.AnyAsync(x => x.StrategyId == id && !x.IsTerminal, ct))
-            throw new TradingProblemException(409, "STRATEGY_HAS_ACTIVE_CYCLE", "Close the active cycle before editing this strategy.");
+        var hasActiveCycle = await db.Cycles.AnyAsync(x => x.StrategyId == id && !x.IsTerminal, ct);
+        var changesExecutionIdentity = !string.Equals(entity.ExchangeAccountId, request.ExchangeAccountId, StringComparison.Ordinal)
+            || !string.Equals(entity.Symbol, request.Symbol, StringComparison.OrdinalIgnoreCase);
+        if (hasActiveCycle && changesExecutionIdentity)
+            throw new TradingProblemException(409, "STRATEGY_EXECUTION_IDENTITY_LOCKED",
+                "Close the active cycle before changing its exchange account or symbol. Other template parameters can be edited now.");
         entity.Name = request.Name.Trim(); entity.ExchangeAccountId = request.ExchangeAccountId;
         entity.Symbol = request.Symbol.ToUpperInvariant(); entity.ConfigurationJson = JsonSerializer.Serialize(request, JsonSupport.Options);
         entity.Version++; entity.UpdatedAt = DateTimeOffset.UtcNow;
@@ -70,7 +75,7 @@ public sealed class LegacyTradingService(TradingDbContext db, MarketState market
             var c = request.CandidateConfiguration ?? throw Problem(422, "CANDIDATE_REQUIRED", "Candidate configuration is required.");
             configuration = new GridConfiguration
             {
-                Symbol = c.Symbol, CenterPrice = request.ConfirmedCenterPrice, MaxLevelsPerSide = c.MaxLevelsPerSide,
+                Symbol = c.Symbol, GridMode = c.GridMode, CenterPrice = request.ConfirmedCenterPrice, MaxLevelsPerSide = c.MaxLevelsPerSide,
                 WorkingEntriesPerSide = c.WorkingEntriesPerSide, InitialGapPoints = c.InitialGapPoints,
                 GridSpacingPoints = c.GridSpacingPoints, GridSpacingStepPoints = c.GridSpacingStepPoints,
                 TakeProfitPoints = c.TakeProfitPoints, BaseLotSize = c.BaseLotSize,
@@ -80,8 +85,33 @@ public sealed class LegacyTradingService(TradingDbContext db, MarketState market
         }
         EnsureSafeAccount(accountId);
         await testnet.EnsureKnownAccountAsync(accountId, ct);
+        var rules = SolRules;
+        if (accountId != "acct_paper_01")
+        {
+            var account = await db.HyperliquidAccounts.SingleAsync(x => x.Id == accountId, ct);
+            var metadata = await instruments.GetPerpetualInstrument(configuration.Symbol, configuration.CenterPrice, account.AccountAddress, ct);
+            rules = new InstrumentRules(configuration.Symbol, metadata.TickSize, metadata.QuantityStep,
+                metadata.MinOrderQuantity, metadata.MinOrderNotional, metadata.MaxActiveOrders);
+            configuration = configuration with
+            {
+                TickSize = metadata.TickSize, QuantityStep = metadata.QuantityStep,
+                MinOrderQuantity = metadata.MinOrderQuantity, MinOrderNotional = metadata.MinOrderNotional,
+                MaxActiveOrders = metadata.MaxActiveOrders, SizeDecimals = metadata.SizeDecimals,
+                MakerFeeRate = metadata.MakerFeeRate, TakerFeeRate = metadata.TakerFeeRate
+            };
+        }
+        else
+        {
+            configuration = configuration with
+            {
+                TickSize = rules.TickSize, QuantityStep = rules.QuantityStep,
+                MinOrderQuantity = rules.MinOrderQuantity, MinOrderNotional = rules.MinOrderNotional,
+                MaxActiveOrders = rules.MaxActiveOrders, SizeDecimals = 1,
+                MakerFeeRate = .0002m, TakerFeeRate = .00055m
+            };
+        }
         var item = new PreviewCacheItem(Ids.New("preview"), request.StrategyId, version, accountId,
-            DateTimeOffset.UtcNow.AddMinutes(5), configuration, GridMath.BuildPlan(configuration, SolRules));
+            DateTimeOffset.UtcNow.AddMinutes(5), configuration, GridMath.BuildPlan(configuration, rules));
         previews.Items[item.Id] = item;
         return item;
     }
@@ -119,7 +149,7 @@ public sealed class LegacyTradingService(TradingDbContext db, MarketState market
         foreach (var level in preview.Plan.Levels.Where(x => x.LevelIndex < preview.Configuration.WorkingEntriesPerSide))
         {
             var allowed = GridMath.AllowedOrderQuantity(level.Side, level.PlannedQuantity, 0m, reservations,
-                preview.Configuration.MaxNetLot, SolRules);
+                preview.Configuration.MaxNetLot, TradingService.RulesFor(preview.Configuration));
             if (allowed <= 0m) continue;
             db.Orders.Add(CreateOrder(cycle, strategy.Symbol, level, allowed, "ENTRY"));
             reservations.Add(new ActiveOrderReservation(level.Side, allowed));
@@ -217,7 +247,7 @@ public sealed class LegacyTradingService(TradingDbContext db, MarketState market
         {
             if (active.Any(x => x.Kind == "ENTRY" && x.Side == level.Side.ToString().ToUpperInvariant() && x.GridLevel == level.LevelIndex)) continue;
             var reservations = active.Select(x => new ActiveOrderReservation(Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
-            var qty = GridMath.AllowedOrderQuantity(level.Side, level.PlannedQuantity, cycle.ActualNetQuantity, reservations, config.MaxNetLot, SolRules);
+            var qty = GridMath.AllowedOrderQuantity(level.Side, level.PlannedQuantity, cycle.ActualNetQuantity, reservations, config.MaxNetLot, TradingService.RulesFor(config));
             if (qty <= 0m) continue;
             var order = CreateOrder(cycle, config.Symbol, level, qty, "ENTRY"); db.Orders.Add(order); active.Add(order);
         }
@@ -267,8 +297,8 @@ public sealed class LegacyTradingService(TradingDbContext db, MarketState market
 
     private static void ValidateStrategy(StrategyRequest request)
     {
-        if (request.PositionMode != "ONE_WAY" || request.AutoRestart || !request.IncludeFunding)
-            throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires ONE_WAY, autoRestart=false and includeFunding=true.");
+        if (request.AutoRestart || !request.IncludeFunding)
+            throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires autoRestart=false and includeFunding=true.");
         EnsureSafeAccount(request.ExchangeAccountId); _ = GridMath.BuildPlan(request.ToConfiguration(145.25m), SolRules);
     }
     private static void EnsureSafeAccount(string id)

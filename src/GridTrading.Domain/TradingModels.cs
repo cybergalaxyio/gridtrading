@@ -1,6 +1,7 @@
 namespace GridTrading.Domain;
 
 public enum OrderSide { Buy, Sell }
+public enum GridMode { TwoWay, BuyOnly, SellOnly }
 public enum CycleState { WaitingForOperator, Starting, Running, Paused, Closing, Fault }
 public enum OrderKind { Entry, TakeProfit, Flatten }
 public enum OrderStatus { New, PartiallyFilled, Filled, Cancelled, Rejected, Unknown }
@@ -17,6 +18,13 @@ public sealed record InstrumentRules(
 public sealed record GridConfiguration
 {
     public required string Symbol { get; init; }
+    public GridMode GridMode { get; init; } = GridMode.TwoWay;
+    public decimal TickSize { get; init; }
+    public decimal QuantityStep { get; init; }
+    public decimal MinOrderQuantity { get; init; }
+    public decimal MinOrderNotional { get; init; }
+    public int MaxActiveOrders { get; init; } = 500;
+    public int? SizeDecimals { get; init; }
     public decimal CenterPrice { get; init; }
     public int MaxLevelsPerSide { get; init; } = 10;
     public int WorkingEntriesPerSide { get; init; } = 1;

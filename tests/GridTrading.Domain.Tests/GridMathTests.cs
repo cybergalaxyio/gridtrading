@@ -30,6 +30,34 @@ public sealed class GridMathTests
         Assert.Equal(1.2m, plan.Levels.Single(x => x.Side == OrderSide.Buy && x.LevelIndex == 2).PlannedQuantity);
     }
 
+    [Theory]
+    [InlineData(GridMode.BuyOnly, OrderSide.Buy)]
+    [InlineData(GridMode.SellOnly, OrderSide.Sell)]
+    public void OneSidedModeBuildsOnlyTheSelectedSide(GridMode mode, OrderSide expectedSide)
+    {
+        var plan = GridMath.BuildPlan(Configuration() with { GridMode = mode }, Rules);
+
+        Assert.Equal(3, plan.Levels.Count);
+        Assert.All(plan.Levels, level => Assert.Equal(expectedSide, level.Side));
+        if (mode == GridMode.BuyOnly)
+        {
+            Assert.True(plan.CoverageBelowPct > 0m); Assert.Equal(0m, plan.CoverageAbovePct);
+        }
+        else
+        {
+            Assert.Equal(0m, plan.CoverageBelowPct); Assert.True(plan.CoverageAbovePct > 0m);
+        }
+    }
+
+    [Fact]
+    public void MissingGridModeDefaultsToTwoWay()
+    {
+        var plan = GridMath.BuildPlan(Configuration(), Rules);
+        Assert.Equal(6, plan.Levels.Count);
+        Assert.Contains(plan.Levels, level => level.Side == OrderSide.Buy);
+        Assert.Contains(plan.Levels, level => level.Side == OrderSide.Sell);
+    }
+
     [Fact]
     public void ZeroGrowthProducesConstantSize()
     {
@@ -52,6 +80,71 @@ public sealed class GridMathTests
         var value = GridMath.TakeProfitPrice(side, 100m, 3.5m, 0.001m);
         Assert.Equal(decimal.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), value);
     }
+
+    [Fact]
+    public void PointDistanceUsesTheLoadedTickSize()
+    {
+        var value = GridMath.TakeProfitPrice(OrderSide.Buy, 100m, 180m, 0.01m);
+        Assert.Equal(101.8m, value);
+    }
+
+    [Fact]
+    public void WorkingEntriesStraddleCurrentPriceAndSkipOccupiedLevels()
+    {
+        var plan = GridMath.BuildPlan(Configuration(), Rules);
+
+        var buy = GridMath.SelectWorkingEntryLevel(plan, OrderSide.Buy, 99.99m, []);
+        var nextBuy = GridMath.SelectWorkingEntryLevel(plan, OrderSide.Buy, 99.99m, [buy!.LevelIndex]);
+        var sell = GridMath.SelectWorkingEntryLevel(plan, OrderSide.Sell, 99.99m, []);
+
+        Assert.Equal(1, buy.LevelIndex);
+        Assert.Equal(2, nextBuy!.LevelIndex);
+        Assert.Equal(0, sell!.LevelIndex);
+    }
+
+    [Fact]
+    public void WorkingEntryStopsAtGridBoundary()
+    {
+        var plan = GridMath.BuildPlan(Configuration(), Rules);
+
+        Assert.Null(GridMath.SelectWorkingEntryLevel(plan, OrderSide.Buy, plan.OutermostBuyPrice, []));
+        Assert.Null(GridMath.SelectWorkingEntryLevel(plan, OrderSide.Sell, plan.OutermostSellPrice, []));
+    }
+
+    [Fact]
+    public void GeometricLotSizeIsNormalizedDownToQuantityStep()
+    {
+        var config = Configuration() with { BaseLotSize = .5m, LotSizeIncreasePercent = 16.2m };
+        var rules = Rules with { QuantityStep = .01m };
+
+        var quantity = GridMath.PlannedQuantity(config, rules, 12);
+
+        Assert.Equal(0m, quantity % rules.QuantityStep);
+        Assert.True(quantity <= .5m * (decimal)Math.Pow(1.162d, 12));
+    }
+
+    [Fact]
+    public void InvalidDeepGridReportsNonPositivePriceInsteadOfMinimumNotional()
+    {
+        var config = Configuration() with
+        {
+            CenterPrice = 103.355m, MaxLevelsPerSide = 14, GridSpacingPoints = 250m,
+            GridSpacingStepPoints = 100m, BaseLotSize = .5m, LotSizeIncreasePercent = 16.2m
+        };
+        var rules = Rules with { TickSize = .01m, QuantityStep = .01m };
+
+        var error = Assert.Throws<GridValidationException>(() => GridMath.BuildPlan(config, rules));
+
+        Assert.Equal("GRID_PRICE_NON_POSITIVE", error.Code);
+        Assert.Contains("Reduce the level count", error.Message);
+    }
+
+    [Theory]
+    [InlineData("-100", "0", false)]
+    [InlineData("-100", "100", true)]
+    [InlineData("-99.99", "100", false)]
+    public void ZeroBasketStopLossIsDisabled(string pnl, string limit, bool expected) =>
+        Assert.Equal(expected, GridMath.BasketStopLossTriggered(decimal.Parse(pnl), decimal.Parse(limit)));
 
     [Fact]
     public void ExposureReservationReducesFinalBuyOrder()

@@ -20,9 +20,11 @@ public static class HyperliquidEndpoints
             Results.Ok(await market.GetCandlesAsync(symbol, interval ?? "1m", limit ?? 180, ct)));
         api.MapGet("/accounts/{id}/state", async (string id, string? symbol, HyperliquidMarketDataClient market, CancellationToken ct) =>
             Results.Ok(await market.GetAccountStateAsync(id, symbol ?? "SOLUSDT", ct)));
-        api.MapGet("/accounts/{id}/open-orders", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
+        api.MapGet("/accounts/{id}/open-orders", async (string id, HyperliquidTradingClient client,
+            HyperliquidOrderOwnershipService ownership, CancellationToken ct) =>
         {
-            using var orders = await client.GetFrontendOpenOrdersAsync(id, ct); return Results.Text(orders.RootElement.GetRawText(), "application/json");
+            using var orders = await client.GetFrontendOpenOrdersAsync(id, ct);
+            return Results.Json(await ownership.AnnotateOpenOrdersAsync(id, orders.RootElement, ct));
         });
         api.MapGet("/accounts/{id}/clearinghouse-state", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
         {
@@ -32,9 +34,11 @@ public static class HyperliquidEndpoints
         {
             using var state = await client.GetSpotClearinghouseStateAsync(id, ct); return Results.Text(state.RootElement.GetRawText(), "application/json");
         });
-        api.MapGet("/accounts/{id}/order-history", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
+        api.MapGet("/accounts/{id}/order-history", async (string id, HyperliquidTradingClient client,
+            HyperliquidOrderOwnershipService ownership, CancellationToken ct) =>
         {
-            using var orders = await client.GetHistoricalOrdersAsync(id, ct); return Results.Text(orders.RootElement.GetRawText(), "application/json");
+            using var orders = await client.GetHistoricalOrdersAsync(id, ct);
+            return Results.Json(await ownership.AnnotateHistoricalOrdersAsync(id, orders.RootElement, ct));
         });
     }
 }

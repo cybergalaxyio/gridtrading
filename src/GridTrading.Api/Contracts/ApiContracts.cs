@@ -3,7 +3,7 @@ using GridTrading.Domain;
 namespace GridTrading.Api.Contracts;
 
 public sealed record StrategyRequest(
-    string Name, string ExchangeAccountId, string Symbol, string PositionMode, string CenterSuggestionMode,
+    string Name, string ExchangeAccountId, string Symbol, GridMode GridMode, string CenterSuggestionMode,
     bool AutoRestart, int MaxLevelsPerSide, int WorkingEntriesPerSide, decimal InitialGapPoints,
     decimal GridSpacingPoints, decimal GridSpacingStepPoints, decimal TakeProfitPoints, decimal BaseLotSize,
     decimal LotSizeIncreasePercent, decimal MaxTradeLot, decimal MaxNetLot, decimal BasketTakeProfitUsdt,
@@ -13,7 +13,7 @@ public sealed record StrategyRequest(
 {
     public GridConfiguration ToConfiguration(decimal centerPrice = 0m) => new()
     {
-        Symbol = Symbol, CenterPrice = centerPrice, MaxLevelsPerSide = MaxLevelsPerSide,
+        Symbol = Symbol, GridMode = GridMode, CenterPrice = centerPrice, MaxLevelsPerSide = MaxLevelsPerSide,
         WorkingEntriesPerSide = WorkingEntriesPerSide, InitialGapPoints = InitialGapPoints,
         GridSpacingPoints = GridSpacingPoints, GridSpacingStepPoints = GridSpacingStepPoints,
         TakeProfitPoints = TakeProfitPoints, BaseLotSize = BaseLotSize,
@@ -28,13 +28,13 @@ public sealed record StrategyRequest(
     };
 
     public static StrategyRequest Default => new(
-        "Weekend SOL Grid", "acct_paper_01", "SOLUSDT", "ONE_WAY", "CURRENT_MID", false,
+        "Weekend SOL Grid", "acct_paper_01", "SOLUSDT", GridMode.TwoWay, "CURRENT_MID", false,
         14, 1, 0m, 250m, 10m, 180m, 0.5m, 5m, 2m, 10m, 50m, 100m,
         .0002m, .00055m, .10m, true, true, true, 10, 5, 10, 5);
 }
 
 public sealed record CandidateConfiguration(
-    string ExchangeAccountId, string Symbol, int MaxLevelsPerSide, int WorkingEntriesPerSide,
+    string ExchangeAccountId, string Symbol, GridMode GridMode, int MaxLevelsPerSide, int WorkingEntriesPerSide,
     decimal InitialGapPoints, decimal GridSpacingPoints, decimal GridSpacingStepPoints,
     decimal TakeProfitPoints, decimal BaseLotSize, decimal LotSizeIncreasePercent,
     decimal MaxTradeLot, decimal MaxNetLot);

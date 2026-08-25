@@ -51,13 +51,13 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   const state = cycle?.state ?? 'WAITING_FOR_OPERATOR'
   return <div className="dashboard-page">
     <section className="instrument-bar">
-      <div><h1>SOLUSDT 永续 <span className="mono">{format(mid, 3)}</span> <em>+0.82%</em></h1>
-        <p>Strategy: {strategy?.name ?? '尚未创建'} <b className={`state ${state.toLowerCase()}`}>{state}</b> <span>{strategy?.exchangeAccountId === 'acct_paper_01' ? 'Paper' : 'Hyperliquid Testnet'} · 单向 · 1x | 上次同步 {snapshot ? '刚刚' : '—'}</span></p></div>
+      <div><h1>SOL-USDC 永续 <span className="mono">{format(mid, 3)}</span> <em>+0.82%</em></h1>
+        <p>Strategy: {strategy?.name ?? '尚未创建'} <b className={`state ${state.toLowerCase()}`}>{state}</b> <span>{strategy?.exchangeAccountId === 'acct_paper_01' ? 'Paper' : 'Hyperliquid Testnet'} · {gridModeLabel(strategy)} · 1x | 上次同步 {snapshot ? '刚刚' : '—'}</span></p></div>
       <div className="control-buttons">
         {!cycle && <button className="primary" disabled={!strategy || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : '确认预览并开启'}</button>}
         {cycle?.state === 'RUNNING' && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>暂停 Entry</button>}
         {cycle?.state === 'PAUSED' && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', '已按固定中心恢复 Entry')}>继续</button>}
-        {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', '人工对账完成')}>对账</button>}
+        {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
         {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>关闭 Cycle</button>}
       </div>
     </section>
@@ -68,12 +68,12 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
       </section>
       <aside className="metric-stack">
         <MetricCard title="策略摘要" rows={[
-          ['固定中心', snapshot ? format(snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${strategy.configuration.maxLevelsPerSide * 2} 层` : '—'],
+          ['固定中心', snapshot ? format(snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${plannedLevelCount(strategy)} 层` : '—'],
           ['Entry / TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'], ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
         ]} />
         <MetricCard title="账户与持仓" rows={[
-          ['权益', strategy?.exchangeAccountId === 'acct_paper_01' ? '13,420.50 USDT' : '见 Testnet 设置'], ['可用余额', strategy?.exchangeAccountId === 'acct_paper_01' ? '8,420.00 USDT' : '以交易所为准'], ['净仓位', snapshot ? `${signed(snapshot.position.actualNetQuantity)} SOL` : '0 SOL'],
-          ['MaxNetLot 使用', snapshot ? `${format(snapshot.position.absoluteMaxNetLotUsagePct, 1)}%` : '0%'], ['对账', snapshot?.health.reconciliation ?? 'IN_SYNC'],
+          ['权益', strategy?.exchangeAccountId === 'acct_paper_01' ? '13,420.50 USDC' : '见 Testnet 设置'], ['可用余额', strategy?.exchangeAccountId === 'acct_paper_01' ? '8,420.00 USDC' : '以交易所为准'], ['净仓位', snapshot ? `${signed(snapshot.position.actualNetQuantity)} SOL` : '0 SOL'],
+          ['MaxNetLot 使用', snapshot ? `${format(snapshot.position.absoluteMaxNetLotUsagePct, 1)}%` : '0%'], ['Sync', snapshot?.health.reconciliation ?? 'IN_SYNC'],
         ]} />
         <MetricCard title="Basket 清算盈亏" rows={[
           ['浮动', snapshot ? signed(snapshot.basketPnl.unrealisedAtExecutablePrice) : '+0.00'], ['已实现', snapshot ? signed(snapshot.basketPnl.realisedCyclePnl) : '+0.00'],
@@ -98,3 +98,5 @@ function MetricCard({ title, rows, accent }: { title: string; rows: [string, str
 export function Empty({ text }: { text: string }) { return <div className="empty"><span>◇</span>{text}</div> }
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
+function plannedLevelCount(strategy: Strategy) { const config = strategy.activeCycle?.frozenConfiguration ?? strategy.configuration; return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }
+function gridModeLabel(strategy?: Strategy) { const mode = (strategy?.activeCycle?.frozenConfiguration ?? strategy?.configuration)?.gridMode ?? 'TWO_WAY'; return mode === 'BUY_ONLY' ? 'Buy Only' : mode === 'SELL_ONLY' ? 'Sell Only' : 'Two-Way' }

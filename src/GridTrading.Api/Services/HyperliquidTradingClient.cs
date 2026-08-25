@@ -5,10 +5,64 @@ using GridTrading.Api.Exchange;
 using Microsoft.EntityFrameworkCore;
 
 namespace GridTrading.Api.Services;
+
+public sealed record HyperliquidPositionSnapshot(decimal Quantity, decimal PositionValue, decimal UnrealizedPnl);
 public sealed record HyperliquidOrderResult(string Status, string? ExchangeOrderId, string Cloid, string? Error);
-public sealed record HyperliquidPreflight(bool AgentApproved, decimal NetPosition, int OpenOrderCount, decimal AccountValue,
+public sealed record HyperliquidPreflight(bool AgentApproved, decimal NetPosition, int OpenOrderCount,
+    decimal TradingEquity, decimal AvailableBalance, decimal PerpAccountValue, string AccountMode,
     string AgentRole, DateTimeOffset AsOf);
 public sealed record HyperliquidBook(decimal Bid, decimal Ask, decimal Mid, DateTimeOffset AsOf);
+public sealed record HyperliquidTradingFunds(string AccountMode, decimal TradingEquity, decimal AvailableBalance,
+    decimal PerpAccountValue);
+
+public static class HyperliquidAccountFunds
+{
+    public static HyperliquidTradingFunds Resolve(JsonElement abstraction, JsonElement perpState, JsonElement spotState)
+    {
+        var accountMode = AccountMode(abstraction);
+        var perpAccountValue = PropertyDecimal(perpState, "marginSummary", "accountValue");
+        var perpWithdrawable = PropertyDecimal(perpState, "withdrawable");
+        var usesUnifiedBalance = accountMode is "unifiedAccount" or "portfolioMargin";
+        if (!usesUnifiedBalance)
+            return new(accountMode, perpAccountValue, Math.Max(0m, perpWithdrawable), perpAccountValue);
+
+        var total = 0m;
+        var hold = 0m;
+        if (spotState.TryGetProperty("balances", out var balances) && balances.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var balance in balances.EnumerateArray())
+            {
+                if (!balance.TryGetProperty("coin", out var coin) ||
+                    !string.Equals(coin.GetString(), "USDC", StringComparison.OrdinalIgnoreCase)) continue;
+                total = PropertyDecimal(balance, "total");
+                hold = PropertyDecimal(balance, "hold");
+                break;
+            }
+        }
+        return new(accountMode, total, Math.Max(0m, total - hold), perpAccountValue);
+    }
+
+    private static string AccountMode(JsonElement abstraction)
+    {
+        if (abstraction.ValueKind == JsonValueKind.String)
+            return abstraction.GetString() ?? "disabled";
+        if (abstraction.ValueKind == JsonValueKind.Object &&
+            abstraction.TryGetProperty("abstraction", out var value) && value.ValueKind == JsonValueKind.String)
+            return value.GetString() ?? "disabled";
+        return "disabled";
+    }
+
+    private static decimal PropertyDecimal(JsonElement root, string property) =>
+        root.TryGetProperty(property, out var value) ? Decimal(value) : 0m;
+
+    private static decimal PropertyDecimal(JsonElement root, string parent, string property) =>
+        root.TryGetProperty(parent, out var nested) ? PropertyDecimal(nested, property) : 0m;
+
+    private static decimal Decimal(JsonElement value) =>
+        decimal.TryParse(value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString(),
+            System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+            ? parsed : 0m;
+}
 
 public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration configuration, TradingDbContext db,
     CredentialProtector protector, HyperliquidNonceManager nonces, HyperliquidL1Signer signer)
@@ -25,6 +79,8 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
             role.RootElement.TryGetProperty("data", out var roleData) && roleData.TryGetProperty("user", out var approvedUser) &&
             string.Equals(approvedUser.GetString(), account.AccountAddress, StringComparison.OrdinalIgnoreCase);
         using var state = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct);
+        using var spotState = await PostInfo(new { type = "spotClearinghouseState", user = account.AccountAddress }, ct);
+        using var abstraction = await PostInfo(new { type = "userAbstraction", user = account.AccountAddress }, ct);
         using var orders = await PostInfo(new { type = "openOrders", user = account.AccountAddress }, ct);
         var net = 0m;
         if (state.RootElement.TryGetProperty("assetPositions", out var positions))
@@ -36,20 +92,21 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
                 net += ParseDecimal(position.GetProperty("szi"));
             }
         }
-        var accountValue = state.RootElement.TryGetProperty("marginSummary", out var summary) && summary.TryGetProperty("accountValue", out var value) ? ParseDecimal(value) : 0m;
+        var funds = HyperliquidAccountFunds.Resolve(abstraction.RootElement, state.RootElement, spotState.RootElement);
         var count = orders.RootElement.ValueKind == JsonValueKind.Array
             ? orders.RootElement.EnumerateArray().Count(x => symbol is null || x.GetProperty("coin").GetString()!.Equals(ToCoin(symbol), StringComparison.OrdinalIgnoreCase)) : 0;
-        return new HyperliquidPreflight(approved, net, count, accountValue, roleName, DateTimeOffset.UtcNow);
+        return new HyperliquidPreflight(approved, net, count, funds.TradingEquity, funds.AvailableBalance,
+            funds.PerpAccountValue, funds.AccountMode, roleName, DateTimeOffset.UtcNow);
     }
 
     public async Task<HyperliquidOrderResult> PlaceLimitAsync(string accountId, string symbol, bool isBuy, decimal price,
-        decimal size, bool postOnly, bool reduceOnly, string stableClientOrderId, CancellationToken ct, bool immediateOrCancel = false)
+        decimal size, bool postOnly, string stableClientOrderId, CancellationToken ct, bool immediateOrCancel = false)
     {
         var account = await Account(accountId, ct);
         var (asset, sizeDecimals) = await ResolveAsset(symbol, ct);
         var cloid = HyperliquidWireCodec.CreateCloid(stableClientOrderId);
         var order = new HyperliquidLimitOrder(asset, isBuy, HyperliquidWireCodec.PriceToWire(price, sizeDecimals),
-            HyperliquidWireCodec.SizeToWire(size, sizeDecimals), reduceOnly, immediateOrCancel ? "Ioc" : postOnly ? "Alo" : "Gtc", cloid);
+            HyperliquidWireCodec.SizeToWire(size, sizeDecimals), false, immediateOrCancel ? "Ioc" : postOnly ? "Alo" : "Gtc", cloid);
         var actionBytes = HyperliquidWireCodec.PackOrderAction([order]);
         var action = new Dictionary<string, object>
         {
@@ -116,18 +173,22 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
             : 0;
     }
 
-    public async Task<decimal> GetPositionAsync(string accountId, string symbol, CancellationToken ct)
+    public async Task<decimal> GetPositionAsync(string accountId, string symbol, CancellationToken ct) =>
+        (await GetPositionSnapshotAsync(accountId, symbol, ct)).Quantity;
+
+    public async Task<HyperliquidPositionSnapshot> GetPositionSnapshotAsync(string accountId, string symbol, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
         using var state = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct);
-        if (!state.RootElement.TryGetProperty("assetPositions", out var positions)) return 0m;
+        if (!state.RootElement.TryGetProperty("assetPositions", out var positions)) return new(0m, 0m, 0m);
         foreach (var item in positions.EnumerateArray())
         {
             var position = item.GetProperty("position");
             if (position.GetProperty("coin").GetString()!.Equals(ToCoin(symbol), StringComparison.OrdinalIgnoreCase))
-                return ParseDecimal(position.GetProperty("szi"));
+                return new(ParseDecimal(position.GetProperty("szi")),
+                    ParseDecimal(position.GetProperty("positionValue")), ParseDecimal(position.GetProperty("unrealizedPnl")));
         }
-        return 0m;
+        return new(0m, 0m, 0m);
     }
 
     public async Task<HyperliquidBook> GetBookAsync(string symbol, CancellationToken ct)
@@ -144,11 +205,24 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         using var result = await Send(account, action, bytes, ct);
         EnsureOk(result.RootElement, "order");
         var statuses = result.RootElement.GetProperty("response").GetProperty("data").GetProperty("statuses");
-        var first = statuses[0];
-        if (first.TryGetProperty("error", out var error)) return new HyperliquidOrderResult("REJECTED", null, cloid, error.GetString());
-        if (first.TryGetProperty("resting", out var resting)) return new HyperliquidOrderResult("RESTING", resting.GetProperty("oid").ToString(), cloid, null);
-        if (first.TryGetProperty("filled", out var filled)) return new HyperliquidOrderResult("FILLED", filled.TryGetProperty("oid", out var oid) ? oid.ToString() : null, cloid, null);
-        return new HyperliquidOrderResult("UNKNOWN", null, cloid, first.ToString());
+        return ParseOrderStatus(statuses[0], cloid);
+    }
+
+    public static HyperliquidOrderResult ParseOrderStatus(JsonElement status, string cloid)
+    {
+        if (status.ValueKind == JsonValueKind.String)
+        {
+            var value = status.GetString();
+            if (value is "waitingForFill" or "waitingForTrigger")
+                return new HyperliquidOrderResult("WAITING", null, cloid, null);
+            return new HyperliquidOrderResult("UNKNOWN", null, cloid, value);
+        }
+        if (status.ValueKind != JsonValueKind.Object)
+            return new HyperliquidOrderResult("UNKNOWN", null, cloid, status.ToString());
+        if (status.TryGetProperty("error", out var error)) return new HyperliquidOrderResult("REJECTED", null, cloid, error.GetString());
+        if (status.TryGetProperty("resting", out var resting)) return new HyperliquidOrderResult("RESTING", resting.GetProperty("oid").ToString(), cloid, null);
+        if (status.TryGetProperty("filled", out var filled)) return new HyperliquidOrderResult("FILLED", filled.TryGetProperty("oid", out var oid) ? oid.ToString() : null, cloid, null);
+        return new HyperliquidOrderResult("UNKNOWN", null, cloid, status.ToString());
     }
 
     private async Task<JsonDocument> Send(HyperliquidAccountEntity account, object action, byte[] actionBytes, CancellationToken ct)

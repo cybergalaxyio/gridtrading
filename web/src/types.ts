@@ -1,18 +1,21 @@
 export type StrategyConfig = {
-  name: string; exchangeAccountId: string; symbol: string; positionMode: 'ONE_WAY';
-  centerSuggestionMode: 'CURRENT_MID' | 'VWAP_EMA' | 'MANUAL'; autoRestart: false;
+  name: string; exchangeAccountId: string; symbol: string; gridMode: 'BUY_ONLY' | 'SELL_ONLY' | 'TWO_WAY';
+  centerSuggestionMode: 'CURRENT_MID' | 'VWAP_EMA' | 'MANUAL'; autoRestart: boolean;
   maxLevelsPerSide: number; workingEntriesPerSide: number; initialGapPoints: string;
   gridSpacingPoints: string; gridSpacingStepPoints: string; takeProfitPoints: string;
   baseLotSize: string; lotSizeIncreasePercent: string; maxTradeLot: string; maxNetLot: string;
   basketTakeProfitUsdt: string; basketStopLossUsdt: string; makerFeeRate: string;
-  takerFeeRate: string; estimatedExitSlippagePct: string; includeFunding: true;
+  takerFeeRate: string; estimatedExitSlippagePct: string; includeFunding: boolean;
   postOnlyEntries: boolean; postOnlyTakeProfits: boolean; reconcileIntervalSeconds: number;
   marketDataStaleSeconds: number; orderCommandTimeoutSeconds: number; maxOrderFrequency: number;
+  tickSize?: string; quantityStep?: string; minOrderQuantity?: string; minOrderNotional?: string;
+  maxActiveOrders?: number; sizeDecimals?: number | null;
 }
 
 export type Cycle = {
   cycleId: string; strategyId: string; state: string; stateVersion: number; isTerminal: boolean;
   operatorResetRequired: boolean; fixedCenterPrice: string; startedAt: string; endedAt?: string;
+  frozenConfiguration?: StrategyConfig | null;
 }
 
 export type Strategy = {
@@ -44,11 +47,17 @@ export type Snapshot = {
 }
 
 export type HyperliquidAccount = { accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
-export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }
+export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountMode: string; tradingEquity: string; availableBalance: string; perpAccountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }
 export type HyperliquidBook = { bid: string; ask: string; mid: string; asOf: string }
 export type HyperliquidAccountState = { accountId: string; symbol: string; accountValue: string; withdrawable: string; totalMarginUsed: string; netPosition: string; unrealizedPnl: string; entryPrice?: string | null; asOf: string }
 export type HyperliquidInstrument = { assetIndex: number; symbol: string; sizeDecimals: number; isDelisted: boolean }
 export type HyperliquidInstruments = { exchange: "HYPERLIQUID"; environment: "TESTNET"; tradingEnabled: boolean; asOf: string; universe: HyperliquidInstrument[] }
+export type ExchangeInstrumentRules = {
+  symbol: string; environment: 'PAPER' | 'TESTNET'; assetIndex: number; sizeDecimals: number;
+  referencePrice: string; tickSize: string; quantityStep: string; minOrderQuantity: string;
+  minOrderNotional: string; maxActiveOrders: number; makerFeeRate: string; takerFeeRate: string;
+  feeSource: string; asOf: string;
+}
 export type HyperliquidMarginSummary = { accountValue: string; totalNtlPos: string; totalRawUsd: string; totalMarginUsed: string }
 export type HyperliquidPosition = {
   coin: string; szi: string; entryPx?: string | null; positionValue: string; unrealizedPnl: string; returnOnEquity: string;
@@ -61,11 +70,15 @@ export type HyperliquidClearinghouseState = {
 }
 export type HyperliquidSpotBalance = { coin: string; token: number; hold: string; total: string; entryNtl: string }
 export type HyperliquidSpotClearinghouseState = { balances: HyperliquidSpotBalance[] }
-export type HyperliquidOpenOrder = {
-  coin: string; side: 'A' | 'B'; limitPx: string; sz: string; origSz: string; oid: number; timestamp: number;
-  orderType: string; reduceOnly: boolean; isTrigger: boolean; isPositionTpsl: boolean; triggerPx: string; triggerCondition: string;
+export type HyperliquidOrderAttribution = {
+  orderSource: 'STRATEGY' | 'EXTERNAL'; strategyId?: string | null; strategyName?: string | null;
+  cycleId?: string | null; localOrderId?: string | null;
 }
-export type HyperliquidHistoricalOrder = {
+export type HyperliquidOpenOrder = HyperliquidOrderAttribution & {
+  coin: string; side: 'A' | 'B'; limitPx: string; sz: string; origSz: string; oid: number; timestamp: number;
+  orderType: string; reduceOnly: boolean; isTrigger: boolean; isPositionTpsl: boolean; triggerPx: string; triggerCondition: string; cloid?: string | null;
+}
+export type HyperliquidHistoricalOrder = HyperliquidOrderAttribution & {
   order: {
     coin: string; side: 'A' | 'B'; limitPx: string; sz: string; origSz: string; oid: number; timestamp: number;
     orderType?: string; reduceOnly?: boolean; isTrigger?: boolean; triggerPx?: string; cloid?: string | null;

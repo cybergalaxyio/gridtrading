@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder } from './types'
+import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -21,8 +21,10 @@ export const api = {
   testnetSpotClearinghouseState: (id: string) => call<HyperliquidSpotClearinghouseState>(`/hyperliquid-testnet/accounts/${id}/spot-clearinghouse-state`),
   testnetOpenOrders: (id: string) => call<HyperliquidOpenOrder[]>(`/hyperliquid-testnet/accounts/${id}/open-orders`),
   testnetOrderHistory: (id: string) => call<HyperliquidHistoricalOrder[]>(`/hyperliquid-testnet/accounts/${id}/order-history`),
+  instrumentRules: (accountId: string, symbol: string, referencePrice?: string) => call<ExchangeInstrumentRules>(`/exchange-accounts/${encodeURIComponent(accountId)}/instruments/${encodeURIComponent(symbol)}${referencePrice ? `?referencePrice=${encodeURIComponent(referencePrice)}` : ''}`),
   strategies: () => call<Strategy[]>('/strategies'),
   createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  updateStrategy: (strategyId: string, body: StrategyConfig) => call<Strategy>(`/strategies/${encodeURIComponent(strategyId)}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   activeCycle: (strategyId: string) => call(`/strategies/${strategyId}/active-cycle`),
   candles: () => call<Candle[]>('/market-data/acct_paper_01/SOLUSDT/candles'),
   snapshot: (cycleId: string) => call<Snapshot>(`/cycles/${cycleId}/snapshot`),
@@ -35,7 +37,7 @@ export const api = {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({
       strategyId: null, confirmedCenterPrice: center, parameterOverrides: null,
       candidateConfiguration: {
-        exchangeAccountId: config.exchangeAccountId, symbol: config.symbol, maxLevelsPerSide: config.maxLevelsPerSide,
+        exchangeAccountId: config.exchangeAccountId, symbol: config.symbol, gridMode: config.gridMode, maxLevelsPerSide: config.maxLevelsPerSide,
         workingEntriesPerSide: config.workingEntriesPerSide, initialGapPoints: config.initialGapPoints,
         gridSpacingPoints: config.gridSpacingPoints, gridSpacingStepPoints: config.gridSpacingStepPoints,
         takeProfitPoints: config.takeProfitPoints, baseLotSize: config.baseLotSize,
@@ -55,7 +57,7 @@ export const api = {
 }
 
 export const defaultConfig: StrategyConfig = {
-  name: 'Weekend SOL Grid', exchangeAccountId: 'acct_paper_01', symbol: 'SOLUSDT', positionMode: 'ONE_WAY',
+  name: 'Weekend SOL Grid', exchangeAccountId: 'acct_paper_01', symbol: 'SOLUSDT', gridMode: 'TWO_WAY',
   centerSuggestionMode: 'CURRENT_MID', autoRestart: false, maxLevelsPerSide: 14, workingEntriesPerSide: 1,
   initialGapPoints: '0', gridSpacingPoints: '250', gridSpacingStepPoints: '10', takeProfitPoints: '180',
   baseLotSize: '0.5', lotSizeIncreasePercent: '5', maxTradeLot: '2', maxNetLot: '10',

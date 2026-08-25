@@ -11,7 +11,9 @@ public static class GridMath
 
         var buyPrice = RoundDown(config.CenterPrice - initialGap, rules.TickSize);
         var sellPrice = RoundUp(config.CenterPrice + initialGap, rules.TickSize);
-        var levels = new List<GridLevel>(config.MaxLevelsPerSide * 2);
+        var includeBuy = config.GridMode != GridMode.SellOnly;
+        var includeSell = config.GridMode != GridMode.BuyOnly;
+        var levels = new List<GridLevel>(config.MaxLevelsPerSide * (config.GridMode == GridMode.TwoWay ? 2 : 1));
         decimal buyQty = 0m, sellQty = 0m, buyNotional = 0m, sellNotional = 0m;
 
         for (var i = 0; i < config.MaxLevelsPerSide; i++)
@@ -24,30 +26,44 @@ public static class GridMath
             }
 
             var quantity = PlannedQuantity(config, rules, i);
+            if ((includeBuy && buyPrice <= 0m) || (includeSell && sellPrice <= 0m))
+            {
+                var side = includeBuy && buyPrice <= 0m ? "BUY" : "SELL";
+                var price = side == "BUY" ? buyPrice : sellPrice;
+                throw new GridValidationException("GRID_PRICE_NON_POSITIVE",
+                    $"Level {i} {side} price {price} is not positive. Reduce the level count, grid spacing, or spacing step.");
+            }
             if (quantity < rules.MinOrderQuantity)
                 throw new GridValidationException("MIN_ORDER_QUANTITY", $"Level {i} quantity is below the exchange minimum.");
-            if (quantity * buyPrice < rules.MinOrderNotional || quantity * sellPrice < rules.MinOrderNotional)
-                throw new GridValidationException("MIN_ORDER_NOTIONAL", $"Level {i} notional is below the exchange minimum.");
-
-            buyQty += quantity;
-            sellQty += quantity;
             var buyLevelNotional = quantity * buyPrice;
             var sellLevelNotional = quantity * sellPrice;
-            buyNotional += buyLevelNotional;
-            sellNotional += sellLevelNotional;
+            if (includeBuy && buyLevelNotional < rules.MinOrderNotional)
+                throw new GridValidationException("MIN_ORDER_NOTIONAL",
+                    $"Level {i} BUY notional {buyLevelNotional} ({quantity} × {buyPrice}) is below the exchange minimum {rules.MinOrderNotional}.");
+            if (includeSell && sellLevelNotional < rules.MinOrderNotional)
+                throw new GridValidationException("MIN_ORDER_NOTIONAL",
+                    $"Level {i} SELL notional {sellLevelNotional} ({quantity} × {sellPrice}) is below the exchange minimum {rules.MinOrderNotional}.");
 
-            levels.Add(new GridLevel(OrderSide.Buy, i, buyPrice, config.TakeProfitPoints * rules.TickSize,
-                quantity, buyLevelNotional, buyQty, buyNotional));
-            levels.Add(new GridLevel(OrderSide.Sell, i, sellPrice, config.TakeProfitPoints * rules.TickSize,
-                quantity, sellLevelNotional, sellQty, sellNotional));
+            if (includeBuy)
+            {
+                buyQty += quantity; buyNotional += buyLevelNotional;
+                levels.Add(new GridLevel(OrderSide.Buy, i, buyPrice, config.TakeProfitPoints * rules.TickSize,
+                    quantity, buyLevelNotional, buyQty, buyNotional));
+            }
+            if (includeSell)
+            {
+                sellQty += quantity; sellNotional += sellLevelNotional;
+                levels.Add(new GridLevel(OrderSide.Sell, i, sellPrice, config.TakeProfitPoints * rules.TickSize,
+                    quantity, sellLevelNotional, sellQty, sellNotional));
+            }
         }
 
         return new GridPlan(
             config.CenterPrice,
-            buyPrice,
-            sellPrice,
-            (config.CenterPrice - buyPrice) / config.CenterPrice * 100m,
-            (sellPrice - config.CenterPrice) / config.CenterPrice * 100m,
+            includeBuy ? buyPrice : config.CenterPrice,
+            includeSell ? sellPrice : config.CenterPrice,
+            includeBuy ? (config.CenterPrice - buyPrice) / config.CenterPrice * 100m : 0m,
+            includeSell ? (sellPrice - config.CenterPrice) / config.CenterPrice * 100m : 0m,
             levels.OrderBy(x => x.LevelIndex).ThenBy(x => x.Side).ToArray());
     }
 
@@ -65,6 +81,19 @@ public static class GridMath
         return entrySide == OrderSide.Buy
             ? RoundUp(entryFillPrice + distance, tickSize)
             : RoundDown(entryFillPrice - distance, tickSize);
+    }
+
+    public static GridLevel? SelectWorkingEntryLevel(
+        GridPlan plan,
+        OrderSide side,
+        decimal currentPrice,
+        IEnumerable<int> occupiedLevels)
+    {
+        var occupied = occupiedLevels.ToHashSet();
+        var candidates = plan.Levels.Where(x => x.Side == side && !occupied.Contains(x.LevelIndex));
+        return side == OrderSide.Buy
+            ? candidates.Where(x => x.EntryPrice < currentPrice).OrderByDescending(x => x.EntryPrice).FirstOrDefault()
+            : candidates.Where(x => x.EntryPrice > currentPrice).OrderBy(x => x.EntryPrice).FirstOrDefault();
     }
 
     public static decimal AllowedOrderQuantity(
@@ -93,6 +122,9 @@ public static class GridMath
             input.AccruedFunding, input.EstimatedFinalTakerFee, input.EstimatedExitSlippage, liquidation);
     }
 
+    public static bool BasketStopLossTriggered(decimal liquidationPnl, decimal stopLossLimit) =>
+        stopLossLimit > 0m && liquidationPnl <= -stopLossLimit;
+
     public static decimal RoundDown(decimal value, decimal step) => Math.Floor(value / step) * step;
     public static decimal RoundUp(decimal value, decimal step) => Math.Ceiling(value / step) * step;
 
@@ -106,9 +138,10 @@ public static class GridMath
     private static void Validate(GridConfiguration config, InstrumentRules rules)
     {
         if (config.CenterPrice <= 0m) throw new GridValidationException("CENTER_PRICE", "Center price must be positive.");
+        if (!Enum.IsDefined(config.GridMode)) throw new GridValidationException("GRID_MODE", "Grid mode is invalid.");
         if (config.MaxLevelsPerSide is < 1 or > 200) throw new GridValidationException("MAX_LEVELS", "Max levels must be between 1 and 200.");
-        if (config.WorkingEntriesPerSide < 1 || config.WorkingEntriesPerSide > config.MaxLevelsPerSide)
-            throw new GridValidationException("WORKING_ENTRIES", "Working entries must be within the planned level count.");
+        if (config.WorkingEntriesPerSide != 1)
+            throw new GridValidationException("WORKING_ENTRIES", "This grid version maintains exactly one active Entry per side.");
         if (config.GridSpacingPoints <= 0m || config.TakeProfitPoints <= 0m)
             throw new GridValidationException("DISTANCE", "Grid spacing and take profit points must be positive.");
         if (config.BaseLotSize <= 0m || config.MaxNetLot <= 0m)
