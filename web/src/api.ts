@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState } from './types'
+import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -12,6 +12,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   testnetAccounts: () => call<HyperliquidAccount[]>("/hyperliquid-testnet/accounts"),
+  testnetInstruments: () => call<HyperliquidInstruments>("/hyperliquid-testnet/instruments"),
   testnetHealth: (id: string) => call<HyperliquidHealth>(`/hyperliquid-testnet/accounts/${id}/health`),
   testnetBook: (symbol: string) => call<HyperliquidBook>(`/hyperliquid-testnet/market/${symbol}`),
   testnetCandles: (symbol: string, interval = "1m", limit = 180) => call<Candle[]>(`/hyperliquid-testnet/market/${symbol}/candles?interval=${interval}&limit=${limit}`),

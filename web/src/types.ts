@@ -47,3 +47,5 @@ export type HyperliquidAccount = { accountId: string; name: string; exchange: "H
 export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }
 export type HyperliquidBook = { bid: string; ask: string; mid: string; asOf: string }
 export type HyperliquidAccountState = { accountId: string; symbol: string; accountValue: string; withdrawable: string; totalMarginUsed: string; netPosition: string; unrealizedPnl: string; entryPrice?: string | null; asOf: string }
+export type HyperliquidInstrument = { assetIndex: number; symbol: string; sizeDecimals: number; isDelisted: boolean }
+export type HyperliquidInstruments = { exchange: "HYPERLIQUID"; environment: "TESTNET"; tradingEnabled: boolean; asOf: string; universe: HyperliquidInstrument[] }

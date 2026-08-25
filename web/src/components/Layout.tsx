@@ -16,10 +16,16 @@ export function Layout({ route, environment, onRoute, onEmergency, children }: {
 }) {
   const isTestnet = environment === 'TESTNET'
   const [clock, setClock] = useState(new Date())
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('grid.sidebarCollapsed') === 'true')
   useEffect(() => { const timer = setInterval(() => setClock(new Date()), 1000); return () => clearInterval(timer) }, [])
-  return <div className="app-shell">
+  useEffect(() => { localStorage.setItem('grid.sidebarCollapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
+  return <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
     <aside className="sidebar">
       <div className="profile"><div className="avatar">G</div><div><strong>Grid Operator</strong><span>V1.0.0 · {environment}</span></div></div>
+      <button className="sidebar-toggle" type="button" onClick={() => setSidebarCollapsed(value => !value)}
+        aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'} title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}>
+        <Icon name={sidebarCollapsed ? 'expand' : 'collapse'} size={16} />
+      </button>
       <nav>{nav.map(item => <button key={item.route} className={route === item.route || (route === 'create' && item.route === 'strategies') ? 'active' : ''} onClick={() => onRoute(item.route)}>
         <Icon name={item.icon} size={22} /><span>{item.label}</span>{item.route === 'alerts' && <i>2</i>}
       </button>)}</nav>

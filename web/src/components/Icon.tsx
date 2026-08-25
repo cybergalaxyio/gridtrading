@@ -11,6 +11,8 @@ const paths: Record<string, string> = {
   refresh: 'M20 7v5h-5M4 17v-5h5M6.1 8A7 7 0 0 1 18 7l2 5M4 12l2 5a7 7 0 0 0 11.9-1',
   check: 'm5 12 4 4L19 6',
   download: 'M12 3v12m-5-5 5 5 5-5M4 20h16',
+  collapse: 'm15 18-6-6 6-6',
+  expand: 'm9 18 6-6-6-6',
 }
 
 export function Icon({ name, size = 20 }: { name: string; size?: number }) {
