@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace GridTrading.Api.Services;
 
 public sealed class HyperliquidCycleCoordinator(TradingDbContext db, HyperliquidTradingClient client,
-    HyperliquidOrderOwnershipService ownership)
+    HyperliquidOrderOwnershipService ownership, HyperliquidAccountOperationGate accountGate)
 {
     public Task<bool> IsTestnetAsync(string accountId, CancellationToken ct) =>
         db.HyperliquidAccounts.AnyAsync(x => x.Id == accountId && x.Enabled && x.Environment == "TESTNET", ct);
@@ -124,7 +124,10 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
         return after;
     }
 
-    public async Task<decimal> ReconcileAsync(StrategyEntity strategy, CycleEntity cycle, CancellationToken ct)
+    public Task<decimal> ReconcileAsync(StrategyEntity strategy, CycleEntity cycle, CancellationToken ct) =>
+        accountGate.RunAsync(strategy.ExchangeAccountId, () => ReconcileCoreAsync(strategy, cycle, ct), ct);
+
+    private async Task<decimal> ReconcileCoreAsync(StrategyEntity strategy, CycleEntity cycle, CancellationToken ct)
     {
         var config = JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
         using var fills = await client.GetUserFillsAsync(strategy.ExchangeAccountId,
@@ -171,7 +174,51 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
             cycle.PaidFees, config.IncludeFunding ? cycle.AccruedFunding : 0m, estimatedFinalTakerFee, estimatedExitSlippage)).LiquidationPnl;
     }
 
-    private async Task ApplyFillAsync(StrategyEntity strategy, CycleEntity cycle, GridConfiguration config, JsonElement fill, CancellationToken ct)
+    public Task<int> ProcessWebSocketFillsAsync(string accountId, IReadOnlyList<JsonElement> fills, CancellationToken ct) =>
+        accountGate.RunAsync(accountId, () => ProcessWebSocketFillsCoreAsync(accountId, fills, ct), ct);
+
+    private async Task<int> ProcessWebSocketFillsCoreAsync(string accountId, IReadOnlyList<JsonElement> fills, CancellationToken ct)
+    {
+        var processed = 0;
+        var affected = new Dictionary<string, (StrategyEntity Strategy, CycleEntity Cycle, GridConfiguration Config)>();
+        foreach (var fill in fills.OrderBy(ReadTime))
+        {
+            var match = await FindTrackedFillOwnerAsync(accountId, fill, ct);
+            if (match is null) continue;
+            var config = JsonSerializer.Deserialize<GridConfiguration>(match.Value.Cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+            if (!await ApplyFillAsync(match.Value.Strategy, match.Value.Cycle, config, fill, ct)) continue;
+            processed++;
+            affected[match.Value.Cycle.Id] = (match.Value.Strategy, match.Value.Cycle, config);
+        }
+
+        foreach (var item in affected.Values.Where(x => x.Cycle.State == "RUNNING"))
+            await MaintainEntryOrdersAsync(item.Strategy, item.Cycle, item.Config, book: null, ct);
+        return processed;
+    }
+
+    private async Task<(StrategyEntity Strategy, CycleEntity Cycle)?> FindTrackedFillOwnerAsync(
+        string accountId, JsonElement fill, CancellationToken ct)
+    {
+        var oid = ReadString(fill, "oid");
+        var match = await (from order in db.Orders
+                           join cycle in db.Cycles on order.CycleId equals cycle.Id
+                           join strategy in db.Strategies on cycle.StrategyId equals strategy.Id
+                           where strategy.ExchangeAccountId == accountId && !cycle.IsTerminal && order.ExchangeOrderId == oid
+                           select new { Strategy = strategy, Cycle = cycle }).FirstOrDefaultAsync(ct);
+        if (match is not null) return (match.Strategy, match.Cycle);
+
+        if (!fill.TryGetProperty("cloid", out var cloid) || cloid.ValueKind != JsonValueKind.String) return null;
+        var value = cloid.GetString();
+        var candidates = await (from order in db.Orders
+                                join cycle in db.Cycles on order.CycleId equals cycle.Id
+                                join strategy in db.Strategies on cycle.StrategyId equals strategy.Id
+                                where strategy.ExchangeAccountId == accountId && !cycle.IsTerminal
+                                select new { Strategy = strategy, Cycle = cycle, order.ClientOrderId }).ToListAsync(ct);
+        var candidate = candidates.FirstOrDefault(x => Exchange.HyperliquidWireCodec.CreateCloid(x.ClientOrderId) == value);
+        return candidate is null ? null : (candidate.Strategy, candidate.Cycle);
+    }
+
+    private async Task<bool> ApplyFillAsync(StrategyEntity strategy, CycleEntity cycle, GridConfiguration config, JsonElement fill, CancellationToken ct)
     {
         var oid = fill.GetProperty("oid").ToString();
         var order = await db.Orders.SingleOrDefaultAsync(x => x.CycleId == cycle.Id && x.ExchangeOrderId == oid, ct);
@@ -182,9 +229,9 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
                 .SingleOrDefault(x => Exchange.HyperliquidWireCodec.CreateCloid(x.ClientOrderId) == value);
             if (order is not null) order.ExchangeOrderId = oid;
         }
-        if (order is null) return;
+        if (order is null) return false;
         var executionKey = $"hl:{fill.GetProperty("hash").GetString()}:{oid}:{ReadTime(fill)}:{ReadString(fill, "tid")}";
-        if (await db.Executions.AnyAsync(x => x.ExchangeExecutionId == executionKey, ct)) return;
+        if (await db.Executions.AnyAsync(x => x.ExchangeExecutionId == executionKey, ct)) return false;
         var quantity = ReadDecimal(fill, "sz"); var price = ReadDecimal(fill, "px"); var fee = Math.Abs(ReadDecimal(fill, "fee"));
         var side = ReadString(fill, "side") == "B" ? "BUY" : "SELL";
         var execution = new ExecutionEntity
@@ -198,11 +245,13 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
         order.Status = order.FilledQuantity >= order.Quantity ? "FILLED" : "PARTIALLY_FILLED";
         order.UpdatedAt = DateTimeOffset.UtcNow;
         cycle.PaidFees += fee;
+        cycle.ActualNetQuantity += side == "BUY" ? quantity : -quantity;
         cycle.ReconstructedNetQuantity += side == "BUY" ? quantity : -quantity;
 
         if (order.Kind == "ENTRY") await CreateTakeProfitAsync(strategy, cycle, config, order, execution, ct);
         else if (order.Kind == "TAKE_PROFIT") await CloseLotAsync(cycle, order, execution, ct);
         await db.SaveChangesAsync(ct);
+        return true;
     }
 
     private async Task CreateTakeProfitAsync(StrategyEntity strategy, CycleEntity cycle, GridConfiguration config, OrderEntity entry,

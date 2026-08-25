@@ -1,15 +1,103 @@
 using GridTrading.Api.Data;
 using GridTrading.Api.Exchange;
+using GridTrading.Api.Hubs;
 using GridTrading.Api.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using System.Text;
 using System.Text.Json;
 
 namespace GridTrading.Api.Tests;
 
 public sealed class HyperliquidSafetyTests
 {
+    [Fact]
+    public void UserFillsSubscriptionUsesOfficialWebSocketShape()
+    {
+        using var subscription = JsonDocument.Parse(
+            Encoding.UTF8.GetString(HyperliquidWebSocketProtocol.SubscribeUserFills("0xabc")));
+
+        Assert.Equal("subscribe", subscription.RootElement.GetProperty("method").GetString());
+        var details = subscription.RootElement.GetProperty("subscription");
+        Assert.Equal("userFills", details.GetProperty("type").GetString());
+        Assert.Equal("0xabc", details.GetProperty("user").GetString());
+        Assert.False(details.GetProperty("aggregateByTime").GetBoolean());
+    }
+
+    [Fact]
+    public void AllMidsSubscriptionAndMessageUseOfficialWebSocketShape()
+    {
+        using var subscription = JsonDocument.Parse(
+            Encoding.UTF8.GetString(HyperliquidWebSocketProtocol.SubscribeAllMids()));
+        Assert.Equal("allMids",
+            subscription.RootElement.GetProperty("subscription").GetProperty("type").GetString());
+
+        using var message = JsonDocument.Parse("""
+            { "channel": "allMids", "data": { "mids": { "SOL": "98.343", "BTC": "123456.0" } } }
+            """);
+        var recognized = HyperliquidWebSocketProtocol.TryReadAllMids(message.RootElement, out var update);
+
+        Assert.True(recognized);
+        Assert.NotNull(update);
+        Assert.Equal("98.343", update.Mids["SOL"]);
+        Assert.Equal("123456.0", update.Mids["BTC"]);
+    }
+
+    [Fact]
+    public void MarketSubscriptionsTrackOnlySymbolsSelectedByConnectedClients()
+    {
+        var registry = new HyperliquidMarketSubscriptionRegistry();
+        registry.Subscribe("connection-a", "SOL-USDC");
+        registry.Subscribe("connection-b", "BTC");
+        registry.Subscribe("connection-b", "SOL");
+
+        Assert.Equal(["BTC", "SOL"], registry.ActiveSymbols().Order().ToArray());
+
+        registry.Unsubscribe("connection-a", "SOL");
+        Assert.Contains("SOL", registry.ActiveSymbols());
+        registry.RemoveConnection("connection-b");
+        Assert.Empty(registry.ActiveSymbols());
+    }
+
+    [Fact]
+    public void UserFillsMessagePreservesSnapshotAndFillPayload()
+    {
+        using var message = JsonDocument.Parse("""
+            {
+              "channel": "userFills",
+              "data": {
+                "user": "0xabc",
+                "isSnapshot": true,
+                "fills": [{
+                  "coin": "SOL", "px": "98.31", "sz": "0.2", "side": "B",
+                  "time": 1787695200000, "hash": "0xfeed", "oid": 58500486622,
+                  "fee": "0.001", "tid": 42
+                }]
+              }
+            }
+            """);
+
+        var recognized = HyperliquidWebSocketProtocol.TryReadUserFills(message.RootElement, out var update);
+
+        Assert.True(recognized);
+        Assert.NotNull(update);
+        Assert.Equal("0xabc", update.User);
+        Assert.True(update.IsSnapshot);
+        var fill = Assert.Single(update.Fills);
+        Assert.Equal("58500486622", fill.GetProperty("oid").ToString());
+        Assert.Equal("B", fill.GetProperty("side").GetString());
+    }
+
+    [Fact]
+    public void NonFillWebSocketMessagesAreIgnored()
+    {
+        using var pong = JsonDocument.Parse("""{ "channel": "pong" }""");
+
+        Assert.False(HyperliquidWebSocketProtocol.TryReadUserFills(pong.RootElement, out var update));
+        Assert.Null(update);
+    }
+
     [Fact]
     public void UnifiedAccountUsesSpotUsdcForTradingEquityAndAvailableBalance()
     {

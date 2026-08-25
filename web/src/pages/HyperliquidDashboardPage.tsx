@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { api } from '../api'
 import { TradingChart } from '../components/TradingChart'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { StrategyParameters } from '../components/StrategyParameters'
-import type { Candle, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
+import type { Candle, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
@@ -34,12 +35,14 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const [marketLoading, setMarketLoading] = useState(false)
   const [instruments, setInstruments] = useState<string[]>([])
   const [instrumentRules, setInstrumentRules] = useState<ExchangeInstrumentRules | null>(null)
+  const [marketStreamConnected, setMarketStreamConnected] = useState(false)
   const [symbol, setSymbol] = useState(() => localStorage.getItem('grid.dashboardSymbol') ?? '')
   const [timeframe, setTimeframe] = useState<Timeframe>(() => {
     const stored = localStorage.getItem('grid.dashboardTimeframe')
     return TIMEFRAMES.includes(stored as Timeframe) ? stored as Timeframe : '1m'
   })
   const refreshSequence = useRef(0)
+  const lastMarketTickAt = useRef(0)
   const marketSymbol = symbol || strategy?.symbol || (isTestnet ? 'SOL' : 'SOLUSDT')
   const strategyMatchesMarket = sameCoin(strategy?.symbol, marketSymbol)
 
@@ -55,6 +58,72 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   useEffect(() => {
     localStorage.setItem('grid.dashboardTimeframe', timeframe)
   }, [timeframe])
+
+  useEffect(() => {
+    lastMarketTickAt.current = 0
+    setMarketStreamConnected(false)
+    if (!isTestnet) return
+
+    let disposed = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    const connection = new HubConnectionBuilder()
+      .withUrl('/hubs/trading')
+      .withAutomaticReconnect([0, 2_000, 5_000, 10_000, 30_000])
+      .configureLogging(LogLevel.Warning)
+      .build()
+
+    const subscribe = async () => {
+      await connection.invoke('SubscribeHyperliquidSymbol', marketSymbol)
+      if (!disposed) setMarketStreamConnected(true)
+    }
+    const scheduleStart = () => {
+      if (disposed || retryTimer) return
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined
+        void start()
+      }, 2_000)
+    }
+    const start = async () => {
+      try {
+        await connection.start()
+        if (disposed) { await connection.stop(); return }
+        await subscribe()
+      } catch {
+        if (!disposed) {
+          setMarketStreamConnected(false)
+          await connection.stop().catch(() => undefined)
+          scheduleStart()
+        }
+      }
+    }
+
+    connection.on('HyperliquidMidPriceUpdated', (tick: HyperliquidMidPriceTick) => {
+      if (disposed || !sameCoin(tick.symbol, marketSymbol) || !Number.isFinite(+tick.mid)) return
+      lastMarketTickAt.current = Date.now()
+      setTestnetMid(tick.mid)
+    })
+    connection.onreconnecting(() => setMarketStreamConnected(false))
+    connection.onreconnected(() => {
+      void subscribe().catch(() => {
+        setMarketStreamConnected(false)
+        void connection.stop()
+      })
+    })
+    connection.onclose(() => {
+      setMarketStreamConnected(false)
+      scheduleStart()
+    })
+    void start()
+
+    return () => {
+      disposed = true
+      if (retryTimer) clearTimeout(retryTimer)
+      setMarketStreamConnected(false)
+      void connection.invoke('UnsubscribeHyperliquidSymbol', marketSymbol)
+        .catch(() => undefined)
+        .finally(() => connection.stop())
+    }
+  }, [isTestnet, marketSymbol])
 
   useEffect(() => {
     if (!isTestnet) { setInstruments(strategy?.symbol ? [strategy.symbol] : ['SOLUSDT']); return }
@@ -127,7 +196,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       ])
       if (sequence !== refreshSequence.current) return
       setCandles(isTestnet ? chart : aggregateCandles(chart, timeframe)); setSnapshot(snap); setOrders(orderRows)
-      setTestnetMid(book?.mid ?? null); setAccountState(actualAccount)
+      if (!isTestnet || Date.now() - lastMarketTickAt.current > 3_000) setTestnetMid(book?.mid ?? null)
+      setAccountState(actualAccount)
     } catch (e) {
       if (sequence === refreshSequence.current) reportError(e instanceof Error ? e.message : '控制台数据加载失败')
     } finally {
@@ -188,7 +258,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         {instruments.map(item => <option key={item} value={item}>{displaySymbol(item, isTestnet)}</option>)}
       </select></label> 永续 <span className="mono">{format(mid, 3)}</span> <em className={change < 0 ? 'negative' : ''}>{change >= 0 ? '+' : ''}{change.toFixed(2)}%</em></h1>
         <p>Strategy: {strategy?.name ?? '尚未创建'} <b className={`state ${state.toLowerCase()}`}>{state}</b>
-          <span>{isTestnet ? 'Hyperliquid Testnet · 官方 API' : 'Paper · 本地模拟'} · {gridModeLabel(strategy)} · 1x | 上次同步 {isTestnet ? time(accountState?.asOf) : snapshot ? '刚刚' : '—'}</span>
+          <span>{isTestnet ? 'Hyperliquid Testnet · 官方 API' : 'Paper · 本地模拟'} · {gridModeLabel(strategy)} · 1x | 上次同步 {isTestnet ? time(accountState?.asOf) : snapshot ? '刚刚' : '—'}{isTestnet ? ' · 行情 ' + (marketStreamConnected ? 'WS LIVE' : 'REST fallback') : ''}</span>
           <span>Tick {instrumentRules?.tickSize ?? '—'} · Qty Step {instrumentRules?.quantityStep ?? '—'}</span>
           {!strategyMatchesMarket && <span className="market-view-note">仅浏览行情 · 策略运行于 {displaySymbol(strategy?.symbol ?? '', isTestnet)}</span>}</p></div>
       <div className="control-buttons">
@@ -203,7 +273,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     <div className="dashboard-grid">
       <section className="chart-panel panel">
         <div className="chart-tools"><div className="timeframe-picker" role="group" aria-label="K 线周期">{TIMEFRAMES.map(item => <button key={item} type="button" className={timeframe === item ? 'active' : ''} aria-pressed={timeframe === item} onClick={() => { setTimeframe(item); setCandles([]) }}>{item === '1d' ? 'D' : item}</button>)}</div><i /><span>{isTestnet ? 'Hyperliquid candleSnapshot' : 'Paper candles'}</span><Icon name="settings" size={16} /></div>
-        <TradingChart candles={candles} levels={levelPrices} center={strategyMatchesMarket && snapshot ? +snapshot.cycle.fixedCenterPrice : undefined} />
+        <TradingChart candles={candles} levels={levelPrices} center={strategyMatchesMarket && snapshot ? +snapshot.cycle.fixedCenterPrice : undefined}
+          livePrice={isTestnet && Number.isFinite(latest) ? latest : undefined} />
         {marketLoading && <div className="chart-loading">正在加载 {instrument} · {timeframe}</div>}
       </section>
       <aside className="metric-stack">

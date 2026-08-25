@@ -27,7 +27,7 @@ No secret values are recorded in this document. Do not print or commit `.env`.
 - Official EIP-712 signing and Hyperliquid MessagePack action encoding.
 - Stable CLOIDs for strategy orders.
 - Per-signing-address nonce persisted in SQLite and allocated as `max(current Unix milliseconds, previous + 1)`.
-- Real Testnet order placement, cancel-by-CLOID, fill reconciliation, ordinary non-reduce-only Limit take-profit orders, current-price entry maintenance, and manual flatten/close.
+- Real Testnet order placement, cancel-by-CLOID, WebSocket `userFills` processing, REST fill reconciliation, ordinary non-reduce-only Limit take-profit orders, current-price entry maintenance, and manual flatten/close.
 - Startup preflight rejects an unapproved agent, unfunded account, non-flat position, or pre-existing open orders.
 - Testnet basket TP/SL is monitor-only; it does not automatically submit a real flatten command without separate authorization.
 
@@ -177,7 +177,7 @@ These checks are read-only. Do not start a cycle merely to test connectivity unl
 3. Confirm the dashboard says `TESTNET` and the displayed SOL price is close to the official Testnet UI.
 4. Review the strategy parameters and current centre.
 5. Click `确认预览并开启` only when real Testnet order placement is intended.
-6. Monitor actual orders and fills. Reconciliation runs approximately every 10 seconds by default.
+6. Monitor actual orders and fills. Hyperliquid `userFills` arrives over WebSocket; REST reconciliation still runs approximately every 10 seconds by default as recovery.
 7. Use Pause to remove Entry orders while retaining protective TP orders.
 8. Use Close Cycle or Emergency Stop to cancel strategy orders and submit a non-reduce-only IOC Limit sized to the observed actual position.
 9. If flattening leaves any residual position, the cycle remains non-terminal and reports an error instead of claiming success.
@@ -186,7 +186,7 @@ These checks are read-only. Do not start a cycle merely to test connectivity unl
 
 - Only SOL perpetual is wired through the current V1 strategy UI; internal display still uses `SOLUSDT`, while Hyperliquid's Testnet UI displays `SOL-USDC`.
 - Candle interval buttons are currently visual; the dashboard requests 1-minute candles. Wiring buttons to the `interval` parameter is a contained next task.
-- The dashboard polls Testnet every 10 seconds. WebSocket streaming/order-book depth is not implemented.
+- Fill events use the official Testnet `userFills` WebSocket subscription. Dashboard mid-price ticks use `allMids`, then SignalR forwards only each connection's selected symbol; REST book/candle snapshots remain the initial/recovery source. Open-order tables and order-book depth are still REST-polled.
 - The order table is populated from the local reconciled cycle ledger, not a standalone rendering of every account-level exchange order.
 - Basket TP/SL does not auto-flatten real Testnet positions.
 - Remote multi-user auth, per-user secret isolation, role permissions, and secure secret rotation are not implemented.
