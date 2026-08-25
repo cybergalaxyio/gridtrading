@@ -25,7 +25,8 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
         var service = scope.ServiceProvider.GetRequiredService<TradingService>();
-        var cycles = await db.Cycles.Where(x => !x.IsTerminal && (x.State == "RUNNING" || x.State == "PAUSED")).ToListAsync(ct);
+        var paperStrategyIds = await db.Strategies.Where(x => x.ExchangeAccountId == "acct_paper_01").Select(x => x.Id).ToListAsync(ct);
+        var cycles = await db.Cycles.Where(x => paperStrategyIds.Contains(x.StrategyId) && !x.IsTerminal && (x.State == "RUNNING" || x.State == "PAUSED")).ToListAsync(ct);
         foreach (var cycle in cycles)
         {
             var config = JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;

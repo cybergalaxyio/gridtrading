@@ -16,13 +16,14 @@ public sealed class PreviewStore
     public ConcurrentDictionary<string, PreviewCacheItem> Items { get; } = new();
 }
 
-public sealed class TradingService(TradingDbContext db, MarketState market, PreviewStore previews, IHubContext<TradingHub> hub)
+public sealed class LegacyTradingService(TradingDbContext db, MarketState market, PreviewStore previews, IHubContext<TradingHub> hub, HyperliquidCycleCoordinator testnet)
 {
     public static readonly InstrumentRules SolRules = new("SOLUSDT", .001m, .1m, .1m, 5m, 500);
 
     public async Task<StrategyEntity> CreateStrategy(StrategyRequest request, CancellationToken ct)
     {
         ValidateStrategy(request);
+        await testnet.EnsureKnownAccountAsync(request.ExchangeAccountId, ct);
         var now = DateTimeOffset.UtcNow;
         var entity = new StrategyEntity
         {
@@ -39,6 +40,7 @@ public sealed class TradingService(TradingDbContext db, MarketState market, Prev
     public async Task<StrategyEntity?> UpdateStrategy(string id, StrategyRequest request, CancellationToken ct)
     {
         ValidateStrategy(request);
+        await testnet.EnsureKnownAccountAsync(request.ExchangeAccountId, ct);
         var entity = await db.Strategies.FindAsync([id], ct);
         if (entity is null || entity.Archived) return null;
         if (await db.Cycles.AnyAsync(x => x.StrategyId == id && !x.IsTerminal, ct))
@@ -77,6 +79,7 @@ public sealed class TradingService(TradingDbContext db, MarketState market, Prev
             accountId = c.ExchangeAccountId;
         }
         EnsureSafeAccount(accountId);
+        await testnet.EnsureKnownAccountAsync(accountId, ct);
         var item = new PreviewCacheItem(Ids.New("preview"), request.StrategyId, version, accountId,
             DateTimeOffset.UtcNow.AddMinutes(5), configuration, GridMath.BuildPlan(configuration, SolRules));
         previews.Items[item.Id] = item;

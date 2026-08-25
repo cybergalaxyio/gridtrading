@@ -23,7 +23,7 @@ public static class ExtendedEndpoints
         api.MapGet("/replay-runs/{id}/report", (string id, ReplayStore store) => store.Runs.TryGetValue(id, out var run)
             ? Results.Ok(new { run.RunId, run.Status, run.BarsProcessed, run.RealisedPnl, eventCount = run.Events.Count,
                 conservativeIntrabarSequence = true, run.Input.StartAt, run.Input.EndAt, run.CompletedAt }) : Results.NotFound());
-        api.MapGet("/exchange-accounts/acct_hyperliquid_testnet/instruments", async (HyperliquidInfoClient client, CancellationToken ct) =>
+        api.MapGet("/hyperliquid-testnet/instruments", async (HyperliquidInfoClient client, CancellationToken ct) =>
         {
             try { return Results.Ok(await client.GetPerpetualMetadata(ct)); }
             catch (HttpRequestException) { return Results.Problem(statusCode: 503, title: "Hyperliquid Testnet metadata is unavailable."); }

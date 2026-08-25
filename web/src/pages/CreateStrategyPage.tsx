@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, defaultConfig } from '../api'
 import { Icon } from '../components/Icon'
 import type { Preview, StrategyConfig } from '../types'
@@ -10,13 +10,15 @@ export function CreateStrategyPage({ onCancel, onCreated, reportError }: {
   const [center, setCenter] = useState('145.250')
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState(false)
+  const [testnetAccounts, setTestnetAccounts] = useState<{ accountId: string; name: string }[]>([])
+  useEffect(() => { void api.testnetAccounts().then(setTestnetAccounts).catch(() => setTestnetAccounts([])) }, [])
   const [step, setStep] = useState(1)
   const totalLevels = config.maxLevelsPerSide * 2
   const previewRows = useMemo(() => preview?.levels.filter((_, i) => i < 12) ?? [], [preview])
 
   function set<K extends keyof StrategyConfig>(key: K, value: StrategyConfig[K]) { setConfig(x => ({ ...x, [key]: value })); setPreview(null) }
   async function suggestCenter() {
-    try { const result = await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/center-suggestion?mode=CURRENT_MID').then(r => r.json()) as { suggestedCenterPrice: string }; setCenter(result.suggestedCenterPrice) }
+    try { const value = config.exchangeAccountId === 'acct_paper_01' ? (await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/center-suggestion?mode=CURRENT_MID').then(r => r.json()) as { suggestedCenterPrice: string }).suggestedCenterPrice : (await api.testnetBook(config.symbol)).mid; setCenter(value) }
     catch { reportError('无法获取最新中心建议') }
   }
   async function generatePreview() {
@@ -28,13 +30,13 @@ export function CreateStrategyPage({ onCancel, onCreated, reportError }: {
     catch (e) { reportError(e instanceof Error ? e.message : '保存失败') } finally { setBusy(false) }
   }
 
-  return <div className="create-page page padded"><div className="page-title"><div><h1>新建策略</h1><p>配置 Weekend Grid V1 的固定中心、网格参数和强制风险边界。</p></div><span className="env-badge">PAPER</span></div>
+  return <div className="create-page page padded"><div className="page-title"><div><h1>新建策略</h1><p>配置 Weekend Grid V1 的固定中心、网格参数和强制风险边界。</p></div><span className="env-badge">{config.exchangeAccountId === "acct_paper_01" ? "PAPER" : "TESTNET"}</span></div>
     <div className="steps">{[['基本信息', 1], ['网格参数', 2], ['资金与风控', 3], ['预览确认', 4]].map(([label, number]) => <button key={number} className={step >= +number ? 'done' : ''} onClick={() => setStep(+number)}><i>{step > +number ? '✓' : number}</i><span>{label}</span></button>)}</div>
     <div className="create-layout">
       <section className="form-panel panel">
         {step === 1 && <><SectionTitle title="基本信息" subtitle="V1 仅允许 Paper / Replay / Testnet，且固定为单向净持仓。" /><div className="form-grid">
           <Field label="策略名称"><input value={config.name} onChange={e => set('name', e.target.value)} /></Field>
-          <Field label="交易所账户"><select value={config.exchangeAccountId} onChange={e => set('exchangeAccountId', e.target.value)}><option value="acct_paper_01">Weekend Paper · PAPER</option><option value="acct_hyperliquid_testnet">Hyperliquid · TESTNET（只读）</option></select></Field>
+          <Field label="交易所账户"><select value={config.exchangeAccountId} onChange={e => set('exchangeAccountId', e.target.value)}><option value="acct_paper_01">Weekend Paper · PAPER</option>{testnetAccounts.map(account => <option key={account.accountId} value={account.accountId}>{account.name} · TESTNET</option>)}</select></Field>
           <Field label="交易对"><select value={config.symbol} onChange={e => set('symbol', e.target.value)}><option>SOLUSDT</option></select></Field>
           <Field label="持仓模式"><input value="ONE_WAY（V1 固定）" disabled /></Field>
           <Field label="中心建议模式"><select value={config.centerSuggestionMode} onChange={e => set('centerSuggestionMode', e.target.value as StrategyConfig['centerSuggestionMode'])}><option value="CURRENT_MID">Current Mid</option><option value="VWAP_EMA">VWAP / EMA</option><option value="MANUAL">Manual</option></select></Field>

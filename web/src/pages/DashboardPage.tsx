@@ -13,6 +13,7 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
   const [busy, setBusy] = useState(false)
+  const [testnetMid, setTestnetMid] = useState<string | null>(null)
 
   async function refresh() {
     try {
@@ -20,9 +21,10 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
         api.candles(), cycle ? api.snapshot(cycle.cycleId) : Promise.resolve(null), cycle ? api.orders(cycle.cycleId) : api.orders(),
       ])
       setCandles(chart); setSnapshot(snap); setOrders(orderRows)
+      if (strategy && strategy.exchangeAccountId !== "acct_paper_01") { const book = await api.testnetBook(strategy.symbol); setTestnetMid(book.mid) } else setTestnetMid(null)
     } catch (e) { reportError(e instanceof Error ? e.message : '控制台数据加载失败') }
   }
-  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 5000); return () => clearInterval(timer) }, [cycle?.cycleId])
+  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 5000); return () => clearInterval(timer) }, [cycle?.cycleId, strategy?.strategyId, strategy?.exchangeAccountId, strategy?.symbol])
 
   const levelPrices = useMemo(() => orders.filter(x => x.status === 'NEW').map(x => +x.price), [orders])
 
@@ -30,9 +32,10 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
     if (!strategy) return
     setBusy(true)
     try {
-      const quote = await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/snapshot').then(r => r.json()) as { mid: string }
+      const isTestnet = strategy.exchangeAccountId !== 'acct_paper_01'
+      const quote = isTestnet ? await api.testnetBook(strategy.symbol) : await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/snapshot').then(r => r.json()) as { mid: string }
       const preview = await api.preview(strategy.strategyId, strategy.version, quote.mid)
-      await api.start(strategy.strategyId, preview.previewId, quote.mid)
+      await api.start(strategy.strategyId, preview.previewId, quote.mid, isTestnet ? 'TESTNET' : 'PAPER')
       notify('Cycle 已启动，中心和网格计划已冻结'); await reload(); await refresh()
     } catch (e) { reportError(e instanceof Error ? e.message : '启动失败') } finally { setBusy(false) }
   }
@@ -44,12 +47,12 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
     catch (e) { reportError(e instanceof Error ? e.message : '命令执行失败') } finally { setBusy(false) }
   }
 
-  const mid = snapshot?.market.mid ?? candles.at(-1)?.close ?? '—'
+  const mid = testnetMid ?? snapshot?.market.mid ?? candles.at(-1)?.close ?? '—'
   const state = cycle?.state ?? 'WAITING_FOR_OPERATOR'
   return <div className="dashboard-page">
     <section className="instrument-bar">
       <div><h1>SOLUSDT 永续 <span className="mono">{format(mid, 3)}</span> <em>+0.82%</em></h1>
-        <p>Strategy: {strategy?.name ?? '尚未创建'} <b className={`state ${state.toLowerCase()}`}>{state}</b> <span>Paper · 单向 · 1x | 上次同步 {snapshot ? '刚刚' : '—'}</span></p></div>
+        <p>Strategy: {strategy?.name ?? '尚未创建'} <b className={`state ${state.toLowerCase()}`}>{state}</b> <span>{strategy?.exchangeAccountId === 'acct_paper_01' ? 'Paper' : 'Hyperliquid Testnet'} · 单向 · 1x | 上次同步 {snapshot ? '刚刚' : '—'}</span></p></div>
       <div className="control-buttons">
         {!cycle && <button className="primary" disabled={!strategy || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : '确认预览并开启'}</button>}
         {cycle?.state === 'RUNNING' && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>暂停 Entry</button>}
@@ -69,7 +72,7 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
           ['Entry / TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'], ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
         ]} />
         <MetricCard title="账户与持仓" rows={[
-          ['权益', '13,420.50 USDT'], ['可用余额', '8,420.00 USDT'], ['净仓位', snapshot ? `${signed(snapshot.position.actualNetQuantity)} SOL` : '0 SOL'],
+          ['权益', strategy?.exchangeAccountId === 'acct_paper_01' ? '13,420.50 USDT' : '见 Testnet 设置'], ['可用余额', strategy?.exchangeAccountId === 'acct_paper_01' ? '8,420.00 USDT' : '以交易所为准'], ['净仓位', snapshot ? `${signed(snapshot.position.actualNetQuantity)} SOL` : '0 SOL'],
           ['MaxNetLot 使用', snapshot ? `${format(snapshot.position.absoluteMaxNetLotUsagePct, 1)}%` : '0%'], ['对账', snapshot?.health.reconciliation ?? 'IN_SYNC'],
         ]} />
         <MetricCard title="Basket 清算盈亏" rows={[

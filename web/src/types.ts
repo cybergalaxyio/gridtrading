@@ -42,3 +42,7 @@ export type Snapshot = {
   health: { exchange: string; marketData: string; reconciliation: string; lastReconciledAt: string };
   allowedCommands: string[];
 }
+
+export type HyperliquidAccount = { accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
+export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }
+export type HyperliquidBook = { bid: string; ask: string; mid: string; asOf: string }

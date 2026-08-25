@@ -16,6 +16,15 @@ builder.Services.AddSingleton<PreviewStore>();
 builder.Services.AddSingleton<ReplayStore>();
 builder.Services.AddSingleton<ReplayService>();
 builder.Services.AddHttpClient<HyperliquidInfoClient>();
+builder.Services.AddSingleton<CredentialProtector>();
+builder.Services.AddSingleton<GridTrading.Api.Exchange.HyperliquidL1Signer>();
+builder.Services.AddScoped<HyperliquidNonceManager>();
+builder.Services.AddHttpClient<HyperliquidTradingClient>();
+builder.Services.AddScoped<HyperliquidAccountStatusService>();
+builder.Services.AddScoped<HyperliquidCycleCoordinator>();
+builder.Services.AddHostedService<HyperliquidReconciliationService>();
+builder.Services.AddHostedService<HyperliquidAccountBootstrap>();
+builder.Services.AddScoped<LegacyTradingService>();
 builder.Services.AddScoped<TradingService>();
 builder.Services.AddHostedService<MarketBroadcastService>();
 builder.Services.AddHostedService<PaperExecutionService>();
@@ -33,6 +42,18 @@ var app = builder.Build();
 app.UseCors();
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.Use(async (context, next) =>
+{
+    var mutating = context.Request.Method is "POST" or "PUT" or "PATCH" or "DELETE";
+    var remote = context.Connection.RemoteIpAddress;
+    if (mutating && (remote is null || !System.Net.IPAddress.IsLoopback(remote)))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new { title = "Local operator required", status = 403, code = "LOCAL_OPERATOR_REQUIRED", detail = "V1 write operations are accepted only from the local machine." });
+        return;
+    }
+    await next();
+});
 app.Use(async (context, next) =>
 {
     try { await next(); }
@@ -78,17 +99,25 @@ api.MapGet("/operations/{id}/events", async (string id, TradingDbContext db, Can
         ? Results.Ok(new[] { new { status = "ACCEPTED", occurredAt = DateTimeOffset.UtcNow, detail = "Command accepted." }, new { status = "COMPLETED", occurredAt = DateTimeOffset.UtcNow, detail = "Authoritative state committed." } })
         : Results.NotFound());
 
-api.MapGet("/exchange-accounts", () => new[]
+api.MapGet("/exchange-accounts", async (TradingDbContext db, CancellationToken ct) =>
 {
-    new { accountId = "acct_paper_01", name = "Weekend Paper", exchange = "PAPER", environment = "PAPER", queryAddress = "local-simulator", signingAddress = (string?)null, tradingEnabled = true },
-    new { accountId = "acct_hyperliquid_testnet", name = "Hyperliquid Testnet (read-only)", exchange = "HYPERLIQUID", environment = "TESTNET", queryAddress = "not-configured", signingAddress = (string?)null, tradingEnabled = false }
+    var items = new List<object>
+    {
+        new { accountId = "acct_paper_01", name = "Weekend Paper", exchange = "PAPER", environment = "PAPER", queryAddress = "local-simulator", signingAddress = (string?)null, tradingEnabled = true }
+    };
+    items.AddRange((await db.HyperliquidAccounts.Where(x => x.Enabled).ToListAsync(ct)).Select(x => (object)new
+        { accountId = x.Id, x.Name, exchange = "HYPERLIQUID", environment = x.Environment, queryAddress = x.AccountAddress, signingAddress = x.AgentAddress, tradingEnabled = true }));
+    return items;
 });
-api.MapGet("/exchange-accounts/{id}", (string id) => IsAccount(id)
-    ? Results.Ok(new { accountId = id, exchange = id.Contains("hyperliquid") ? "HYPERLIQUID" : "PAPER", environment = id.Contains("testnet") ? "TESTNET" : "PAPER", funded = false, permissions = new[] { "READ", "PAPER_TRADE" } })
-    : Results.NotFound());
-api.MapGet("/exchange-accounts/{id}/health", (string id) => IsAccount(id)
-    ? Results.Ok(new { accountId = id, rest = "HEALTHY", webSocket = "HEALTHY", permissions = "SAFE", clock = "IN_SYNC", asOf = DateTimeOffset.UtcNow })
-    : Results.NotFound());
+api.MapGet("/exchange-accounts/{id}", async (string id, TradingDbContext db, CancellationToken ct) =>
+{
+    if (id == "acct_paper_01") return Results.Ok(new { accountId = id, exchange = "PAPER", environment = "PAPER", funded = false, permissions = new[] { "READ", "PAPER_TRADE" } });
+    var account = await db.HyperliquidAccounts.FindAsync([id], ct);
+    return account is null ? Results.NotFound() : Results.Ok(HyperliquidAccountStatusService.Public(account));
+});
+api.MapGet("/exchange-accounts/{id}/health", async (string id, HyperliquidAccountStatusService status, CancellationToken ct) =>
+    id == "acct_paper_01" ? Results.Ok(new { accountId = id, rest = "HEALTHY", permissions = "PAPER_ONLY", asOf = DateTimeOffset.UtcNow })
+        : Results.Ok(await status.HealthAsync(id, ct)));
 api.MapGet("/exchange-accounts/{id}/balances", (string id) => IsAccount(id)
     ? Results.Ok(new { equityUsdt = 13420.50m, availableBalanceUsdt = 8420m, marginUsedUsdt = 1080.50m })
     : Results.NotFound());
@@ -211,6 +240,7 @@ api.MapPost("/risk-alerts/{id}/acknowledgements", async (string id, Acknowledgem
 });
 
 app.MapReplayAndExchangeEndpoints();
+app.MapHyperliquidTestnetEndpoints();
 app.MapHub<TradingHub>("/hubs/trading");
 app.MapFallbackToFile("index.html");
 app.Run();
@@ -227,7 +257,7 @@ static long? IfMatch(HttpRequest request)
 {
     var value = Header(request, "If-Match").Trim('"'); return long.TryParse(value, out var parsed) ? parsed : null;
 }
-static bool IsAccount(string id) => id is "acct_paper_01" or "acct_hyperliquid_testnet";
+static bool IsAccount(string id) => id == "acct_paper_01";
 static object OperationDto(OperationEntity x) => new { operationId = x.Id, x.CommandId, x.ResourceId, type = x.Type, status = x.Status, x.AcceptedAt, x.CompletedAt };
 static object CycleDto(CycleEntity x) => new { cycleId = x.Id, x.StrategyId, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired, x.FixedCenterPrice, x.StartedAt, x.EndedAt, x.ExitReason };
 static object StrategyDto(StrategyEntity x, CycleEntity? cycle) => new { strategyId = x.Id, x.Name, x.ExchangeAccountId, x.Symbol, x.Version, x.Archived, configuration = TradingService.DeserializeStrategy(x), activeCycle = cycle is null ? null : CycleDto(cycle), x.CreatedAt, x.UpdatedAt };
@@ -247,6 +277,7 @@ static async Task InitializeDatabase(IServiceProvider services, string connectio
     if (!string.IsNullOrWhiteSpace(sqlitePath)) Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(sqlitePath))!);
     using var scope = services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
     await db.Database.EnsureCreatedAsync();
+    await DatabaseCompatibility.EnsureTestnetSchemaAsync(db);
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
     await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys=ON;");
     await db.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=5000;");

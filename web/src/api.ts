@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig } from './types'
+import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -11,6 +11,9 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  testnetAccounts: () => call<HyperliquidAccount[]>("/hyperliquid-testnet/accounts"),
+  testnetHealth: (id: string) => call<HyperliquidHealth>(`/hyperliquid-testnet/accounts/${id}/health`),
+  testnetBook: (symbol: string) => call<HyperliquidBook>(`/hyperliquid-testnet/market/${symbol}`),
   strategies: () => call<Strategy[]>('/strategies'),
   createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   activeCycle: (strategyId: string) => call(`/strategies/${strategyId}/active-cycle`),
@@ -33,9 +36,9 @@ export const api = {
       },
     }),
   }),
-  start: (strategyId: string, previewId: string, center: string) => call(`/strategies/${strategyId}/cycles`, {
+  start: (strategyId: string, previewId: string, center: string, environment: "PAPER" | "TESTNET") => call(`/strategies/${strategyId}/cycles`, {
     method: 'POST', headers: { ...JSON_HEADERS, 'Idempotency-Key': crypto.randomUUID() },
-    body: JSON.stringify({ previewId, confirmedCenterPrice: center, operatorConfirmation: { parametersReviewed: true, centerConfirmed: true, environmentConfirmed: 'PAPER' } }),
+    body: JSON.stringify({ previewId, confirmedCenterPrice: center, operatorConfirmation: { parametersReviewed: true, centerConfirmed: true, environmentConfirmed: environment } }),
   }),
   command: (cycleId: string, route: string, version: number, emergency = false) => call(`/cycles/${cycleId}/commands/${route}`, {
     method: 'POST', headers: { ...JSON_HEADERS, 'Idempotency-Key': crypto.randomUUID(), 'If-Match': `"${version}"` },

@@ -6,7 +6,7 @@ import { DashboardPage } from './pages/DashboardPage'
 import { StrategiesPage } from './pages/StrategiesPage'
 import { OrdersPage } from './pages/OrdersPage'
 import { AlertsPage } from './pages/AlertsPage'
-import { SettingsPage } from './pages/SettingsPage'
+import { SettingsPage } from './pages/TestnetSettingsPage'
 import { CreateStrategyPage } from './pages/CreateStrategyPage'
 import type { Strategy } from './types'
 
@@ -29,7 +29,7 @@ export default function App() {
     if (!active) { setEmergency(false); setToast('当前没有运行中的策略或残留仓位'); return }
     try {
       await api.command(active.cycleId, 'emergency-flatten', active.stateVersion, true)
-      setEmergency(false); setToast('紧急停止已执行：挂单已撤销，Paper 净仓位已清零'); await reload()
+      setEmergency(false); setToast('紧急停止已执行：挂单已撤销，实际净仓位已确认清零'); await reload()
     } catch (e) { setError(e instanceof Error ? e.message : '紧急停止失败') }
   }
 
