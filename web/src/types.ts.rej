@@ -1,0 +1,10 @@
+--- web/src/types.ts
++++ web/src/types.ts
+@@ -58,5 +58,7 @@
+ export type HyperliquidClearinghouseState = {
+   marginSummary: HyperliquidMarginSummary; crossMarginSummary: HyperliquidMarginSummary;
+   crossMaintenanceMarginUsed: string; withdrawable: string; assetPositions: { type: string; position: HyperliquidPosition }[];
+ }
++export type HyperliquidSpotBalance = { coin: string; token: number; hold: string; total: string; entryNtl: string }
++export type HyperliquidSpotClearinghouseState = { balances: HyperliquidSpotBalance[] }
+ export type HyperliquidOpenOrder = {

@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { TradingChart } from '../components/TradingChart'
 import { Icon } from '../components/Icon'
-import type { Candle, HyperliquidAccountState, Order, Snapshot, Strategy } from '../types'
+import type { Candle, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidOpenOrder, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
+type AccountPanelTab = 'balances' | 'positions' | 'orders' | 'history' | 'events' | 'alerts'
 
 export function DashboardPage({ strategies, reload, notify, reportError }: {
   strategies: Strategy[]; reload: () => Promise<void>; notify: (message: string) => void; reportError: (message: string) => void
@@ -20,7 +21,12 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   const [orders, setOrders] = useState<Order[]>([])
   const [testnetMid, setTestnetMid] = useState<string | null>(null)
   const [accountState, setAccountState] = useState<HyperliquidAccountState | null>(null)
+  const [clearinghouseState, setClearinghouseState] = useState<HyperliquidClearinghouseState | null>(null)
+  const [spotClearinghouseState, setSpotClearinghouseState] = useState<HyperliquidSpotClearinghouseState | null>(null)
+  const [exchangeOpenOrders, setExchangeOpenOrders] = useState<HyperliquidOpenOrder[] | null>(null)
+  const [exchangeOrderHistory, setExchangeOrderHistory] = useState<HyperliquidHistoricalOrder[] | null>(null)
   const [busy, setBusy] = useState(false)
+  const [accountPanelTab, setAccountPanelTab] = useState<AccountPanelTab>('balances')
   const [marketLoading, setMarketLoading] = useState(false)
   const [instruments, setInstruments] = useState<string[]>([])
   const [symbol, setSymbol] = useState(() => localStorage.getItem('grid.dashboardSymbol') ?? '')
@@ -56,6 +62,36 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
     })
     return () => { active = false }
   }, [isTestnet, strategy?.symbol])
+
+  useEffect(() => {
+    if (!isTestnet || !strategy) {
+      setClearinghouseState(null); setSpotClearinghouseState(null); setExchangeOpenOrders(null); setExchangeOrderHistory(null); return
+    }
+    let active = true
+    const accountId = strategy.exchangeAccountId
+    async function refreshLiveAccount() {
+      try {
+        const [state, spotState, openOrders] = await Promise.all([
+          api.testnetClearinghouseState(accountId), api.testnetSpotClearinghouseState(accountId), api.testnetOpenOrders(accountId),
+        ])
+        if (!active) return
+        setClearinghouseState(state); setSpotClearinghouseState(spotState); setExchangeOpenOrders(openOrders)
+      } catch (e) {
+        if (active) reportError(e instanceof Error ? e.message : 'Hyperliquid 账户数据加载失败')
+      }
+    }
+    async function refreshHistory() {
+      try {
+        const history = await api.testnetOrderHistory(accountId)
+        if (active) setExchangeOrderHistory(history)
+      } catch (e) {
+        if (active) reportError(e instanceof Error ? e.message : 'Hyperliquid 历史订单加载失败')
+      }
+    }
+    void refreshLiveAccount(); void refreshHistory()
+    const timer = setInterval(() => void refreshLiveAccount(), 10_000)
+    return () => { active = false; clearInterval(timer) }
+  }, [isTestnet, strategy?.exchangeAccountId])
 
   async function refresh() {
     const sequence = ++refreshSequence.current
@@ -121,6 +157,12 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   const maxNetUsage = maxNetLot > 0 ? Math.abs(+netPosition) / maxNetLot * 100 : 0
   const instrument = displaySymbol(marketSymbol, isTestnet)
   const quantitySymbol = coinFromSymbol(marketSymbol)
+  const exchangePositions = clearinghouseState?.assetPositions.map(item => item.position) ?? null
+  const exchangePnl = String(exchangePositions?.reduce((total, position) => total + +position.unrealizedPnl, 0) ?? 0)
+  const unifiedUsdc = spotClearinghouseState?.balances.find(balance => balance.coin === 'USDC')
+  const unifiedAvailable = unifiedUsdc && clearinghouseState
+    ? availableBalance(unifiedUsdc.total, unifiedUsdc.hold, clearinghouseState.marginSummary.totalMarginUsed)
+    : null
 
   return <div className="dashboard-page">
     <section className="instrument-bar">
@@ -161,15 +203,61 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
         ]} accent />
       </aside>
       <section className="orders-panel panel">
-        <div className="tabs"><b>当前挂单 <i>{orders.filter(x => x.status === 'NEW').length}</i></b><span>最近成交</span><span>策略事件</span><span>风险告警</span></div>
-        <div className="table-wrap"><table><thead><tr><th>时间</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>状态</th><th>网格层级</th><th>订单 ID</th></tr></thead>
-          <tbody>{orders.slice(0, 8).map(order => <tr key={order.id}><td>{new Date(order.createdAt).toLocaleTimeString('zh-CN', { hour12: false })}</td>
-            <td className={order.side === 'BUY' ? 'positive' : 'negative'}>{order.side}</td><td>{order.kind}</td><td>{format(order.price, 3)}</td>
-            <td>{order.quantity}</td><td><span className={`tag ${order.status.toLowerCase()}`}>{order.status}</span></td><td>#{order.gridLevel}</td><td className="dim">{order.id.slice(0, 16)}…</td></tr>)}</tbody>
-        </table>{orders.length === 0 && <Empty text="Cycle 启动后，Testnet 订单将在对账后显示" />}</div>
+        <div className="tabs" role="tablist" aria-label="账户与交易明细">
+          <button type="button" className={accountPanelTab === 'balances' ? 'active' : ''} onClick={() => setAccountPanelTab('balances')}>Balances <i>{clearinghouseState ? 1 : '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'positions' ? 'active' : ''} onClick={() => setAccountPanelTab('positions')}>Positions <i>{exchangePositions?.length ?? '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'orders' ? 'active' : ''} onClick={() => setAccountPanelTab('orders')}>Open Orders <i>{exchangeOpenOrders?.length ?? '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'history' ? 'active' : ''} onClick={() => setAccountPanelTab('history')}>Order History <i>{exchangeOrderHistory?.length ?? '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'events' ? 'active' : ''} onClick={() => setAccountPanelTab('events')}>Events</button>
+          <button type="button" className={accountPanelTab === 'alerts' ? 'active' : ''} onClick={() => setAccountPanelTab('alerts')}>Alerts</button>
+        </div>
+        {accountPanelTab === 'balances' && <BalanceTable state={clearinghouseState} pnl={exchangePnl} />}
+        {accountPanelTab === 'positions' && <PositionTable positions={exchangePositions} />}
+        {accountPanelTab === 'orders' && <OpenOrdersTable rows={exchangeOpenOrders} />}
+        {accountPanelTab === 'history' && <OrderHistoryTable rows={exchangeOrderHistory} />}
+        {accountPanelTab === 'events' && <Empty text="当前 Cycle 暂无策略事件" />}
+        {accountPanelTab === 'alerts' && <Empty text="当前 Cycle 暂无风险告警" />}
       </section>
     </div>
   </div>
+}
+
+function BalanceTable({ state, pnl }: { state: HyperliquidClearinghouseState | null; pnl: string }) {
+  if (!state) return <Empty text="正在加载 Hyperliquid clearinghouseState…" />
+  const summary = state.marginSummary
+  return <div className="table-wrap account-detail-table"><table><thead><tr><th>资产</th><th>总余额</th><th>可用余额</th><th>USDC 价值</th><th>PNL</th><th>保证金占用</th></tr></thead>
+    <tbody><tr><td><strong>USDC</strong></td><td>{format(summary.accountValue, 4)} USDC</td><td>{format(state.withdrawable, 4)} USDC</td><td>${format(summary.accountValue)}</td><td className={+pnl < 0 ? 'negative' : 'positive'}>{signed(pnl)} USDC</td><td>{format(summary.totalMarginUsed)} USDC</td></tr></tbody></table></div>
+}
+
+function PositionTable({ positions }: { positions: HyperliquidPosition[] | null }) {
+  if (!positions) return <Empty text="正在加载 Hyperliquid positions…" />
+  return <div className="table-wrap account-detail-table"><table><thead><tr><th>市场</th><th>仓位</th><th>仓位价值</th><th>开仓价</th><th>标记价格</th><th>PNL (ROE %)</th><th>清算价</th><th>保证金</th><th>累计资金费</th></tr></thead>
+    <tbody>{positions.slice(0, 20).map(position => <PositionRow key={position.coin} position={position} />)}</tbody></table>
+    {positions.length === 0 && <Empty text="Hyperliquid 当前没有永续持仓" />}</div>
+}
+
+function PositionRow({ position }: { position: HyperliquidPosition }) {
+  const mark = +position.szi !== 0 ? Math.abs(+position.positionValue / +position.szi) : 0
+  const roe = +position.returnOnEquity * 100
+  return <tr><td><strong className="positive">{position.coin}-USDC</strong></td><td className={+position.szi < 0 ? 'negative' : 'positive'}>{signed(position.szi)} {position.coin}</td><td>{format(Math.abs(+position.positionValue))} USDC</td><td>{position.entryPx ? format(position.entryPx, 3) : '—'}</td><td>{format(mark, 3)}</td><td className={+position.unrealizedPnl < 0 ? 'negative' : 'positive'}>{signed(position.unrealizedPnl)} ({roe >= 0 ? '+' : ''}{roe.toFixed(2)}%)</td><td>{position.liquidationPx ? format(position.liquidationPx, 3) : 'N/A'}</td><td>{format(position.marginUsed)} USDC ({position.leverage.value}x {position.leverage.type})</td><td>{format(position.cumFunding?.sinceOpen ?? '0')} USDC</td></tr>
+}
+
+function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
+  if (!rows) return <Empty text="正在加载 Hyperliquid frontendOpenOrders…" />
+  return <div className="table-wrap"><table><thead><tr><th>时间</th><th>市场</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>Reduce Only</th><th>订单 ID</th></tr></thead>
+    <tbody>{rows.slice(0, 50).map(order => <tr key={order.oid}><td>{exchangeTime(order.timestamp)}</td><td><strong>{order.coin}-USDC</strong></td>
+      <td className={order.side === 'B' ? 'positive' : 'negative'}>{order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{order.orderType}</td><td>{format(order.limitPx, 4)}</td>
+      <td>{order.origSz}</td><td>{order.sz}</td><td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td></tr>)}</tbody>
+  </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
+}
+
+function OrderHistoryTable({ rows }: { rows: HyperliquidHistoricalOrder[] | null }) {
+  if (!rows) return <Empty text="正在加载 Hyperliquid historicalOrders…" />
+  return <div className="table-wrap"><table><thead><tr><th>更新时间</th><th>市场</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>状态</th><th>订单 ID</th></tr></thead>
+    <tbody>{rows.slice(0, 100).map(item => <tr key={`${item.order.oid}-${item.statusTimestamp}`}><td>{exchangeTime(item.statusTimestamp)}</td><td><strong>{item.order.coin}-USDC</strong></td>
+      <td className={item.order.side === 'B' ? 'positive' : 'negative'}>{item.order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{item.order.orderType ?? 'Limit'}</td><td>{format(item.order.limitPx, 4)}</td>
+      <td>{item.order.origSz}</td><td>{item.order.sz}</td><td><span className={`tag ${item.status.toLowerCase()}`}>{item.status}</span></td><td className="dim">{item.order.oid}</td></tr>)}</tbody>
+  </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有历史订单" />}</div>
 }
 
 function MetricCard({ title, rows, accent }: { title: string; rows: [string, string][]; accent?: boolean }) {
@@ -179,6 +267,7 @@ export function Empty({ text }: { text: string }) { return <div className="empty
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
 function time(value?: string) { return value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—' }
+function exchangeTime(value: number) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
 function coinFromSymbol(symbol?: string) { return (symbol ?? '').toUpperCase().replace(/[-_/]?(USDC|USDT)$/, '') }
 function sameCoin(left?: string, right?: string) { return !!left && !!right && coinFromSymbol(left) === coinFromSymbol(right) }
 function displaySymbol(symbol: string, isTestnet: boolean) { const coin = coinFromSymbol(symbol); return isTestnet ? `${coin}-USDC` : symbol.toUpperCase() }

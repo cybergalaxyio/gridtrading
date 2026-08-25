@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments } from './types'
+import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -17,6 +17,10 @@ export const api = {
   testnetBook: (symbol: string) => call<HyperliquidBook>(`/hyperliquid-testnet/market/${symbol}`),
   testnetCandles: (symbol: string, interval = "1m", limit = 180) => call<Candle[]>(`/hyperliquid-testnet/market/${symbol}/candles?interval=${interval}&limit=${limit}`),
   testnetAccountState: (id: string, symbol: string) => call<HyperliquidAccountState>(`/hyperliquid-testnet/accounts/${id}/state?symbol=${symbol}`),
+  testnetClearinghouseState: (id: string) => call<HyperliquidClearinghouseState>(`/hyperliquid-testnet/accounts/${id}/clearinghouse-state`),
+  testnetSpotClearinghouseState: (id: string) => call<HyperliquidSpotClearinghouseState>(`/hyperliquid-testnet/accounts/${id}/spot-clearinghouse-state`),
+  testnetOpenOrders: (id: string) => call<HyperliquidOpenOrder[]>(`/hyperliquid-testnet/accounts/${id}/open-orders`),
+  testnetOrderHistory: (id: string) => call<HyperliquidHistoricalOrder[]>(`/hyperliquid-testnet/accounts/${id}/order-history`),
   strategies: () => call<Strategy[]>('/strategies'),
   createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   activeCycle: (strategyId: string) => call(`/strategies/${strategyId}/active-cycle`),

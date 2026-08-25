@@ -1,0 +1,12 @@
+--- src/GridTrading.Api/Infrastructure/HyperliquidEndpoints.cs
++++ src/GridTrading.Api/Infrastructure/HyperliquidEndpoints.cs
+@@ -27,5 +27,9 @@
+         api.MapGet("/accounts/{id}/clearinghouse-state", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
+         {
+             using var state = await client.GetClearinghouseStateAsync(id, ct); return Results.Text(state.RootElement.GetRawText(), "application/json");
+         });
++        api.MapGet("/accounts/{id}/spot-clearinghouse-state", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
++        {
++            using var state = await client.GetSpotClearinghouseStateAsync(id, ct); return Results.Text(state.RootElement.GetRawText(), "application/json");
++        });
+         api.MapGet("/accounts/{id}/order-history", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
