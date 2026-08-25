@@ -59,6 +59,8 @@ export type HyperliquidClearinghouseState = {
   marginSummary: HyperliquidMarginSummary; crossMarginSummary: HyperliquidMarginSummary;
   crossMaintenanceMarginUsed: string; withdrawable: string; assetPositions: { type: string; position: HyperliquidPosition }[];
 }
+export type HyperliquidSpotBalance = { coin: string; token: number; hold: string; total: string; entryNtl: string }
+export type HyperliquidSpotClearinghouseState = { balances: HyperliquidSpotBalance[] }
 export type HyperliquidOpenOrder = {
   coin: string; side: 'A' | 'B'; limitPx: string; sz: string; origSz: string; oid: number; timestamp: number;
   orderType: string; reduceOnly: boolean; isTrigger: boolean; isPositionTpsl: boolean; triggerPx: string; triggerCondition: string;

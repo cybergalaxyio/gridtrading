@@ -28,6 +28,10 @@ public static class HyperliquidEndpoints
         {
             using var state = await client.GetClearinghouseStateAsync(id, ct); return Results.Text(state.RootElement.GetRawText(), "application/json");
         });
+        api.MapGet("/accounts/{id}/spot-clearinghouse-state", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
+        {
+            using var state = await client.GetSpotClearinghouseStateAsync(id, ct); return Results.Text(state.RootElement.GetRawText(), "application/json");
+        });
         api.MapGet("/accounts/{id}/order-history", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
         {
             using var orders = await client.GetHistoricalOrdersAsync(id, ct); return Results.Text(orders.RootElement.GetRawText(), "application/json");

@@ -161,7 +161,7 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   const exchangePnl = String(exchangePositions?.reduce((total, position) => total + +position.unrealizedPnl, 0) ?? 0)
   const unifiedUsdc = spotClearinghouseState?.balances.find(balance => balance.coin === 'USDC')
   const unifiedAvailable = unifiedUsdc && clearinghouseState
-    ? availableBalance(unifiedUsdc.total, unifiedUsdc.hold, clearinghouseState.marginSummary.totalMarginUsed)
+    ? availableBalance(unifiedUsdc.total, unifiedUsdc.hold)
     : null
 
   return <div className="dashboard-page">
@@ -193,8 +193,8 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
           ['Entry / TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'], ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
         ]} />
         <MetricCard title="账户与持仓" rows={[
-          ['权益', isTestnet ? `${format(accountState?.accountValue ?? '0')} USDC` : '13,420.50 USDT'],
-          ['可提余额', isTestnet ? `${format(accountState?.withdrawable ?? '0')} USDC` : '8,420.00 USDT'],
+          ['权益', isTestnet ? unifiedUsdc ? `${format(unifiedUsdc.total)} USDC` : '—' : '13,420.50 USDT'],
+          ['可提余额', isTestnet ? unifiedAvailable !== null ? `${format(unifiedAvailable)} USDC` : '—' : '8,420.00 USDT'],
           ['净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['保证金使用', isTestnet ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
         ]} />
@@ -204,14 +204,14 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
       </aside>
       <section className="orders-panel panel">
         <div className="tabs" role="tablist" aria-label="账户与交易明细">
-          <button type="button" className={accountPanelTab === 'balances' ? 'active' : ''} onClick={() => setAccountPanelTab('balances')}>Balances <i>{clearinghouseState ? 1 : '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'balances' ? 'active' : ''} onClick={() => setAccountPanelTab('balances')}>Balances <i>{unifiedUsdc ? 1 : '—'}</i></button>
           <button type="button" className={accountPanelTab === 'positions' ? 'active' : ''} onClick={() => setAccountPanelTab('positions')}>Positions <i>{exchangePositions?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'orders' ? 'active' : ''} onClick={() => setAccountPanelTab('orders')}>Open Orders <i>{exchangeOpenOrders?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'history' ? 'active' : ''} onClick={() => setAccountPanelTab('history')}>Order History <i>{exchangeOrderHistory?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'events' ? 'active' : ''} onClick={() => setAccountPanelTab('events')}>Events</button>
           <button type="button" className={accountPanelTab === 'alerts' ? 'active' : ''} onClick={() => setAccountPanelTab('alerts')}>Alerts</button>
         </div>
-        {accountPanelTab === 'balances' && <BalanceTable state={clearinghouseState} pnl={exchangePnl} />}
+        {accountPanelTab === 'balances' && <BalanceTable state={clearinghouseState} spotState={spotClearinghouseState} pnl={exchangePnl} />}
         {accountPanelTab === 'positions' && <PositionTable positions={exchangePositions} />}
         {accountPanelTab === 'orders' && <OpenOrdersTable rows={exchangeOpenOrders} />}
         {accountPanelTab === 'history' && <OrderHistoryTable rows={exchangeOrderHistory} />}
@@ -222,11 +222,14 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   </div>
 }
 
-function BalanceTable({ state, pnl }: { state: HyperliquidClearinghouseState | null; pnl: string }) {
-  if (!state) return <Empty text="正在加载 Hyperliquid clearinghouseState…" />
+function BalanceTable({ state, spotState, pnl }: { state: HyperliquidClearinghouseState | null; spotState: HyperliquidSpotClearinghouseState | null; pnl: string }) {
+  if (!state || !spotState) return <Empty text="正在加载 Hyperliquid unified account balance…" />
   const summary = state.marginSummary
+  const usdc = spotState.balances.find(balance => balance.coin === 'USDC')
+  if (!usdc) return <Empty text="Hyperliquid 统一账户中没有 USDC 余额" />
+  const available = availableBalance(usdc.total, usdc.hold)
   return <div className="table-wrap account-detail-table"><table><thead><tr><th>资产</th><th>总余额</th><th>可用余额</th><th>USDC 价值</th><th>PNL</th><th>保证金占用</th></tr></thead>
-    <tbody><tr><td><strong>USDC</strong></td><td>{format(summary.accountValue, 4)} USDC</td><td>{format(state.withdrawable, 4)} USDC</td><td>${format(summary.accountValue)}</td><td className={+pnl < 0 ? 'negative' : 'positive'}>{signed(pnl)} USDC</td><td>{format(summary.totalMarginUsed)} USDC</td></tr></tbody></table></div>
+    <tbody><tr><td><strong>USDC</strong></td><td>{format(usdc.total, 4)} USDC</td><td>{format(available, 4)} USDC</td><td>${format(usdc.total)}</td><td className={+pnl < 0 ? 'negative' : 'positive'}>{signed(pnl)} USDC</td><td>{format(summary.totalMarginUsed)} USDC</td></tr></tbody></table></div>
 }
 
 function PositionTable({ positions }: { positions: HyperliquidPosition[] | null }) {
@@ -266,6 +269,7 @@ function MetricCard({ title, rows, accent }: { title: string; rows: [string, str
 export function Empty({ text }: { text: string }) { return <div className="empty"><span>◇</span>{text}</div> }
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
+function availableBalance(total: string, hold: string) { return String(Math.max(0, +total - +hold)) }
 function time(value?: string) { return value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—' }
 function exchangeTime(value: number) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
 function coinFromSymbol(symbol?: string) { return (symbol ?? '').toUpperCase().replace(/[-_/]?(USDC|USDT)$/, '') }

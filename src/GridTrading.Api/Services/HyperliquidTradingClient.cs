@@ -84,6 +84,12 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         return await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct);
     }
 
+    public async Task<JsonDocument> GetSpotClearinghouseStateAsync(string accountId, CancellationToken ct)
+    {
+        var account = await Account(accountId, ct);
+        return await PostInfo(new { type = "spotClearinghouseState", user = account.AccountAddress }, ct);
+    }
+
     public async Task<JsonDocument> GetFrontendOpenOrdersAsync(string accountId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
