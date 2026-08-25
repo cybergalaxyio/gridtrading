@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './api'
 import { Layout, type Route } from './components/Layout'
 import { Modal } from './components/Modal'
-import { DashboardPage } from './pages/DashboardPage'
+import { DashboardPage } from './pages/HyperliquidDashboardPage'
 import { StrategiesPage } from './pages/StrategiesPage'
 import { OrdersPage } from './pages/OrdersPage'
 import { AlertsPage } from './pages/AlertsPage'
@@ -23,7 +23,11 @@ export default function App() {
   }, [])
   useEffect(() => { void reload() }, [reload])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timer) }, [toast])
-  const active = useMemo(() => strategies.find(x => x.activeCycle)?.activeCycle ?? null, [strategies])
+  const preferredStrategy = useMemo(() => strategies.find(x => x.activeCycle)
+    ?? strategies.find(x => x.exchangeAccountId !== 'acct_paper_01')
+    ?? strategies[0], [strategies])
+  const active = preferredStrategy?.activeCycle ?? null
+  const environment = preferredStrategy?.exchangeAccountId && preferredStrategy.exchangeAccountId !== 'acct_paper_01' ? 'TESTNET' : 'PAPER'
 
   async function emergencyFlatten() {
     if (!active) { setEmergency(false); setToast('当前没有运行中的策略或残留仓位'); return }
@@ -33,7 +37,7 @@ export default function App() {
     } catch (e) { setError(e instanceof Error ? e.message : '紧急停止失败') }
   }
 
-  return <Layout route={route} onRoute={setRoute} onEmergency={() => setEmergency(true)}>
+  return <Layout route={route} environment={environment} onRoute={setRoute} onEmergency={() => setEmergency(true)}>
     {error && <div className="global-error"><b>连接提示</b><span>{error}</span><button onClick={() => void reload()}>重试</button></div>}
     {toast && <div className="toast">✓ {toast}</div>}
     {route === 'dashboard' && <DashboardPage strategies={strategies} reload={reload} notify={setToast} reportError={setError} />}
@@ -44,7 +48,7 @@ export default function App() {
     {route === 'create' && <CreateStrategyPage onCancel={() => setRoute('strategies')} onCreated={async () => { await reload(); setRoute('strategies'); setToast('策略模板已创建，可预览并人工启动 Cycle') }} reportError={setError} />}
     {emergency && <Modal title="紧急停止确认" icon="alert" onClose={() => setEmergency(false)}>
       <div className="emergency-copy"><p>此操作将立即禁止新单，撤销所有策略挂单，对账后使用 Taker Reduce-only 方式清零实际净仓位。</p>
-        <dl><div><dt>当前运行策略</dt><dd>{active ? '1' : '0'}</dd></div><div><dt>受影响交易对</dt><dd>{active ? 'SOLUSDT' : '—'}</dd></div><div><dt>执行环境</dt><dd>PAPER</dd></div></dl>
+        <dl><div><dt>当前运行策略</dt><dd>{active ? '1' : '0'}</dd></div><div><dt>受影响交易对</dt><dd>{active ? 'SOL-USDC' : '—'}</dd></div><div><dt>执行环境</dt><dd>{environment}</dd></div></dl>
         <label className="confirm-line"><input type="checkbox" defaultChecked /> 我理解紧急平仓可能产生滑点与 Taker 手续费</label>
         <div className="modal-actions"><button className="secondary" onClick={() => setEmergency(false)}>取消</button><button className="danger" onClick={() => void emergencyFlatten()}>撤单并清零仓位</button></div>
       </div>

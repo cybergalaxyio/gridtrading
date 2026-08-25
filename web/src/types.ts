@@ -46,3 +46,4 @@ export type Snapshot = {
 export type HyperliquidAccount = { accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
 export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }
 export type HyperliquidBook = { bid: string; ask: string; mid: string; asOf: string }
+export type HyperliquidAccountState = { accountId: string; symbol: string; accountValue: string; withdrawable: string; totalMarginUsed: string; netPosition: string; unrealizedPnl: string; entryPrice?: string | null; asOf: string }

@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook } from './types'
+import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -14,6 +14,8 @@ export const api = {
   testnetAccounts: () => call<HyperliquidAccount[]>("/hyperliquid-testnet/accounts"),
   testnetHealth: (id: string) => call<HyperliquidHealth>(`/hyperliquid-testnet/accounts/${id}/health`),
   testnetBook: (symbol: string) => call<HyperliquidBook>(`/hyperliquid-testnet/market/${symbol}`),
+  testnetCandles: (symbol: string, interval = "1m", limit = 180) => call<Candle[]>(`/hyperliquid-testnet/market/${symbol}/candles?interval=${interval}&limit=${limit}`),
+  testnetAccountState: (id: string, symbol: string) => call<HyperliquidAccountState>(`/hyperliquid-testnet/accounts/${id}/state?symbol=${symbol}`),
   strategies: () => call<Strategy[]>('/strategies'),
   createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
   activeCycle: (strategyId: string) => call(`/strategies/${strategyId}/active-cycle`),

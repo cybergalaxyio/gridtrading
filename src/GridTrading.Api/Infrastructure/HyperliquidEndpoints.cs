@@ -16,6 +16,10 @@ public static class HyperliquidEndpoints
             Results.Ok(await service.HealthAsync(id, ct)));
         api.MapGet("/market/{symbol}", async (string symbol, HyperliquidTradingClient client, CancellationToken ct) =>
             Results.Ok(await client.GetBookAsync(symbol, ct)));
+        api.MapGet("/market/{symbol}/candles", async (string symbol, string? interval, int? limit, HyperliquidMarketDataClient market, CancellationToken ct) =>
+            Results.Ok(await market.GetCandlesAsync(symbol, interval ?? "1m", limit ?? 180, ct)));
+        api.MapGet("/accounts/{id}/state", async (string id, string? symbol, HyperliquidMarketDataClient market, CancellationToken ct) =>
+            Results.Ok(await market.GetAccountStateAsync(id, symbol ?? "SOLUSDT", ct)));
         api.MapGet("/accounts/{id}/open-orders", async (string id, HyperliquidTradingClient client, CancellationToken ct) =>
         {
             using var orders = await client.GetOpenOrdersAsync(id, ct); return Results.Text(orders.RootElement.GetRawText(), "application/json");
