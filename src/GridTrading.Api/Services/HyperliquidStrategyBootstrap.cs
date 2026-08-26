@@ -13,17 +13,20 @@ public sealed class HyperliquidStrategyBootstrap(IServiceScopeFactory scopeFacto
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
         var account = await db.HyperliquidAccounts.SingleOrDefaultAsync(
             x => x.Id == HyperliquidAccountBootstrap.DefaultAccountId && x.Enabled, ct);
-        if (account is null || await db.Strategies.AnyAsync(x => x.ExchangeAccountId == account.Id && !x.Archived, ct)) return;
+        if (account is null || await db.Strategies.AnyAsync(x => x.DefaultExecutionAccountId == account.Id && !x.Archived, ct)) return;
 
         var request = StrategyRequest.Default with
         {
             Name = "Hyperliquid Testnet SOL Grid",
-            ExchangeAccountId = account.Id
+            ExchangeAccountId = account.Id,
+            DefaultExecutionEnvironmentId = "hyperliquid-testnet",
+            DefaultExecutionAccountId = account.Id
         };
         var now = DateTimeOffset.UtcNow;
         db.Strategies.Add(new StrategyEntity
         {
-            Id = Ids.NewStrategy(), Name = request.Name, ExchangeAccountId = request.ExchangeAccountId,
+            Id = Ids.NewStrategy(), Name = request.Name, StrategyType = "GRID",
+            DefaultExecutionEnvironmentId = "hyperliquid-testnet", DefaultExecutionAccountId = account.Id,
             Symbol = request.Symbol, ConfigurationJson = JsonSerializer.Serialize(request, JsonSupport.Options),
             CreatedAt = now, UpdatedAt = now
         });

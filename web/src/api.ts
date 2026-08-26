@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules } from './types'
+import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -11,6 +11,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  executionEnvironments: () => call<ExecutionEnvironment[]>('/execution-environments'),
+  executionAccounts: (environmentId: string) => call<ExecutionAccount[]>(`/execution-environments/${encodeURIComponent(environmentId)}/accounts`),
   testnetAccounts: () => call<HyperliquidAccount[]>("/hyperliquid-testnet/accounts"),
   testnetInstruments: () => call<HyperliquidInstruments>("/hyperliquid-testnet/instruments"),
   testnetHealth: (id: string) => call<HyperliquidHealth>(`/hyperliquid-testnet/accounts/${id}/health`),
@@ -30,14 +32,16 @@ export const api = {
   snapshot: (cycleId: string) => call<Snapshot>(`/cycles/${cycleId}/snapshot`),
   orders: (cycleId?: string) => call<Order[]>(`/orders${cycleId ? `?cycleId=${cycleId}` : ''}`),
   alerts: () => call<Alert[]>('/risk-alerts'),
-  preview: (strategyId: string, version: number, center: string) => call<Preview>('/grid-plan-previews', {
-    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ strategyId, strategyVersion: version, confirmedCenterPrice: center, parameterOverrides: null }),
+  preview: (strategyId: string, version: number, center: string, executionEnvironmentId: string, executionAccountId: string) => call<Preview>('/grid-plan-previews', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ strategyId, strategyVersion: version, confirmedCenterPrice: center, executionEnvironmentId, executionAccountId, parameterOverrides: null }),
   }),
   previewCandidate: (config: StrategyConfig, center: string) => call<Preview>('/grid-plan-previews', {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({
       strategyId: null, confirmedCenterPrice: center, parameterOverrides: null,
+      executionEnvironmentId: config.defaultExecutionEnvironmentId, executionAccountId: config.defaultExecutionAccountId,
       candidateConfiguration: {
-        exchangeAccountId: config.exchangeAccountId, symbol: config.symbol, gridMode: config.gridMode, maxLevelsPerSide: config.maxLevelsPerSide,
+        exchangeAccountId: config.defaultExecutionAccountId, executionEnvironmentId: config.defaultExecutionEnvironmentId,
+        executionAccountId: config.defaultExecutionAccountId, symbol: config.symbol, gridMode: config.gridMode, maxLevelsPerSide: config.maxLevelsPerSide,
         workingEntriesPerSide: config.workingEntriesPerSide, initialGapPoints: config.initialGapPoints,
         gridSpacingPoints: config.gridSpacingPoints, gridSpacingStepPoints: config.gridSpacingStepPoints,
         takeProfitPoints: config.takeProfitPoints, baseLotSize: config.baseLotSize,
@@ -45,7 +49,7 @@ export const api = {
       },
     }),
   }),
-  start: (strategyId: string, previewId: string, center: string, environment: "PAPER" | "TESTNET") => call(`/strategies/${strategyId}/cycles`, {
+  start: (strategyId: string, previewId: string, center: string, environment: string) => call(`/strategies/${strategyId}/cycles`, {
     method: 'POST', headers: { ...JSON_HEADERS, 'Idempotency-Key': crypto.randomUUID() },
     body: JSON.stringify({ previewId, confirmedCenterPrice: center, operatorConfirmation: { parametersReviewed: true, centerConfirmed: true, environmentConfirmed: environment } }),
   }),
@@ -57,6 +61,7 @@ export const api = {
 }
 
 export const defaultConfig: StrategyConfig = {
+  strategyType: 'GRID', defaultExecutionEnvironmentId: 'paper-local', defaultExecutionAccountId: 'acct_paper_01',
   name: 'Weekend SOL Grid', exchangeAccountId: 'acct_paper_01', symbol: 'SOLUSDT', gridMode: 'TWO_WAY',
   centerSuggestionMode: 'CURRENT_MID', autoRestart: false, maxLevelsPerSide: 14, workingEntriesPerSide: 1,
   initialGapPoints: '0', gridSpacingPoints: '250', gridSpacingStepPoints: '10', takeProfitPoints: '180',

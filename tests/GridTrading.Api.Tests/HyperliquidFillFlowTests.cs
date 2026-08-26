@@ -2,7 +2,10 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using GridTrading.Api.Data;
+using GridTrading.Api.Execution;
+using GridTrading.Api.Exchanges.Hyperliquid;
 using GridTrading.Api.Exchange;
+using GridTrading.Api.Strategies.Grid;
 using GridTrading.Api.Infrastructure;
 using GridTrading.Api.Services;
 using GridTrading.Domain;
@@ -78,6 +81,8 @@ public sealed class HyperliquidFillFlowTests
         {
             Id = "cycle_grid",
             StrategyId = "strategy_grid",
+            ExecutionEnvironmentId = ExecutionEnvironmentIds.HyperliquidTestnet,
+            ExecutionAccountId = "account_testnet",
             State = "RUNNING",
             FrozenConfigurationJson = JsonSerializer.Serialize(config, JsonSupport.Options),
             FrozenPlanJson = JsonSerializer.Serialize(plan, JsonSupport.Options),
@@ -94,8 +99,10 @@ public sealed class HyperliquidFillFlowTests
         using var http = new HttpClient(exchange);
         var client = new HyperliquidTradingClient(http, configuration, db, protector,
             new HyperliquidNonceManager(db), new HyperliquidL1Signer());
-        var coordinator = new HyperliquidCycleCoordinator(db, client,
-            new HyperliquidOrderOwnershipService(db), new HyperliquidAccountOperationGate());
+        var adapter = new HyperliquidExecutionAdapter(db, client, new HyperliquidInfoClient(http, configuration),
+            new HyperliquidOrderOwnershipService(db));
+        var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
+            new ExecutionAccountOperationGate());
         using var message = JsonDocument.Parse("""
             {
               "channel": "userFills",
@@ -113,7 +120,8 @@ public sealed class HyperliquidFillFlowTests
 
         Assert.True(HyperliquidWebSocketProtocol.TryReadUserFills(message.RootElement, out var update));
         Assert.NotNull(update);
-        var processed = await coordinator.ProcessWebSocketFillsAsync("account_testnet", update.Fills, ct);
+        var normalizedFills = await adapter.NormalizeFillsAsync("account_testnet", update.Fills, ct);
+        var processed = await lifecycle.ProcessFillsAsync("account_testnet", normalizedFills, ct);
 
         Assert.Equal(1, processed);
         var filledEntry = await db.Orders.SingleAsync(x => x.Id == "entry_buy_0", ct);
@@ -161,7 +169,8 @@ public sealed class HyperliquidFillFlowTests
         AssertOrderRequest(exchange.ExchangeRequests[0], takeProfit, isBuy: false, "100", "0.2", "Alo");
         AssertOrderRequest(exchange.ExchangeRequests[1], replacement, isBuy: true, "99.8", "0.2", "Alo");
 
-        var repeated = await coordinator.ProcessWebSocketFillsAsync("account_testnet", update.Fills, ct);
+        normalizedFills = await adapter.NormalizeFillsAsync("account_testnet", update.Fills, ct);
+        var repeated = await lifecycle.ProcessFillsAsync("account_testnet", normalizedFills, ct);
 
         Assert.Equal(0, repeated);
         Assert.Equal(1, await db.Executions.CountAsync(ct));
@@ -185,8 +194,8 @@ public sealed class HyperliquidFillFlowTests
         Assert.True(HyperliquidWebSocketProtocol.TryReadOrderUpdates(orderMessage.RootElement, out var orderUpdate));
         Assert.NotNull(orderUpdate);
 
-        var statusUpdates = await coordinator.ProcessWebSocketOrderUpdatesAsync(
-            "account_testnet", orderUpdate.Updates, ct);
+        var normalizedUpdates = await adapter.NormalizeOrderUpdatesAsync("account_testnet", orderUpdate.Updates, ct);
+        var statusUpdates = await lifecycle.ProcessOrderUpdatesAsync("account_testnet", normalizedUpdates, ct);
 
         Assert.Equal(1, statusUpdates);
         Assert.Equal("CANCELLED", originalSell.Status);
@@ -243,7 +252,9 @@ public sealed class HyperliquidFillFlowTests
         };
         var cycle = new CycleEntity
         {
-            Id = "cycle_grid", StrategyId = strategy.Id, State = "RUNNING",
+            Id = "cycle_grid", StrategyId = strategy.Id,
+            ExecutionEnvironmentId = ExecutionEnvironmentIds.HyperliquidTestnet,
+            ExecutionAccountId = "account_testnet", State = "RUNNING",
             FrozenConfigurationJson = JsonSerializer.Serialize(config, JsonSupport.Options),
             FrozenPlanJson = JsonSerializer.Serialize(plan, JsonSupport.Options),
             ExitReason = "", StartedAt = now, LastReconciledAt = now
@@ -257,11 +268,13 @@ public sealed class HyperliquidFillFlowTests
         using var http = new HttpClient(exchange);
         var client = new HyperliquidTradingClient(http, configuration, db, protector,
             new HyperliquidNonceManager(db), new HyperliquidL1Signer());
-        var coordinator = new HyperliquidCycleCoordinator(db, client,
-            new HyperliquidOrderOwnershipService(db), new HyperliquidAccountOperationGate());
+        var adapter = new HyperliquidExecutionAdapter(db, client, new HyperliquidInfoClient(http, configuration),
+            new HyperliquidOrderOwnershipService(db));
+        var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
+            new ExecutionAccountOperationGate());
 
-        await coordinator.MaintainEntryOrdersAsync(strategy, cycle, config,
-            new HyperliquidBook(99.9m, 100.1m, 100m, now), ct);
+        await lifecycle.MaintainEntryOrdersAsync(cycle, config,
+            new ExecutionQuote(99.9m, 100.1m, 100m, now), ct);
 
         Assert.Equal("CANCELLED", staleSell.Status);
         Assert.Equal("NEW", buyZero.Status);
@@ -280,8 +293,8 @@ public sealed class HyperliquidFillFlowTests
         replacement.FilledQuantity = .1m;
         await db.SaveChangesAsync(ct);
 
-        await coordinator.MaintainEntryOrdersAsync(strategy, cycle, config,
-            new HyperliquidBook(100.2m, 100.3m, 100.25m, now), ct);
+        await lifecycle.MaintainEntryOrdersAsync(cycle, config,
+            new ExecutionQuote(100.2m, 100.3m, 100.25m, now), ct);
 
         Assert.Equal("PARTIALLY_FILLED", replacement.Status);
         Assert.Equal(2, exchange.ExchangeRequests.Count);

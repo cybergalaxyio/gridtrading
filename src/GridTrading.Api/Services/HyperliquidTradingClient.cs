@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace GridTrading.Api.Services;
 
 public sealed record HyperliquidPositionSnapshot(decimal Quantity, decimal PositionValue, decimal UnrealizedPnl);
-public sealed record HyperliquidOrderResult(string Status, string? ExchangeOrderId, string Cloid, string? Error);
+public sealed record HyperliquidOrderResult(string Status, string? ExchangeOrderId, string Cloid, string? Error, decimal FilledQuantity = 0m);
 public sealed record HyperliquidPreflight(bool AgentApproved, decimal NetPosition, int OpenOrderCount,
     decimal TradingEquity, decimal AvailableBalance, decimal PerpAccountValue, string AccountMode,
     string AgentRole, DateTimeOffset AsOf);
@@ -221,7 +221,11 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
             return new HyperliquidOrderResult("UNKNOWN", null, cloid, status.ToString());
         if (status.TryGetProperty("error", out var error)) return new HyperliquidOrderResult("REJECTED", null, cloid, error.GetString());
         if (status.TryGetProperty("resting", out var resting)) return new HyperliquidOrderResult("RESTING", resting.GetProperty("oid").ToString(), cloid, null);
-        if (status.TryGetProperty("filled", out var filled)) return new HyperliquidOrderResult("FILLED", filled.TryGetProperty("oid", out var oid) ? oid.ToString() : null, cloid, null);
+        if (status.TryGetProperty("filled", out var filled))
+        {
+            var quantity = filled.TryGetProperty("totalSz", out var totalSize) ? ParseDecimal(totalSize) : 0m;
+            return new HyperliquidOrderResult("FILLED", filled.TryGetProperty("oid", out var oid) ? oid.ToString() : null, cloid, null, quantity);
+        }
         return new HyperliquidOrderResult("UNKNOWN", null, cloid, status.ToString());
     }
 

@@ -1,25 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { api } from '../api'
 import { TradingChart } from '../components/TradingChart'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { StrategyParameters } from '../components/StrategyParameters'
-import type { Candle, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
+import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
 type AccountPanelTab = 'balances' | 'positions' | 'orders' | 'history' | 'events' | 'alerts'
 
-export function DashboardPage({ strategies, loadedStrategyId, reload, notify, reportError }: {
+export function DashboardPage({ strategies, loadedStrategyId, reload, notify, reportError, onExecutionEnvironmentChange }: {
   strategies: Strategy[]; loadedStrategyId?: string | null; reload: () => Promise<void>; notify: (message: string) => void; reportError: (message: string) => void
+  onExecutionEnvironmentChange: (environmentId: string) => void
 }) {
   const strategy = strategies.find(x => x.strategyId === loadedStrategyId)
     ?? strategies.find(x => x.activeCycle)
-    ?? strategies.find(x => x.exchangeAccountId !== 'acct_paper_01')
+    ?? strategies.find(x => x.defaultExecutionEnvironmentId === 'hyperliquid-testnet')
     ?? strategies[0]
   const cycle = strategy?.activeCycle
-  const isTestnet = !!strategy && strategy.exchangeAccountId !== 'acct_paper_01'
+  const [runEnvironments, setRunEnvironments] = useState<ExecutionEnvironment[]>([])
+  const [runEnvironmentId, setRunEnvironmentId] = useState('')
+  const [runAccounts, setRunAccounts] = useState<ExecutionAccount[]>([])
+  const [runAccountId, setRunAccountId] = useState('')
+  const isTestnet = !!strategy && (cycle?.executionEnvironmentId ?? (runEnvironmentId || strategy.defaultExecutionEnvironmentId)) === 'hyperliquid-testnet'
+  const selectedExecutionAccountId = cycle?.executionAccountId ?? (runAccountId || strategy?.defaultExecutionAccountId || '')
   const [candles, setCandles] = useState<Candle[]>([])
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
@@ -48,12 +55,36 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const marketSymbol = symbol || strategy?.symbol || (isTestnet ? 'SOL' : 'SOLUSDT')
   const strategyMatchesMarket = sameCoin(strategy?.symbol, marketSymbol)
 
+  useEffect(() => {
+    void api.executionEnvironments().then(setRunEnvironments).catch(() => setRunEnvironments([]))
+  }, [])
+  useEffect(() => {
+    if (!strategy) { onExecutionEnvironmentChange(''); return }
+    const environmentId = cycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId
+    setRunEnvironmentId(environmentId)
+    setRunAccountId(cycle?.executionAccountId ?? strategy.defaultExecutionAccountId)
+    onExecutionEnvironmentChange(environmentId)
+  }, [strategy?.strategyId, cycle?.cycleId, onExecutionEnvironmentChange])
+  useEffect(() => {
+    if (!runEnvironmentId) { setRunAccounts([]); setRunAccountId(''); return }
+    let active = true
+    void api.executionAccounts(runEnvironmentId).then(items => {
+      if (!active) return
+      setRunAccounts(items)
+      setRunAccountId(current => {
+        const selected = cycle?.executionAccountId ?? current
+        return items.some(x => x.id === selected) ? selected : items[0]?.id ?? ''
+      })
+    }).catch(() => { if (active) { setRunAccounts([]); setRunAccountId(cycle?.executionAccountId ?? '') } })
+    return () => { active = false }
+  }, [runEnvironmentId, cycle?.executionAccountId])
+
   const refreshOrderHistory = useCallback(async (showLoading = true) => {
     if (!isTestnet || !strategy) return
     const sequence = ++historyRefreshSequence.current
     if (showLoading) setHistoryRefreshing(true)
     try {
-      const history = await api.testnetOrderHistory(strategy.exchangeAccountId)
+      const history = await api.testnetOrderHistory(selectedExecutionAccountId)
       if (sequence === historyRefreshSequence.current) setExchangeOrderHistory(history)
     } catch (e) {
       if (sequence === historyRefreshSequence.current)
@@ -61,7 +92,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     } finally {
       if (showLoading && sequence === historyRefreshSequence.current) setHistoryRefreshing(false)
     }
-  }, [isTestnet, strategy?.exchangeAccountId, reportError])
+  }, [isTestnet, strategy ? selectedExecutionAccountId : undefined, reportError])
 
   useEffect(() => {
     if (strategy?.symbol) setSymbol(strategy.symbol)
@@ -157,20 +188,20 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     if (!strategy) { setInstrumentRules(null); return }
     let active = true
     setInstrumentRules(null)
-    void api.instrumentRules(strategy.exchangeAccountId, marketSymbol).then(value => {
+    void api.instrumentRules(selectedExecutionAccountId, marketSymbol).then(value => {
       if (active) setInstrumentRules(value)
     }).catch(() => {
       if (active) setInstrumentRules(null)
     })
     return () => { active = false }
-  }, [strategy?.exchangeAccountId, marketSymbol])
+  }, [strategy ? selectedExecutionAccountId : undefined, marketSymbol])
 
   useEffect(() => {
     if (!isTestnet || !strategy) {
       setClearinghouseState(null); setSpotClearinghouseState(null); setExchangeOpenOrders(null); setExchangeOrderHistory(null); return
     }
     let active = true
-    const accountId = strategy.exchangeAccountId
+    const accountId = selectedExecutionAccountId
     async function refreshLiveAccount() {
       try {
         const [state, spotState, openOrders] = await Promise.all([
@@ -185,7 +216,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     void refreshLiveAccount(); void refreshOrderHistory(false)
     const timer = setInterval(() => void refreshLiveAccount(), 10_000)
     return () => { active = false; clearInterval(timer) }
-  }, [isTestnet, strategy?.exchangeAccountId, refreshOrderHistory])
+  }, [isTestnet, strategy ? selectedExecutionAccountId : undefined, refreshOrderHistory])
 
   async function refresh() {
     const sequence = ++refreshSequence.current
@@ -194,7 +225,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       const chartRequest = isTestnet ? api.testnetCandles(marketSymbol, timeframe) : api.candles()
       const bookRequest = isTestnet ? api.testnetBook(marketSymbol) : Promise.resolve(null)
       const accountRequest = isTestnet && strategy
-        ? api.testnetAccountState(strategy.exchangeAccountId, marketSymbol) : Promise.resolve(null)
+        ? api.testnetAccountState(selectedExecutionAccountId, marketSymbol) : Promise.resolve(null)
       const [chart, snap, orderRows, book, actualAccount] = await Promise.all([
         chartRequest,
         cycle ? api.snapshot(cycle.cycleId) : Promise.resolve(null),
@@ -216,7 +247,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   useEffect(() => {
     void refresh(); const timer = setInterval(() => void refresh(), isTestnet ? 10_000 : 5_000)
     return () => clearInterval(timer)
-  }, [cycle?.cycleId, strategy?.strategyId, strategy?.exchangeAccountId, marketSymbol, timeframe, isTestnet])
+  }, [cycle?.cycleId, strategy?.strategyId, strategy ? selectedExecutionAccountId : undefined, marketSymbol, timeframe, isTestnet])
 
   const entryOrderLines = useMemo(() => strategyMatchesMarket
     ? orders
@@ -230,8 +261,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     try {
       const quote = isTestnet ? await api.testnetBook(strategy.symbol)
         : await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/snapshot').then(r => r.json()) as { mid: string }
-      const preview = await api.preview(strategy.strategyId, strategy.version, quote.mid)
-      await api.start(strategy.strategyId, preview.previewId, quote.mid, isTestnet ? 'TESTNET' : 'PAPER')
+      const preview = await api.preview(strategy.strategyId, strategy.version, quote.mid, runEnvironmentId, runAccountId)
+      await api.start(strategy.strategyId, preview.previewId, quote.mid, preview.executionEnvironmentId)
       notify('Cycle 已启动，中心和网格计划已冻结'); await reload(); await refresh()
     } catch (e) { reportError(e instanceof Error ? e.message : '启动失败') } finally { setBusy(false) }
   }
@@ -263,6 +294,11 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     : null
 
   return <div className="dashboard-page">
+    {strategy && <TopbarExecutionSelectors environments={runEnvironments} accounts={runAccounts}
+      environmentId={runEnvironmentId} accountId={runAccountId} locked={!!cycle} busy={busy}
+      onEnvironmentChange={value => { setRunEnvironmentId(value); setRunAccountId(''); onExecutionEnvironmentChange(value) }}
+      onAccountChange={setRunAccountId}
+    />}
     <section className="instrument-bar">
       <div><h1><label className="symbol-picker" title="切换行情交易对"><span className="sr-only">交易对</span><select value={marketSymbol} onChange={event => { setSymbol(event.target.value); setTestnetMid(null); setAccountState(null); setCandles([]) }} aria-label="选择交易对">
         {!instruments.includes(marketSymbol) && <option value={marketSymbol}>{instrument}</option>}
@@ -271,7 +307,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         <p>Last Update: {time(isTestnet ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</p></div>
       <div className="control-buttons">
         {strategy && <button className="secondary" onClick={() => setParametersOpen(true)}>View</button>}
-        {!cycle && <button className="primary" disabled={!strategy || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : '确认预览并开启'}</button>}
+        {!cycle && <button className="primary" disabled={!strategy || !runAccountId || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : '确认预览并开启'}</button>}
         {cycle?.state === 'RUNNING' && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>Pause Entry</button>}
         {cycle?.state === 'PAUSED' && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', '已按固定中心恢复 Entry')}>Resume Entry</button>}
         {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
@@ -323,6 +359,40 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   </div>
 }
 
+function TopbarExecutionSelectors({ environments, accounts, environmentId, accountId, locked, busy,
+  onEnvironmentChange, onAccountChange,
+}: {
+  environments: ExecutionEnvironment[]
+  accounts: ExecutionAccount[]
+  environmentId: string
+  accountId: string
+  locked: boolean
+  busy: boolean
+  onEnvironmentChange: (value: string) => void
+  onAccountChange: (value: string) => void
+}) {
+  const [host, setHost] = useState<HTMLElement | null>(null)
+  useEffect(() => { setHost(document.getElementById('execution-context-slot')) }, [])
+  if (!host) return null
+  const environmentKnown = environments.some(item => item.id === environmentId)
+  const accountKnown = accounts.some(item => item.id === accountId)
+  return createPortal(
+    <>
+      <select className="topbar-context-select environment" value={environmentId} disabled={locked || busy} aria-label="本次 Cycle 执行环境"
+        onChange={event => onEnvironmentChange(event.target.value)}>
+        {environmentId && !environmentKnown && <option value={environmentId}>{environmentId}</option>}
+        {environments.map(item => <option key={item.id} value={item.id}>{item.displayName}</option>)}
+      </select>
+      <select className="topbar-context-select account" value={accountId} disabled={locked || busy || accounts.length <= 1} aria-label="本次 Cycle 执行账户"
+        onChange={event => onAccountChange(event.target.value)}>
+        {accountId && !accountKnown && <option value={accountId}>{accountId}</option>}
+        {accounts.map(item => <option key={item.id} value={item.id}>{item.displayName}</option>)}
+      </select>
+    </>,
+    host,
+  )
+}
+
 function BalanceTable({ state, spotState, pnl }: { state: HyperliquidClearinghouseState | null; spotState: HyperliquidSpotClearinghouseState | null; pnl: string }) {
   if (!state || !spotState) return <Empty text="正在加载 Hyperliquid unified account balance…" />
   const summary = state.marginSummary
@@ -349,9 +419,19 @@ function PositionRow({ position }: { position: HyperliquidPosition }) {
 function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
   if (!rows) return <Empty text="正在加载 Hyperliquid frontendOpenOrders…" />
   return <div className="table-wrap open-orders-scroll"><table><thead><tr><th>时间</th><th>市场</th><th>Strategy</th><th>Level</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>Reduce Only</th><th>订单 ID</th></tr></thead>
-    <tbody>{rows.map(order => <tr key={order.oid}><td>{exchangeTime(order.timestamp)}</td><td><strong>{order.coin}-USDC</strong></td>
-      <StrategyOwnership value={order} /><OrderLevel value={order} /><td className={order.side === 'B' ? 'positive' : 'negative'}>{order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{order.orderType}</td><td>{format(order.limitPx, 4)}</td>
-      <td>{order.origSz}</td><td>{order.sz}</td><td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td></tr>)}</tbody>
+    <tbody>{rows.map(order => {
+      const remainingQuantity = Number(order.sz)
+      const originalQuantity = Number(order.origSz)
+      const isPartiallyFilled = Number.isFinite(remainingQuantity) && Number.isFinite(originalQuantity)
+        && originalQuantity > 0 && remainingQuantity >= 0 && remainingQuantity < originalQuantity
+      return <tr key={order.oid}><td>{exchangeTime(order.timestamp)}</td><td><strong>{order.coin}-USDC</strong></td>
+        <StrategyOwnership value={order} /><OrderLevel value={order} /><td className={order.side === 'B' ? 'positive' : 'negative'}>{order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{order.orderType}</td><td>{format(order.limitPx, 4)}</td>
+        <td>{order.origSz}</td>
+        <td>{isPartiallyFilled
+          ? <span className="partial-fill-quantity" title={`已部分成交：原始 ${order.origSz}，剩余 ${order.sz}`}>{order.sz}</span>
+          : order.sz}</td>
+        <td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td></tr>
+    })}</tbody>
   </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
 }
 

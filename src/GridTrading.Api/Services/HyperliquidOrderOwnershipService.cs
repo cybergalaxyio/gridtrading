@@ -53,7 +53,7 @@ public sealed class HyperliquidOrderOwnershipService(TradingDbContext db)
         var rows = await (from order in db.Orders.AsNoTracking()
             join cycle in db.Cycles.AsNoTracking() on order.CycleId equals cycle.Id
             join strategy in db.Strategies.AsNoTracking() on cycle.StrategyId equals strategy.Id
-            where strategy.ExchangeAccountId == accountId && (cycleId == null || cycle.Id == cycleId)
+            where cycle.ExecutionAccountId == accountId && (cycleId == null || cycle.Id == cycleId)
             select new
             {
                 order.Id, order.CycleId, order.ClientOrderId, order.ExchangeOrderId, order.Symbol, order.Side,

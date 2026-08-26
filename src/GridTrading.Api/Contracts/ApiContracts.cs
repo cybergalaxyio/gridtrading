@@ -12,6 +12,12 @@ public sealed record StrategyRequest(
     int MarketDataStaleSeconds, int OrderCommandTimeoutSeconds, int MaxOrderFrequency,
     int PartialFillCancelAfterMinutes = 10)
 {
+    public string StrategyType { get; init; } = "GRID";
+    public string? DefaultExecutionEnvironmentId { get; init; }
+    public string? DefaultExecutionAccountId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string EffectiveExecutionAccountId => DefaultExecutionAccountId ?? ExchangeAccountId;
+
     public GridConfiguration ToConfiguration(decimal centerPrice = 0m) => new()
     {
         Symbol = Symbol, GridMode = GridMode, CenterPrice = centerPrice, MaxLevelsPerSide = MaxLevelsPerSide,
@@ -31,22 +37,25 @@ public sealed record StrategyRequest(
     public static StrategyRequest Default => new(
         "Weekend SOL Grid", "acct_paper_01", "SOLUSDT", GridMode.TwoWay, "CURRENT_MID", false,
         14, 1, 0m, 250m, 10m, 180m, 0.5m, 5m, 2m, 10m, 50m, 100m,
-        .0002m, .00055m, .10m, true, true, true, 10, 5, 10, 5, 10);
+        .0002m, .00055m, .10m, true, true, true, 10, 5, 10, 5, 10)
+        { DefaultExecutionEnvironmentId = "paper-local", DefaultExecutionAccountId = "acct_paper_01" };
 }
 
 public sealed record CandidateConfiguration(
     string ExchangeAccountId, string Symbol, GridMode GridMode, int MaxLevelsPerSide, int WorkingEntriesPerSide,
     decimal InitialGapPoints, decimal GridSpacingPoints, decimal GridSpacingStepPoints,
     decimal TakeProfitPoints, decimal BaseLotSize, decimal LotSizeIncreasePercent,
-    decimal MaxTradeLot, decimal MaxNetLot);
+    decimal MaxTradeLot, decimal MaxNetLot,
+    string? ExecutionEnvironmentId = null, string? ExecutionAccountId = null);
 
 public sealed record PreviewRequest(string? StrategyId, int? StrategyVersion, decimal ConfirmedCenterPrice,
-    CandidateConfiguration? CandidateConfiguration, object? ParameterOverrides);
+    CandidateConfiguration? CandidateConfiguration, object? ParameterOverrides,
+    string? ExecutionEnvironmentId = null, string? ExecutionAccountId = null);
 public sealed record StartCycleRequest(string PreviewId, decimal ConfirmedCenterPrice, OperatorConfirmation OperatorConfirmation);
 public sealed record OperatorConfirmation(bool ParametersReviewed, bool CenterConfirmed, string EnvironmentConfirmed);
 public sealed record CommandRequest(string Reason);
 public sealed record EmergencyCommandRequest(string Reason, EmergencyConfirmation Confirmation);
 public sealed record EmergencyConfirmation(bool CancelAllStrategyOrders, bool FlattenActualNetPosition, bool AcknowledgedTakerExecution);
 public sealed record AcknowledgementRequest(string Note);
-public sealed record PreviewCacheItem(string Id, string? StrategyId, int StrategyVersion, string ExchangeAccountId,
+public sealed record PreviewCacheItem(string Id, string? StrategyId, int StrategyVersion, string ExecutionEnvironmentId, string ExecutionAccountId,
     DateTimeOffset ExpiresAt, GridConfiguration Configuration, GridPlan Plan);

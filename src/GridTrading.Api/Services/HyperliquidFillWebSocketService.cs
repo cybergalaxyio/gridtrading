@@ -2,7 +2,9 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using GridTrading.Api.Data;
+using GridTrading.Api.Exchanges.Hyperliquid;
 using GridTrading.Api.Hubs;
+using GridTrading.Api.Strategies.Grid;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
@@ -217,8 +219,10 @@ public sealed class HyperliquidFillWebSocketService(
     {
         if (update.Fills.Count == 0) return;
         using var scope = scopeFactory.CreateScope();
-        var coordinator = scope.ServiceProvider.GetRequiredService<HyperliquidCycleCoordinator>();
-        var processed = await coordinator.ProcessWebSocketFillsAsync(accountId, update.Fills, ct);
+        var adapter = scope.ServiceProvider.GetRequiredService<HyperliquidExecutionAdapter>();
+        var lifecycle = scope.ServiceProvider.GetRequiredService<GridOrderLifecycle>();
+        var normalized = await adapter.NormalizeFillsAsync(accountId, update.Fills, ct);
+        var processed = await lifecycle.ProcessFillsAsync(accountId, normalized, ct);
         if (processed > 0)
             logger.LogInformation("Processed {FillCount} Hyperliquid WebSocket fill(s) for account {AccountId}{Snapshot}.",
                 processed, accountId, update.IsSnapshot ? " from snapshot" : "");
@@ -228,8 +232,10 @@ public sealed class HyperliquidFillWebSocketService(
     {
         if (update.Updates.Count == 0) return;
         using var scope = scopeFactory.CreateScope();
-        var coordinator = scope.ServiceProvider.GetRequiredService<HyperliquidCycleCoordinator>();
-        var processed = await coordinator.ProcessWebSocketOrderUpdatesAsync(accountId, update.Updates, ct);
+        var adapter = scope.ServiceProvider.GetRequiredService<HyperliquidExecutionAdapter>();
+        var lifecycle = scope.ServiceProvider.GetRequiredService<GridOrderLifecycle>();
+        var normalized = await adapter.NormalizeOrderUpdatesAsync(accountId, update.Updates, ct);
+        var processed = await lifecycle.ProcessOrderUpdatesAsync(accountId, normalized, ct);
         if (processed > 0)
             logger.LogInformation("Processed {OrderUpdateCount} Hyperliquid WebSocket order update(s) for account {AccountId}.",
                 processed, accountId);

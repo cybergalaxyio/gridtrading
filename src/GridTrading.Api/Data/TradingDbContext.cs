@@ -16,6 +16,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<StrategyEntity>().Property(x => x.DefaultExecutionAccountId).HasColumnName("ExchangeAccountId");
         modelBuilder.Entity<StrategyEntity>().HasIndex(x => x.Name);
         modelBuilder.Entity<CycleEntity>().HasIndex(x => new { x.StrategyId, x.IsTerminal });
         modelBuilder.Entity<OrderEntity>().HasIndex(x => x.ClientOrderId).IsUnique();
@@ -36,7 +37,15 @@ public sealed class StrategyEntity
 {
     public required string Id { get; set; }
     public required string Name { get; set; }
-    public required string ExchangeAccountId { get; set; }
+    public string StrategyType { get; set; } = "GRID";
+    public string DefaultExecutionEnvironmentId { get; set; } = "paper-local";
+    public string DefaultExecutionAccountId { get; set; } = "acct_paper_01";
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public string ExchangeAccountId
+    {
+        get => DefaultExecutionAccountId;
+        set => DefaultExecutionAccountId = value;
+    }
     public required string Symbol { get; set; }
     public int Version { get; set; } = 1;
     public required string ConfigurationJson { get; set; }
@@ -49,6 +58,8 @@ public sealed class CycleEntity
 {
     public required string Id { get; set; }
     public required string StrategyId { get; set; }
+    public string ExecutionEnvironmentId { get; set; } = "paper-local";
+    public string ExecutionAccountId { get; set; } = "acct_paper_01";
     public required string State { get; set; }
     public long StateVersion { get; set; }
     public bool IsTerminal { get; set; }

@@ -2,9 +2,13 @@ using System.Text.Json;
 using GridTrading.Api.Contracts;
 using GridTrading.Api.Data;
 using GridTrading.Api.Hubs;
+using GridTrading.Api.Execution;
+using GridTrading.Api.Exchanges.Hyperliquid;
+using GridTrading.Api.Exchanges.Paper;
 using GridTrading.Api.Infrastructure;
 using GridTrading.Api.Services;
 using GridTrading.Domain;
+using GridTrading.Api.Strategies.Grid;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -24,13 +28,18 @@ builder.Services.AddHttpClient<HyperliquidTradingClient>();
 builder.Services.AddHttpClient<HyperliquidMarketDataClient>();
 builder.Services.AddScoped<HyperliquidAccountStatusService>();
 builder.Services.AddScoped<HyperliquidOrderOwnershipService>();
-builder.Services.AddSingleton<HyperliquidAccountOperationGate>();
-builder.Services.AddScoped<HyperliquidCycleCoordinator>();
+builder.Services.AddSingleton<ExecutionAccountOperationGate>();
+builder.Services.AddScoped<PaperExecutionAdapter>();
+builder.Services.AddScoped<HyperliquidExecutionAdapter>();
+builder.Services.AddScoped<IExecutionAdapter>(sp => sp.GetRequiredService<PaperExecutionAdapter>());
+builder.Services.AddScoped<IExecutionAdapter>(sp => sp.GetRequiredService<HyperliquidExecutionAdapter>());
+builder.Services.AddScoped<ExecutionEnvironmentRegistry>();
+builder.Services.AddScoped<GridOrderLifecycle>();
+builder.Services.AddScoped<GridStrategyWorkflow>();
 builder.Services.AddHostedService<HyperliquidAccountBootstrap>();
 builder.Services.AddHostedService<HyperliquidStrategyBootstrap>();
 builder.Services.AddHostedService<HyperliquidFillWebSocketService>();
-builder.Services.AddHostedService<HyperliquidReconciliationService>();
-builder.Services.AddScoped<LegacyTradingService>();
+builder.Services.AddHostedService<GridReconciliationService>();
 builder.Services.AddScoped<TradingService>();
 builder.Services.AddHostedService<MarketBroadcastService>();
 builder.Services.AddHostedService<PaperExecutionService>();
@@ -98,6 +107,13 @@ api.MapGet("/system/capabilities", () => new
     liveTradingEnabled = false, autoRestartSupported = false, takeProfitModes = new[] { "POINTS" },
     automaticRegimeGateSupported = false
 });
+api.MapGet("/execution-environments", (ExecutionEnvironmentRegistry registry) => registry.Environments);
+api.MapGet("/execution-environments/{environmentId}/accounts", async (
+    string environmentId, ExecutionEnvironmentRegistry registry, CancellationToken ct) =>
+{
+    var adapter = registry.Adapter(environmentId);
+    return Results.Ok(await adapter.GetAccountsAsync(ct));
+});
 api.MapGet("/operations/{id}", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Operations.FindAsync([id], ct) is { } item ? Results.Ok(OperationDto(item)) : Results.NotFound());
 api.MapGet("/operations/{id}/events", async (string id, TradingDbContext db, CancellationToken ct) =>
@@ -131,16 +147,18 @@ api.MapGet("/exchange-accounts/{id}/positions", async (string id, string? symbol
     IsAccount(id) ? Results.Ok(await db.Cycles.Where(x => !x.IsTerminal && (symbol == null || x.FrozenConfigurationJson.Contains(symbol)))
         .Select(x => new { cycleId = x.Id, symbol = symbol ?? "SOLUSDT", netQuantity = x.ActualNetQuantity, reconstructedQuantity = x.ReconstructedNetQuantity }).ToListAsync(ct)) : Results.NotFound());
 api.MapGet("/exchange-accounts/{id}/instruments/{symbol}", async (string id, string symbol, decimal? referencePrice,
-    TradingDbContext db, HyperliquidInfoClient instruments, CancellationToken ct) =>
+    ExecutionEnvironmentRegistry registry, CancellationToken ct) =>
 {
-    if (id == "acct_paper_01" && symbol.Equals("SOLUSDT", StringComparison.OrdinalIgnoreCase))
-        return Results.Ok(new ExchangeInstrumentMetadata("SOLUSDT", "PAPER", 0, 1, referencePrice is > 0m ? referencePrice.Value : 145.25m,
-            .001m, .1m, .1m, 5m, 500, .0002m, .00055m, "PAPER_SIMULATOR", DateTimeOffset.UtcNow));
-    var account = await db.HyperliquidAccounts.SingleOrDefaultAsync(x => x.Id == id && x.Enabled && x.Environment == "TESTNET", ct);
-    if (account is null)
-        return Results.NotFound();
-    try { return Results.Ok(await instruments.GetPerpetualInstrument(symbol, referencePrice, account.AccountAddress, ct)); }
-    catch (HttpRequestException) { return Results.Problem(statusCode: 503, title: "Hyperliquid Testnet metadata is unavailable."); }
+    var selection = await registry.ResolveAsync(null, id, ct);
+    var adapter = registry.Adapter(selection.EnvironmentId);
+    var instrument = await adapter.GetInstrumentAsync(selection, symbol, referencePrice, ct);
+    return Results.Ok(new
+    {
+        instrument.Symbol, environment = adapter.Environment.Network, instrument.AssetIndex, instrument.SizeDecimals,
+        instrument.ReferencePrice, instrument.TickSize, instrument.QuantityStep, instrument.MinOrderQuantity,
+        instrument.MinOrderNotional, instrument.MaxActiveOrders, instrument.MakerFeeRate, instrument.TakerFeeRate,
+        instrument.FeeSource, instrument.AsOf
+    });
 });
 
 api.MapGet("/market-data/{accountId}/{symbol}/snapshot", (string accountId, string symbol, MarketState market) =>
@@ -277,13 +295,18 @@ static object OperationDto(OperationEntity x) => new { operationId = x.Id, x.Com
 static object CycleDto(CycleEntity x) => new
 {
     cycleId = x.Id, x.StrategyId, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired,
-    x.FixedCenterPrice, frozenConfiguration = JsonSerializer.Deserialize<GridConfiguration>(x.FrozenConfigurationJson, JsonSupport.Options),
+    x.ExecutionEnvironmentId, x.ExecutionAccountId, x.FixedCenterPrice,
+    frozenConfiguration = JsonSerializer.Deserialize<GridConfiguration>(x.FrozenConfigurationJson, JsonSupport.Options),
     x.StartedAt, x.EndedAt, x.ExitReason
 };
-static object StrategyDto(StrategyEntity x, CycleEntity? cycle) => new { strategyId = x.Id, x.Name, x.ExchangeAccountId, x.Symbol, x.Version, x.Archived, configuration = TradingService.DeserializeStrategy(x), activeCycle = cycle is null ? null : CycleDto(cycle), x.CreatedAt, x.UpdatedAt };
+static object StrategyDto(StrategyEntity x, CycleEntity? cycle) => new { strategyId = x.Id, x.Name, x.StrategyType,
+    x.DefaultExecutionEnvironmentId, x.DefaultExecutionAccountId, exchangeAccountId = x.DefaultExecutionAccountId,
+    x.Symbol, x.Version, x.Archived, configuration = TradingService.DeserializeStrategy(x),
+    activeCycle = cycle is null ? null : CycleDto(cycle), x.CreatedAt, x.UpdatedAt };
 static object PreviewDto(PreviewCacheItem x) => new
 {
-    previewId = x.Id, x.ExpiresAt, strategyVersion = x.StrategyVersion, marketDataAsOf = DateTimeOffset.UtcNow,
+    previewId = x.Id, x.ExecutionEnvironmentId, x.ExecutionAccountId, x.ExpiresAt,
+    strategyVersion = x.StrategyVersion, marketDataAsOf = DateTimeOffset.UtcNow,
     confirmedCenterPrice = x.Plan.CenterPrice, x.Plan.OutermostBuyPrice, x.Plan.OutermostSellPrice,
     x.Plan.CoverageBelowPct, x.Plan.CoverageAbovePct,
     maximumPlannedQuantityPerSide = x.Plan.Levels.GroupBy(l => l.Side).Select(g => g.Sum(l => l.PlannedQuantity)).DefaultIfEmpty(0m).Max(),
@@ -297,14 +320,15 @@ static async Task InitializeDatabase(IServiceProvider services, string connectio
     if (!string.IsNullOrWhiteSpace(sqlitePath)) Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(sqlitePath))!);
     using var scope = services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
     await db.Database.EnsureCreatedAsync();
-    await DatabaseCompatibility.EnsureTestnetSchemaAsync(db);
+    await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
     await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys=ON;");
     await db.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=5000;");
     if (!await db.Strategies.AnyAsync())
     {
         var now = DateTimeOffset.UtcNow; var request = StrategyRequest.Default;
-        db.Strategies.Add(new StrategyEntity { Id = "strategy_weekend_sol", Name = request.Name, ExchangeAccountId = request.ExchangeAccountId,
+        db.Strategies.Add(new StrategyEntity { Id = "strategy_weekend_sol", Name = request.Name, StrategyType = "GRID",
+            DefaultExecutionEnvironmentId = "paper-local", DefaultExecutionAccountId = "acct_paper_01",
             Symbol = request.Symbol, ConfigurationJson = JsonSerializer.Serialize(request, JsonSupport.Options), CreatedAt = now, UpdatedAt = now });
         db.RiskAlerts.AddRange(
             new RiskAlertEntity { Id = "alert_001", Severity = "CRITICAL", Code = "MARKET_DATA_STALE", Message = "行情曾短暂超过新鲜度阈值，已阻止创建新敞口。", CreatedAt = now.AddMinutes(-42) },

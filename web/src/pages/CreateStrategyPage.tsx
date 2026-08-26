@@ -2,28 +2,45 @@ import { useEffect, useMemo, useState } from 'react'
 import { api, defaultConfig } from '../api'
 import { buildGridPreview, GridPreview } from '../components/GridPreview'
 import { Icon } from '../components/Icon'
-import type { ExchangeInstrumentRules, Preview, Strategy, StrategyConfig } from '../types'
+import type { ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, Preview, Strategy, StrategyConfig } from '../types'
 
 export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportError }: {
   initialStrategy?: Strategy | null; onCancel: () => void; onSaved: (editing: boolean) => Promise<void>; reportError: (message: string) => void
 }) {
   const [config, setConfig] = useState<StrategyConfig>(() => initialStrategy ? {
     ...defaultConfig, ...initialStrategy.configuration, name: initialStrategy.name,
-    exchangeAccountId: initialStrategy.exchangeAccountId, symbol: initialStrategy.symbol, workingEntriesPerSide: 1,
+    strategyType: initialStrategy.strategyType, defaultExecutionEnvironmentId: initialStrategy.defaultExecutionEnvironmentId,
+    defaultExecutionAccountId: initialStrategy.defaultExecutionAccountId, exchangeAccountId: initialStrategy.defaultExecutionAccountId,
+    symbol: initialStrategy.symbol, workingEntriesPerSide: 1,
   } : { ...defaultConfig })
-  const [environment, setEnvironment] = useState<'PAPER' | 'TESTNET'>(() => initialStrategy?.exchangeAccountId !== 'acct_paper_01' ? 'TESTNET' : 'PAPER')
+  const [environment, setEnvironment] = useState(() => initialStrategy?.defaultExecutionEnvironmentId ?? defaultConfig.defaultExecutionEnvironmentId)
   const [center, setCenter] = useState(initialStrategy?.activeCycle?.fixedCenterPrice ?? '145.250')
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState(false)
   const [instrument, setInstrument] = useState<ExchangeInstrumentRules | null>(null)
   const [instrumentLoading, setInstrumentLoading] = useState(false)
   const [instrumentError, setInstrumentError] = useState('')
-  const [testnetAccounts, setTestnetAccounts] = useState<{ accountId: string; name: string }[]>([])
+  const [environments, setEnvironments] = useState<ExecutionEnvironment[]>([])
+  const [accounts, setAccounts] = useState<ExecutionAccount[]>([])
   const [symbols, setSymbols] = useState<string[]>(initialStrategy ? [initialStrategy.symbol] : ['SOLUSDT'])
-  const identityLocked = !!initialStrategy?.activeCycle
-  useEffect(() => { void api.testnetAccounts().then(setTestnetAccounts).catch(() => setTestnetAccounts([])) }, [])
+  const identityLocked = false // Defaults may change; a running Cycle keeps its frozen selection.
+  useEffect(() => { void api.executionEnvironments().then(setEnvironments).catch(() => setEnvironments([])) }, [])
   useEffect(() => {
-    if (environment === 'PAPER') { setSymbols(['SOLUSDT']); return }
+    let active = true
+    void api.executionAccounts(environment).then(items => {
+      if (!active) return
+      setAccounts(items)
+      setConfig(current => {
+        const accountId = items.some(x => x.id === current.defaultExecutionAccountId)
+          ? current.defaultExecutionAccountId : items[0]?.id ?? ''
+        return { ...current, defaultExecutionEnvironmentId: environment,
+          defaultExecutionAccountId: accountId, exchangeAccountId: accountId }
+      })
+    }).catch(() => { if (active) setAccounts([]) })
+    return () => { active = false }
+  }, [environment])
+  useEffect(() => {
+    if (environment === 'paper-local') { setSymbols(['SOLUSDT']); return }
     let active = true
     void api.testnetInstruments().then(result => {
       if (!active) return
@@ -37,14 +54,10 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     return () => { active = false }
   }, [environment])
   useEffect(() => {
-    if (environment === 'TESTNET' && !config.exchangeAccountId && testnetAccounts[0])
-      setConfig(current => ({ ...current, exchangeAccountId: testnetAccounts[0].accountId }))
-  }, [environment, config.exchangeAccountId, testnetAccounts])
-  useEffect(() => {
-    if (!config.exchangeAccountId || !config.symbol) { setInstrument(null); setInstrumentError(''); setInstrumentLoading(false); return }
+    if (!config.defaultExecutionAccountId || !config.symbol) { setInstrument(null); setInstrumentError(''); setInstrumentLoading(false); return }
     let active = true
     setInstrument(null); setInstrumentError(''); setInstrumentLoading(true)
-    void api.instrumentRules(config.exchangeAccountId, config.symbol).then(value => {
+    void api.instrumentRules(config.defaultExecutionAccountId, config.symbol).then(value => {
       if (active) setInstrument(value)
     }).catch(() => {
       if (active) setInstrumentError('无法加载交易规则')
@@ -52,22 +65,23 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
       if (active) setInstrumentLoading(false)
     })
     return () => { active = false }
-  }, [config.exchangeAccountId, config.symbol])
+  }, [config.defaultExecutionAccountId, config.symbol])
   const [step, setStep] = useState(1)
   const totalLevels = plannedLevelCount(config)
   const previewRows = useMemo(() => preview?.levels.filter((_, i) => i < 12) ?? [], [preview])
   const gridPreview = useMemo(() => buildGridPreview(config, center, instrument?.tickSize, instrument?.quantityStep), [config, center, instrument])
 
   function set<K extends keyof StrategyConfig>(key: K, value: StrategyConfig[K]) { setConfig(x => ({ ...x, [key]: value })); setPreview(null) }
-  function changeEnvironment(value: 'PAPER' | 'TESTNET') {
-    setEnvironment(value); setPreview(null); setInstrument(null)
-    setConfig(current => ({ ...current,
-      exchangeAccountId: value === 'PAPER' ? 'acct_paper_01' : testnetAccounts[0]?.accountId ?? '',
-      symbol: value === 'PAPER' ? 'SOLUSDT' : current.symbol,
-    }))
+  function changeEnvironment(value: string) {
+    setEnvironment(value); setPreview(null); setInstrument(null); setAccounts([])
+    setConfig(current => ({ ...current, defaultExecutionEnvironmentId: value,
+      defaultExecutionAccountId: '', exchangeAccountId: '', symbol: value === 'paper-local' ? 'SOLUSDT' : current.symbol }))
+  }
+  function changeAccount(value: string) {
+    setConfig(current => ({ ...current, defaultExecutionAccountId: value, exchangeAccountId: value })); setPreview(null)
   }
   async function suggestCenter() {
-    try { const value = config.exchangeAccountId === 'acct_paper_01' ? (await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/center-suggestion?mode=CURRENT_MID').then(r => r.json()) as { suggestedCenterPrice: string }).suggestedCenterPrice : (await api.testnetBook(config.symbol)).mid; setCenter(value) }
+    try { const value = environment === 'paper-local' ? (await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/center-suggestion?mode=CURRENT_MID').then(r => r.json()) as { suggestedCenterPrice: string }).suggestedCenterPrice : (await api.testnetBook(config.symbol)).mid; setCenter(value) }
     catch { reportError('无法获取最新中心建议') }
   }
   async function generatePreview() {
@@ -79,14 +93,14 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     catch (e) { reportError(e instanceof Error ? e.message : '保存失败') } finally { setBusy(false) }
   }
 
-  return <div className="create-page page padded"><div className="page-title"><div><h1>{initialStrategy ? 'Edit Strategy' : '新建策略'}</h1><p>先选择环境、交易账户和 Symbol，系统加载 Tick Size 后再配置 Points 参数。</p></div><span className="env-badge">{environment}</span></div>
+  return <div className="create-page page padded"><div className="page-title"><div><h1>{initialStrategy ? 'Edit Strategy' : '新建策略'}</h1><p>先定义 Strategy，再选择默认执行环境、账户和 Symbol；Tick Size 与 Quantity Step 会一起加载。</p></div><span className="env-badge">{environment}</span></div>
     <div className="steps">{[['基本信息', 1], ['网格参数', 2], ['资金与风控', 3], ['预览确认', 4]].map(([label, number]) => <button key={number} className={step >= +number ? 'done' : ''} onClick={() => setStep(+number)}><i>{step > +number ? '✓' : number}</i><span>{label}</span></button>)}</div>
     <div className="create-layout">
       <section className="form-panel panel">
-        {step === 1 && <><SectionTitle title="基本信息" subtitle={identityLocked ? '当前 Cycle 正在运行：策略参数可以修改，但环境、账户和 Symbol 已锁定。' : '选择环境、账户与 Symbol 后自动加载 Tick Size 和 Quantity Step。'} /><div className="form-grid">
+        {step === 1 && <><SectionTitle title="基本信息" subtitle={initialStrategy?.activeCycle ? '当前 Cycle 继续使用冻结的环境、账户和参数；这里的修改只影响未来 Cycle。' : '选择环境、账户与 Symbol 后自动加载 Tick Size 和 Quantity Step。'} /><div className="form-grid">
           <Field label="策略名称"><input value={config.name} onChange={e => set('name', e.target.value)} /></Field>
-          <Field label="交易环境"><select value={environment} disabled={identityLocked} onChange={e => changeEnvironment(e.target.value as 'PAPER' | 'TESTNET')}><option value="PAPER">PAPER</option><option value="TESTNET">HYPERLIQUID TESTNET</option></select></Field>
-          <Field label="交易账户"><select value={config.exchangeAccountId} disabled={identityLocked} onChange={e => set('exchangeAccountId', e.target.value)}>{environment === 'PAPER' ? <option value="acct_paper_01">Weekend Paper</option> : <>{!testnetAccounts.some(x => x.accountId === config.exchangeAccountId) && config.exchangeAccountId && <option value={config.exchangeAccountId}>{config.exchangeAccountId}</option>}{testnetAccounts.map(account => <option key={account.accountId} value={account.accountId}>{account.name}</option>)}{testnetAccounts.length === 0 && !config.exchangeAccountId && <option value="">请先在设置中配置 Testnet 账户</option>}</>}</select></Field>
+          <Field label="默认执行环境"><select value={environment} disabled={identityLocked} onChange={e => changeEnvironment(e.target.value)}>{environments.map(item => <option key={item.id} value={item.id}>{item.displayName} · {item.network}</option>)}</select></Field>
+          <Field label="默认执行账户"><select value={config.defaultExecutionAccountId} disabled={identityLocked} onChange={e => changeAccount(e.target.value)}>{accounts.map(account => <option key={account.id} value={account.id}>{account.displayName}</option>)}{accounts.length === 0 && <option value="">该环境尚未配置账户</option>}</select></Field>
           <Field label="Symbol"><select value={config.symbol} disabled={identityLocked || symbols.length === 0} onChange={e => set('symbol', e.target.value)}>{!symbols.includes(config.symbol) && config.symbol && <option value={config.symbol}>{config.symbol}</option>}{symbols.map(symbol => <option key={symbol} value={symbol}>{displaySymbol(symbol, environment)}</option>)}</select></Field>
           <Field label="网格模式"><select value={config.gridMode ?? 'TWO_WAY'} onChange={e => set('gridMode', e.target.value as StrategyConfig['gridMode'])}><option value="BUY_ONLY">Buy Only（只下半边买单）</option><option value="SELL_ONLY">Sell Only（只下上半边卖单）</option><option value="TWO_WAY">Two-Way（双向网格）</option></select></Field>
           <Field label="Tick Size" hint={instrument?.environment ?? ''}><input value={instrumentLoading ? '加载中…' : (instrument?.tickSize ?? instrumentError) || '—'} disabled /></Field>
@@ -154,5 +168,5 @@ function normalizeQuantity(value: number, step: number) { return step > 0 ? form
 function formatDecimal(value: number) { return Number.isFinite(value) ? value.toLocaleString('en-US', { maximumFractionDigits: 10 }) : '—' }
 function coin(symbol: string) { return symbol.toUpperCase().replace(/[-_/]?(USDC|USDT)$/, '') || 'Qty' }
 function sameCoin(left: string, right: string) { return coin(left) === coin(right) }
-function displaySymbol(symbol: string, _environment: 'PAPER' | 'TESTNET') { return `${coin(symbol)}-USDC` }
+function displaySymbol(symbol: string, _environment: string) { return `${coin(symbol)}-USDC` }
 function plannedLevelCount(config: StrategyConfig) { return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }

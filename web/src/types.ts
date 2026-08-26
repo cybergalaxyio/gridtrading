@@ -1,4 +1,5 @@
 export type StrategyConfig = {
+  strategyType: 'GRID'; defaultExecutionEnvironmentId: string; defaultExecutionAccountId: string;
   name: string; exchangeAccountId: string; symbol: string; gridMode: 'BUY_ONLY' | 'SELL_ONLY' | 'TWO_WAY';
   centerSuggestionMode: 'CURRENT_MID' | 'VWAP_EMA' | 'MANUAL'; autoRestart: boolean;
   maxLevelsPerSide: number; workingEntriesPerSide: number; initialGapPoints: string;
@@ -16,11 +17,13 @@ export type StrategyConfig = {
 export type Cycle = {
   cycleId: string; strategyId: string; state: string; stateVersion: number; isTerminal: boolean;
   operatorResetRequired: boolean; fixedCenterPrice: string; startedAt: string; endedAt?: string;
+  executionEnvironmentId: string; executionAccountId: string;
   frozenConfiguration?: StrategyConfig | null;
 }
 
 export type Strategy = {
-  strategyId: string; name: string; exchangeAccountId: string; symbol: string; version: number;
+  strategyId: string; name: string; strategyType: 'GRID'; defaultExecutionEnvironmentId: string;
+  defaultExecutionAccountId: string; exchangeAccountId: string; symbol: string; version: number;
   archived: boolean; configuration: StrategyConfig; activeCycle: Cycle | null; createdAt: string; updatedAt: string;
 }
 
@@ -31,7 +34,7 @@ export type Order = { id: string; cycleId: string; clientOrderId: string; exchan
 export type Alert = { id: string; cycleId?: string; severity: string; code: string; message: string; acknowledged: boolean; createdAt: string }
 export type GridLevel = { side: string; levelIndex: number; entryPrice: string; takeProfitDistance: string; plannedQuantity: string;
   orderNotional: string; cumulativeQuantity: string; cumulativeNotional: string }
-export type Preview = { previewId: string; expiresAt: string; strategyVersion: number; confirmedCenterPrice: string;
+export type Preview = { previewId: string; executionEnvironmentId: string; executionAccountId: string; expiresAt: string; strategyVersion: number; confirmedCenterPrice: string;
   outermostBuyPrice: string; outermostSellPrice: string; coverageBelowPct: string; coverageAbovePct: string;
   maximumPlannedQuantityPerSide: string; maximumPlannedNotionalPerSide: string; startEligible: boolean; levels: GridLevel[] }
 
@@ -46,6 +49,9 @@ export type Snapshot = {
   health: { exchange: string; marketData: string; reconciliation: string; lastReconciledAt: string };
   allowedCommands: string[];
 }
+
+export type ExecutionEnvironment = { id: string; venueType: 'PAPER' | 'HYPERLIQUID'; network: string; displayName: string }
+export type ExecutionAccount = { id: string; environmentId: string; displayName: string; enabled: boolean }
 
 export type HyperliquidAccount = { accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
 export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountMode: string; tradingEquity: string; availableBalance: string; perpAccountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }

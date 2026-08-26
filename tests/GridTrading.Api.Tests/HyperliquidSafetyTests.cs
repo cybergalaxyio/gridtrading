@@ -231,7 +231,8 @@ public sealed class HyperliquidSafetyTests
         });
         db.Cycles.Add(new CycleEntity
         {
-            Id = "cycle_grid", StrategyId = "strategy_grid", State = "RUNNING", FrozenConfigurationJson = "{}",
+            Id = "cycle_grid", StrategyId = "strategy_grid", ExecutionEnvironmentId = "hyperliquid-testnet",
+            ExecutionAccountId = "account_testnet", State = "RUNNING", FrozenConfigurationJson = "{}",
             FrozenPlanJson = "{}", ExitReason = "", StartedAt = now, LastReconciledAt = now
         });
         db.Orders.AddRange(
@@ -282,7 +283,8 @@ public sealed class HyperliquidSafetyTests
         });
         db.Cycles.Add(new CycleEntity
         {
-            Id = "cycle_history", StrategyId = "strategy_history", State = "WAITING_FOR_OPERATOR", IsTerminal = true,
+            Id = "cycle_history", StrategyId = "strategy_history", ExecutionEnvironmentId = "hyperliquid-testnet",
+            ExecutionAccountId = "account_testnet", State = "WAITING_FOR_OPERATOR", IsTerminal = true,
             FrozenConfigurationJson = "{}", FrozenPlanJson = "{}", ExitReason = "DONE", StartedAt = now,
             EndedAt = now, LastReconciledAt = now
         });
