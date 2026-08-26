@@ -102,12 +102,12 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <NumberField label="Grid Spacing" value={config.gridSpacingPoints} onChange={v => set('gridSpacingPoints', v)} suffix="pts" hint={pointHint(config.gridSpacingPoints, instrument)} />
           <NumberField label={<span className="label-with-help">Spacing Step <InfoTooltip text="控制网格越往外扩张时，每一层间距增加多少 Points。Level n 与前一层的距离 = Grid Spacing + n × Spacing Step；设为 0 时所有层等距。例如 250 / 10：L1 间距 260 pts，L2 间距 270 pts。" /></span>} value={config.gridSpacingStepPoints} onChange={v => set('gridSpacingStepPoints', v)} suffix="pts" hint={pointHint(config.gridSpacingStepPoints, instrument)} />
           <NumberField label="Take Profit" value={config.takeProfitPoints} onChange={v => set('takeProfitPoints', v)} suffix="pts" hint={pointHint(config.takeProfitPoints, instrument)} />
-          <NumberField label="Base Lot Size" value={config.baseLotSize} onChange={v => set('baseLotSize', v)} suffix={coin(config.symbol)} hint={quantityHint(config.baseLotSize, instrument)} />
-          <NumberField label="每层几何增长" value={config.lotSizeIncreasePercent} onChange={v => set('lotSizeIncreasePercent', v)} suffix="%" hint={lastLevelQuantityHint(config, instrument)} />
-          <NumberField label="单笔上限" value={config.maxTradeLot} onChange={v => set('maxTradeLot', v)} suffix={coin(config.symbol)} hint="0 = 不启用" />
         </div><div className="check-row"><label><input type="checkbox" checked={config.postOnlyEntries} onChange={e => set('postOnlyEntries', e.target.checked)} /> Entry 只做 Maker (Post-only)</label>
           <label><input type="checkbox" checked={config.postOnlyTakeProfits} onChange={e => set('postOnlyTakeProfits', e.target.checked)} /> TP 普通 Limit，尽量 Post-only</label></div></>}
         {step === 3 && <><SectionTitle title="资金与强制风控" subtitle="MaxNetLot 对当前仓位与所有活动买卖订单做最坏情形容量预留。" /><div className="form-grid three">
+          <NumberField label="Base Lot Size" value={config.baseLotSize} onChange={v => set('baseLotSize', v)} suffix={coin(config.symbol)} hint={quantityHint(config.baseLotSize, instrument)} />
+          <NumberField label="每层几何增长" value={config.lotSizeIncreasePercent} onChange={v => set('lotSizeIncreasePercent', v)} suffix="%" hint={lastLevelQuantityHint(config, instrument)} />
+          <NumberField label="单笔上限" value={config.maxTradeLot} onChange={v => set('maxTradeLot', v)} suffix={coin(config.symbol)} hint="0 = 不启用" />
           <NumberField label="MaxNetLot 硬上限" value={config.maxNetLot} onChange={v => set('maxNetLot', v)} suffix="SOL" />
           <NumberField label="Basket 止盈" value={config.basketTakeProfitUsdt} onChange={v => set('basketTakeProfitUsdt', v)} suffix="USDC" />
           <NumberField label="Basket 止损" value={config.basketStopLossUsdt} onChange={v => set('basketStopLossUsdt', v)} suffix="USDC" hint="0 = 不启用" />
@@ -116,6 +116,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <NumberField label="Sync 周期" value={config.reconcileIntervalSeconds} onChange={v => set('reconcileIntervalSeconds', +v)} suffix="秒" />
           <NumberField label={<HelpLabel label="命令超时" text="发送下单、撤单或平仓命令后等待交易所确认的最长时间。超时后不能假定命令失败，系统需要通过 Sync 查询最终状态，避免重复下单。" />} value={config.orderCommandTimeoutSeconds} onChange={v => set('orderCommandTimeoutSeconds', +v)} suffix="秒" />
           <NumberField label={<HelpLabel label="最大下单频率" text="限制策略每秒最多发送多少条下单指令，用于削峰并降低触发交易所限频的风险。数值越低，批量铺设网格所需时间越长。" />} value={config.maxOrderFrequency} onChange={v => set('maxOrderFrequency', +v)} suffix="单/秒" />
+          <NumberField label={<HelpLabel label="部分成交撤单等待" text="Entry 首次部分成交后开始计时；超过该时间仍未全部成交时，撤销剩余数量。已成交部分对应的 TP 会保留，并按当前价格补充新的 Entry。0 = 不启用。" />} value={config.partialFillCancelAfterMinutes} onChange={v => set('partialFillCancelAfterMinutes', +v)} suffix="分钟" />
         </div><div className="check-row"><label><input type="checkbox" checked={config.includeFunding} onChange={e => set('includeFunding', e.target.checked)} /> Basket PnL 计入资金费</label><span>Maker / Taker Fee 从交易账户自动加载</span></div><div className="safety-note"><Icon name="shield" /><p><b>强制安全规则不可关闭</b><span>陈旧行情、Sync 未完成、仓位/残留单不为零、MaxNetLot 超限都会阻止启动或新建敞口。</span></p></div></>}
         {step === 4 && <><SectionTitle title="预览确认" subtitle="Preview 不会创建订单；启动时后端仍会重新校验全部前置条件。" />{preview ? <>
           <div className="preview-stats"><div><small>价格区间</small><b>{(+preview.outermostBuyPrice).toFixed(3)} — {(+preview.outermostSellPrice).toFixed(3)}</b></div><div><small>计划挂单层数</small><b>{totalLevels}</b></div><div><small>单侧计划数量</small><b>{preview.maximumPlannedQuantityPerSide} SOL</b></div><div><small>单侧名义价值</small><b>~ {(+preview.maximumPlannedNotionalPerSide).toFixed(2)} USDC</b></div></div>

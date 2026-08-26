@@ -19,4 +19,26 @@ public sealed class StrategyCompatibilityTests
 
         Assert.Equal(GridMode.TwoWay, strategy.GridMode);
     }
+
+    [Fact]
+    public void MissingPartialFillTimeoutDefaultsToTenMinutes()
+    {
+        var json = JsonNode.Parse(JsonSerializer.Serialize(StrategyRequest.Default, JsonSupport.Options))!.AsObject();
+        json.Remove("partialFillCancelAfterMinutes");
+
+        var strategy = JsonSerializer.Deserialize<StrategyRequest>(json.ToJsonString(), JsonSupport.Options)!;
+
+        Assert.Equal(10, strategy.PartialFillCancelAfterMinutes);
+    }
+
+    [Fact]
+    public void NewStrategyIdsUseTheShortFormat()
+    {
+        var first = Ids.NewStrategy();
+        var second = Ids.NewStrategy();
+
+        Assert.StartsWith("strategy_", first);
+        Assert.Equal(25, first.Length);
+        Assert.NotEqual(first, second);
+    }
 }

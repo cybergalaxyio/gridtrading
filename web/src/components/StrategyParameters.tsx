@@ -2,13 +2,13 @@ import { useMemo, useState } from 'react'
 import { buildGridPreview, GridPreview } from './GridPreview'
 import type { Strategy } from '../types'
 
-export function StrategyParameters({ strategy, tickSize, onClose, onOpen, onEdit }: {
-  strategy: Strategy; tickSize?: string | null; onClose: () => void; onOpen?: () => void; onEdit?: () => void
+export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, onOpen, onEdit }: {
+  strategy: Strategy; tickSize?: string | null; quantityStep?: string | null; onClose: () => void; onOpen?: () => void; onEdit?: () => void
 }) {
   const frozen = strategy.activeCycle?.frozenConfiguration
   const config = { ...strategy.configuration, ...frozen }
   const effectiveTick = frozen?.tickSize ?? tickSize ?? strategy.configuration.tickSize
-  const effectiveQuantityStep = frozen?.quantityStep ?? strategy.configuration.quantityStep
+  const effectiveQuantityStep = frozen?.quantityStep ?? quantityStep ?? strategy.configuration.quantityStep
   const center = strategy.activeCycle?.fixedCenterPrice
   const [tab, setTab] = useState<'parameters' | 'grid'>('parameters')
   const previewLevels = useMemo(() => buildGridPreview(config, center ?? '', effectiveTick, effectiveQuantityStep), [config, center, effectiveTick, effectiveQuantityStep])
@@ -17,17 +17,17 @@ export function StrategyParameters({ strategy, tickSize, onClose, onOpen, onEdit
       ['Strategy ID', strategy.strategyId], ['版本', `v${strategy.version}`], ['交易账户', strategy.exchangeAccountId],
       ['环境', strategy.exchangeAccountId === 'acct_paper_01' ? 'PAPER' : 'TESTNET'], ['交易对', `${coin(strategy.symbol)}-USDC`],
       ['Cycle 状态', strategy.activeCycle?.state ?? '未运行'], ['网格模式', gridModeLabel(config.gridMode)], ['中心模式', config.centerSuggestionMode],
-      ['Tick Size', effectiveTick ?? '等待市场规则'], ['Quantity Step', config.quantityStep ?? '预览时加载'],
+      ['Tick Size', effectiveTick ?? '等待市场规则'], ['Quantity Step', effectiveQuantityStep ?? '等待市场规则'],
     ] },
     { title: '网格参数', rows: [
       ['固定中心', strategy.activeCycle?.fixedCenterPrice ?? 'Cycle 启动时确认'], ['单侧最大层数', `${config.maxLevelsPerSide} 层`],
       ['单侧工作 Entry', `${config.workingEntriesPerSide} 单`], ['Initial Gap', +config.initialGapPoints === 0 ? `自动 ½ spacing · ${pointValue(+config.gridSpacingPoints / 2, effectiveTick)}` : pointValue(config.initialGapPoints, effectiveTick)],
       ['Grid Spacing', pointValue(config.gridSpacingPoints, effectiveTick)], ['Spacing Step', pointValue(config.gridSpacingStepPoints, effectiveTick)],
-      ['Take Profit', pointValue(config.takeProfitPoints, effectiveTick)], ['Base Lot Size', `${config.baseLotSize} ${coin(strategy.symbol)}`],
-      ['每层几何增长', `${config.lotSizeIncreasePercent}%`], ['单笔上限', `${config.maxTradeLot} ${coin(strategy.symbol)}`],
+      ['Take Profit', pointValue(config.takeProfitPoints, effectiveTick)],
     ] },
     { title: '资金与风控', rows: [
-      ['MaxNetLot', `${config.maxNetLot} ${coin(strategy.symbol)}`], ['Basket TP', `${config.basketTakeProfitUsdt} USDC`],
+      ['Base Lot Size', `${config.baseLotSize} ${coin(strategy.symbol)}`], ['每层几何增长', `${config.lotSizeIncreasePercent}%`],
+      ['单笔上限', `${config.maxTradeLot} ${coin(strategy.symbol)}`], ['MaxNetLot', `${config.maxNetLot} ${coin(strategy.symbol)}`], ['Basket TP', `${config.basketTakeProfitUsdt} USDC`],
       ['Basket SL', +config.basketStopLossUsdt === 0 ? '不启用' : `${config.basketStopLossUsdt} USDC`],
       ['Fee', frozen ? `Maker ${rate(config.makerFeeRate)} · Taker ${rate(config.takerFeeRate)}` : '预览时从交易账户加载'], ['退出滑点储备', `${config.estimatedExitSlippagePct}%`],
       ['计入资金费', yesNo(config.includeFunding)],
@@ -37,6 +37,7 @@ export function StrategyParameters({ strategy, tickSize, onClose, onOpen, onEdit
       ['TP 执行', `普通 Limit · 非 Reduce-only · Post-only ${yesNo(config.postOnlyTakeProfits)}`],
       ['Sync 周期', `${config.reconcileIntervalSeconds} 秒`], ['行情过期阈值', `${config.marketDataStaleSeconds} 秒`],
       ['命令超时', `${config.orderCommandTimeoutSeconds} 秒`], ['最大下单频率', `${config.maxOrderFrequency}/秒`],
+      ['部分成交撤单等待', +(config.partialFillCancelAfterMinutes ?? 10) === 0 ? '不启用' : `${config.partialFillCancelAfterMinutes ?? 10} 分钟`],
       ['自动重启', yesNo(config.autoRestart)],
     ] },
   ]

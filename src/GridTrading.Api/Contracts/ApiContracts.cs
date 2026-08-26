@@ -9,7 +9,8 @@ public sealed record StrategyRequest(
     decimal LotSizeIncreasePercent, decimal MaxTradeLot, decimal MaxNetLot, decimal BasketTakeProfitUsdt,
     decimal BasketStopLossUsdt, decimal MakerFeeRate, decimal TakerFeeRate, decimal EstimatedExitSlippagePct,
     bool IncludeFunding, bool PostOnlyEntries, bool PostOnlyTakeProfits, int ReconcileIntervalSeconds,
-    int MarketDataStaleSeconds, int OrderCommandTimeoutSeconds, int MaxOrderFrequency)
+    int MarketDataStaleSeconds, int OrderCommandTimeoutSeconds, int MaxOrderFrequency,
+    int PartialFillCancelAfterMinutes = 10)
 {
     public GridConfiguration ToConfiguration(decimal centerPrice = 0m) => new()
     {
@@ -24,13 +25,13 @@ public sealed record StrategyRequest(
         IncludeFunding = IncludeFunding, PostOnlyEntries = PostOnlyEntries,
         PostOnlyTakeProfits = PostOnlyTakeProfits, ReconcileIntervalSeconds = ReconcileIntervalSeconds,
         MarketDataStaleSeconds = MarketDataStaleSeconds, OrderCommandTimeoutSeconds = OrderCommandTimeoutSeconds,
-        MaxOrderFrequency = MaxOrderFrequency
+        MaxOrderFrequency = MaxOrderFrequency, PartialFillCancelAfterMinutes = PartialFillCancelAfterMinutes
     };
 
     public static StrategyRequest Default => new(
         "Weekend SOL Grid", "acct_paper_01", "SOLUSDT", GridMode.TwoWay, "CURRENT_MID", false,
         14, 1, 0m, 250m, 10m, 180m, 0.5m, 5m, 2m, 10m, 50m, 100m,
-        .0002m, .00055m, .10m, true, true, true, 10, 5, 10, 5);
+        .0002m, .00055m, .10m, true, true, true, 10, 5, 10, 5, 10);
 }
 
 public sealed record CandidateConfiguration(

@@ -8,6 +8,7 @@ export type StrategyConfig = {
   takerFeeRate: string; estimatedExitSlippagePct: string; includeFunding: boolean;
   postOnlyEntries: boolean; postOnlyTakeProfits: boolean; reconcileIntervalSeconds: number;
   marketDataStaleSeconds: number; orderCommandTimeoutSeconds: number; maxOrderFrequency: number;
+  partialFillCancelAfterMinutes: number;
   tickSize?: string; quantityStep?: string; minOrderQuantity?: string; minOrderNotional?: string;
   maxActiveOrders?: number; sizeDecimals?: number | null;
 }
@@ -74,6 +75,7 @@ export type HyperliquidSpotClearinghouseState = { balances: HyperliquidSpotBalan
 export type HyperliquidOrderAttribution = {
   orderSource: 'STRATEGY' | 'EXTERNAL'; strategyId?: string | null; strategyName?: string | null;
   cycleId?: string | null; localOrderId?: string | null;
+  gridLevel?: number | null; orderKind?: string | null; levelLabel?: string | null;
 }
 export type HyperliquidOpenOrder = HyperliquidOrderAttribution & {
   coin: string; side: 'A' | 'B'; limitPx: string; sz: string; origSz: string; oid: number; timestamp: number;

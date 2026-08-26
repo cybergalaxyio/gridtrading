@@ -48,6 +48,7 @@ public sealed record GridConfiguration
     public int MarketDataStaleSeconds { get; init; } = 5;
     public int OrderCommandTimeoutSeconds { get; init; } = 10;
     public int MaxOrderFrequency { get; init; } = 5;
+    public int PartialFillCancelAfterMinutes { get; init; } = 10;
 }
 
 public sealed record GridLevel(

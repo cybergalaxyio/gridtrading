@@ -10,6 +10,7 @@ namespace GridTrading.Api.Services;
 
 public sealed record HyperliquidUserFillsMessage(string User, bool IsSnapshot, IReadOnlyList<JsonElement> Fills);
 public sealed record HyperliquidMidPricesMessage(IReadOnlyDictionary<string, string> Mids);
+public sealed record HyperliquidOrderUpdatesMessage(IReadOnlyList<JsonElement> Updates);
 
 public static class HyperliquidWebSocketProtocol
 {
@@ -17,6 +18,12 @@ public static class HyperliquidWebSocketProtocol
     {
         method = "subscribe",
         subscription = new { type = "userFills", user, aggregateByTime = false }
+    });
+
+    public static byte[] SubscribeOrderUpdates(string user) => JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        method = "subscribe",
+        subscription = new { type = "orderUpdates", user }
     });
 
     public static byte[] SubscribeAllMids() => JsonSerializer.SerializeToUtf8Bytes(new
@@ -40,6 +47,20 @@ public static class HyperliquidWebSocketProtocol
             user.GetString()!,
             data.TryGetProperty("isSnapshot", out var snapshot) && snapshot.ValueKind == JsonValueKind.True,
             fills.EnumerateArray().Select(x => x.Clone()).ToArray());
+        return true;
+    }
+
+    public static bool TryReadOrderUpdates(JsonElement message, out HyperliquidOrderUpdatesMessage? result)
+    {
+        result = null;
+        if (!message.TryGetProperty("channel", out var channel) || channel.GetString() != "orderUpdates" ||
+            !message.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+            return false;
+
+        var updates = data.EnumerateArray()
+            .Where(x => x.ValueKind == JsonValueKind.Object && x.TryGetProperty("order", out _) && x.TryGetProperty("status", out _))
+            .Select(x => x.Clone()).ToArray();
+        result = new HyperliquidOrderUpdatesMessage(updates);
         return true;
     }
 
@@ -80,13 +101,13 @@ public sealed class HyperliquidFillWebSocketService(
             try
             {
                 var accounts = await LoadAccounts(stoppingToken);
-                await RunConnection(accounts, stoppingToken);
+                await RunConnections(accounts, stoppingToken);
                 retrySeconds = 1;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Hyperliquid market/userFills WebSocket disconnected; reconnecting in {DelaySeconds}s.", retrySeconds);
+                logger.LogWarning(ex, "Hyperliquid WebSocket disconnected; reconnecting in {DelaySeconds}s.", retrySeconds);
                 await Task.Delay(TimeSpan.FromSeconds(retrySeconds), stoppingToken);
                 retrySeconds = Math.Min(30, retrySeconds * 2);
             }
@@ -103,18 +124,38 @@ public sealed class HyperliquidFillWebSocketService(
             .ToListAsync(ct);
     }
 
-    private async Task RunConnection(IReadOnlyList<SubscriptionAccount> accounts, CancellationToken ct)
+    private async Task RunConnections(IReadOnlyList<SubscriptionAccount> accounts, CancellationToken ct)
+    {
+        using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var connections = new List<Task> { RunConnection(null, connectionCts.Token) };
+        connections.AddRange(accounts.Select(account => RunConnection(account, connectionCts.Token)));
+
+        var completed = await Task.WhenAny(connections);
+        connectionCts.Cancel();
+        try { await Task.WhenAll(connections); }
+        catch (OperationCanceledException) when (connectionCts.IsCancellationRequested) { }
+
+        await completed;
+    }
+
+    private async Task RunConnection(SubscriptionAccount? account, CancellationToken ct)
     {
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(WebSocketEndpoint(), ct);
 
-        await Send(socket, HyperliquidWebSocketProtocol.SubscribeAllMids(), ct);
-        foreach (var address in accounts.Select(x => x.User).Distinct(StringComparer.OrdinalIgnoreCase))
-            await Send(socket, HyperliquidWebSocketProtocol.SubscribeUserFills(address), ct);
+        if (account is null)
+            await Send(socket, HyperliquidWebSocketProtocol.SubscribeAllMids(), ct);
+        else
+        {
+            await Send(socket, HyperliquidWebSocketProtocol.SubscribeUserFills(account.User), ct);
+            await Send(socket, HyperliquidWebSocketProtocol.SubscribeOrderUpdates(account.User), ct);
+        }
 
-        logger.LogInformation("Hyperliquid market/userFills WebSocket connected for {AccountCount} account(s).", accounts.Count);
+        logger.LogInformation("Hyperliquid {Feed} WebSocket connected{Account}.",
+            account is null ? "market" : "userFills/orderUpdates",
+            account is null ? "" : $" for account {account.AccountId}");
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var receiveTask = ReceiveLoop(socket, accounts, connectionCts.Token);
+        var receiveTask = ReceiveLoop(socket, account, connectionCts.Token);
         var heartbeatTask = HeartbeatLoop(socket, connectionCts.Token);
         var completed = await Task.WhenAny(receiveTask, heartbeatTask);
         connectionCts.Cancel();
@@ -125,10 +166,10 @@ public sealed class HyperliquidFillWebSocketService(
 
         await completed;
         if (!ct.IsCancellationRequested)
-            throw new WebSocketException("Hyperliquid market/userFills WebSocket closed.");
+            throw new WebSocketException("Hyperliquid WebSocket closed.");
     }
 
-    private async Task ReceiveLoop(ClientWebSocket socket, IReadOnlyList<SubscriptionAccount> accounts, CancellationToken ct)
+    private async Task ReceiveLoop(ClientWebSocket socket, SubscriptionAccount? account, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -137,17 +178,19 @@ public sealed class HyperliquidFillWebSocketService(
             try
             {
                 using var document = JsonDocument.Parse(message);
-                if (HyperliquidWebSocketProtocol.TryReadUserFills(document.RootElement, out var update) && update is not null)
+                if (account is not null &&
+                    HyperliquidWebSocketProtocol.TryReadUserFills(document.RootElement, out var update) && update is not null)
                 {
-                    var accountIds = accounts
-                        .Where(x => string.Equals(x.User, update.User, StringComparison.OrdinalIgnoreCase))
-                        .Select(x => x.AccountId)
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
-                    foreach (var accountId in accountIds)
-                        await ProcessFills(accountId, update, ct);
+                    if (string.Equals(account.User, update.User, StringComparison.OrdinalIgnoreCase))
+                        await ProcessFills(account.AccountId, update, ct);
                 }
-                else if (HyperliquidWebSocketProtocol.TryReadAllMids(document.RootElement, out var mids) && mids is not null)
+                else if (account is not null && HyperliquidWebSocketProtocol.TryReadOrderUpdates(
+                    document.RootElement, out var orders) && orders is not null)
+                {
+                    await ProcessOrderUpdates(account.AccountId, orders, ct);
+                }
+                else if (account is null && HyperliquidWebSocketProtocol.TryReadAllMids(
+                    document.RootElement, out var mids) && mids is not null)
                 {
                     await BroadcastSelectedMids(mids, ct);
                 }
@@ -179,6 +222,17 @@ public sealed class HyperliquidFillWebSocketService(
         if (processed > 0)
             logger.LogInformation("Processed {FillCount} Hyperliquid WebSocket fill(s) for account {AccountId}{Snapshot}.",
                 processed, accountId, update.IsSnapshot ? " from snapshot" : "");
+    }
+
+    private async Task ProcessOrderUpdates(string accountId, HyperliquidOrderUpdatesMessage update, CancellationToken ct)
+    {
+        if (update.Updates.Count == 0) return;
+        using var scope = scopeFactory.CreateScope();
+        var coordinator = scope.ServiceProvider.GetRequiredService<HyperliquidCycleCoordinator>();
+        var processed = await coordinator.ProcessWebSocketOrderUpdatesAsync(accountId, update.Updates, ct);
+        if (processed > 0)
+            logger.LogInformation("Processed {OrderUpdateCount} Hyperliquid WebSocket order update(s) for account {AccountId}.",
+                processed, accountId);
     }
 
     private static async Task HeartbeatLoop(ClientWebSocket socket, CancellationToken ct)

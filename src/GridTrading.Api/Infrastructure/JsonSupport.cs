@@ -36,4 +36,5 @@ public static class JsonSupport
 public static class Ids
 {
     public static string New(string prefix) => $"{prefix}_{Guid.NewGuid():N}";
+    public static string NewStrategy() => $"strategy_{Guid.NewGuid():N}"[..25];
 }

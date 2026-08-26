@@ -28,7 +28,7 @@ public sealed class LegacyTradingService(TradingDbContext db, MarketState market
         var now = DateTimeOffset.UtcNow;
         var entity = new StrategyEntity
         {
-            Id = Ids.New("strategy"), Name = request.Name.Trim(), ExchangeAccountId = request.ExchangeAccountId,
+            Id = Ids.NewStrategy(), Name = request.Name.Trim(), ExchangeAccountId = request.ExchangeAccountId,
             Symbol = request.Symbol.ToUpperInvariant(), ConfigurationJson = JsonSerializer.Serialize(request, JsonSupport.Options),
             CreatedAt = now, UpdatedAt = now
         };

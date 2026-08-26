@@ -125,6 +125,9 @@ public static class GridMath
     public static bool BasketStopLossTriggered(decimal liquidationPnl, decimal stopLossLimit) =>
         stopLossLimit > 0m && liquidationPnl <= -stopLossLimit;
 
+    public static bool PartialFillCancellationDue(DateTimeOffset firstFillAt, DateTimeOffset now, int timeoutMinutes) =>
+        timeoutMinutes > 0 && now - firstFillAt >= TimeSpan.FromMinutes(timeoutMinutes);
+
     public static decimal RoundDown(decimal value, decimal step) => Math.Floor(value / step) * step;
     public static decimal RoundUp(decimal value, decimal step) => Math.Ceiling(value / step) * step;
 
@@ -147,6 +150,8 @@ public static class GridMath
         if (config.BaseLotSize <= 0m || config.MaxNetLot <= 0m)
             throw new GridValidationException("QUANTITY", "Base lot and max net lot must be positive.");
         if (config.LotSizeIncreasePercent < 0m) throw new GridValidationException("LOT_GROWTH", "Lot growth cannot be negative.");
+        if (config.PartialFillCancelAfterMinutes < 0)
+            throw new GridValidationException("PARTIAL_FILL_TIMEOUT", "Partial fill cancel timeout cannot be negative.");
         if (rules.TickSize <= 0m || rules.QuantityStep <= 0m) throw new GridValidationException("INSTRUMENT_RULES", "Invalid exchange rules.");
     }
 }

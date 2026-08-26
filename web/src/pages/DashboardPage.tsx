@@ -26,7 +26,9 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   }
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 5000); return () => clearInterval(timer) }, [cycle?.cycleId, strategy?.strategyId, strategy?.exchangeAccountId, strategy?.symbol])
 
-  const levelPrices = useMemo(() => orders.filter(x => x.status === 'NEW').map(x => +x.price), [orders])
+  const entryOrderLines = useMemo(() => orders
+    .filter(x => x.kind === 'ENTRY' && (x.status === 'NEW' || x.status === 'PARTIALLY_FILLED'))
+    .map(x => ({ price: +x.price, side: x.side })), [orders])
 
   async function startCycle() {
     if (!strategy) return
@@ -64,7 +66,7 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
     <div className="dashboard-grid">
       <section className="chart-panel panel">
         <div className="chart-tools"><b>1m</b><span>5m</span><span>15m</span><span>1h</span><span>4h</span><i /><Icon name="settings" size={16} /></div>
-        <TradingChart candles={candles} levels={levelPrices} center={snapshot ? +snapshot.cycle.fixedCenterPrice : undefined} />
+        <TradingChart candles={candles} entryOrders={entryOrderLines} />
       </section>
       <aside className="metric-stack">
         <MetricCard title="策略摘要" rows={[

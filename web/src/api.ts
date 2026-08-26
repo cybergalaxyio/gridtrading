@@ -64,4 +64,5 @@ export const defaultConfig: StrategyConfig = {
   basketTakeProfitUsdt: '50', basketStopLossUsdt: '100', makerFeeRate: '0.0002', takerFeeRate: '0.00055',
   estimatedExitSlippagePct: '0.10', includeFunding: true, postOnlyEntries: true, postOnlyTakeProfits: true,
   reconcileIntervalSeconds: 10, marketDataStaleSeconds: 5, orderCommandTimeoutSeconds: 10, maxOrderFrequency: 5,
+  partialFillCancelAfterMinutes: 10,
 }

@@ -158,9 +158,11 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
             (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" || x.Status == "UNKNOWN")).ToListAsync(ct);
         foreach (var order in localActive.Where(x => !openIds.Contains(x.ExchangeOrderId) && x.FilledQuantity < x.Quantity))
         {
-            order.Status = order.FilledQuantity > 0m ? "PARTIALLY_FILLED" : "CANCELLED";
+            order.Status = "CANCELLED";
             order.UpdatedAt = DateTimeOffset.UtcNow;
         }
+        await db.SaveChangesAsync(ct);
+        await CancelExpiredPartiallyFilledEntriesAsync(strategy, cycle, config, openIds, ct);
         var position = await client.GetPositionSnapshotAsync(strategy.ExchangeAccountId, config.Symbol, ct);
         cycle.ActualNetQuantity = position.Quantity;
         cycle.ReconstructedNetQuantity = await ReconstructedPosition(cycle.Id, ct);
@@ -196,6 +198,42 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
         return processed;
     }
 
+    public Task<int> ProcessWebSocketOrderUpdatesAsync(string accountId, IReadOnlyList<JsonElement> updates, CancellationToken ct) =>
+        accountGate.RunAsync(accountId, () => ProcessWebSocketOrderUpdatesCoreAsync(accountId, updates, ct), ct);
+
+    private async Task<int> ProcessWebSocketOrderUpdatesCoreAsync(string accountId, IReadOnlyList<JsonElement> updates, CancellationToken ct)
+    {
+        var processed = 0;
+        var maintenance = new Dictionary<string, (StrategyEntity Strategy, CycleEntity Cycle, GridConfiguration Config)>();
+        foreach (var update in updates)
+        {
+            var match = await FindTrackedOrderUpdateOwnerAsync(accountId, update, ct);
+            if (match is null) continue;
+            var order = match.Value.Order;
+            var exchangeStatus = ReadString(update, "status");
+            var localStatus = MapOrderUpdateStatus(exchangeStatus, order.FilledQuantity);
+            var details = update.GetProperty("order");
+            var exchangeOrderId = ReadString(details, "oid");
+            if (!string.IsNullOrWhiteSpace(exchangeOrderId)) order.ExchangeOrderId = exchangeOrderId;
+            order.Status = localStatus;
+            order.UpdatedAt = update.TryGetProperty("statusTimestamp", out var timestamp) && timestamp.TryGetInt64(out var milliseconds)
+                ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds) : DateTimeOffset.UtcNow;
+            processed++;
+
+            var exchangeFilledQuantity = Math.Max(0m, ReadDecimal(details, "origSz") - ReadDecimal(details, "sz"));
+            if (localStatus == "CANCELLED" && exchangeFilledQuantity <= order.FilledQuantity && match.Value.Cycle.State == "RUNNING")
+            {
+                var config = JsonSerializer.Deserialize<GridConfiguration>(match.Value.Cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+                maintenance[match.Value.Cycle.Id] = (match.Value.Strategy, match.Value.Cycle, config);
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+        foreach (var item in maintenance.Values)
+            await MaintainEntryOrdersAsync(item.Strategy, item.Cycle, item.Config, book: null, ct);
+        return processed;
+    }
+
     private async Task<(StrategyEntity Strategy, CycleEntity Cycle)?> FindTrackedFillOwnerAsync(
         string accountId, JsonElement fill, CancellationToken ct)
     {
@@ -218,6 +256,30 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
         return candidate is null ? null : (candidate.Strategy, candidate.Cycle);
     }
 
+    private async Task<(OrderEntity Order, StrategyEntity Strategy, CycleEntity Cycle)?> FindTrackedOrderUpdateOwnerAsync(
+        string accountId, JsonElement update, CancellationToken ct)
+    {
+        if (!update.TryGetProperty("order", out var details) || details.ValueKind != JsonValueKind.Object) return null;
+        var oid = ReadString(details, "oid");
+        var match = await (from order in db.Orders
+                           join cycle in db.Cycles on order.CycleId equals cycle.Id
+                           join strategy in db.Strategies on cycle.StrategyId equals strategy.Id
+                           where strategy.ExchangeAccountId == accountId && !cycle.IsTerminal && order.ExchangeOrderId == oid
+                           select new { Order = order, Strategy = strategy, Cycle = cycle }).FirstOrDefaultAsync(ct);
+        if (match is not null) return (match.Order, match.Strategy, match.Cycle);
+
+        if (!details.TryGetProperty("cloid", out var cloid) || cloid.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(cloid.GetString())) return null;
+        var value = cloid.GetString();
+        var candidates = await (from order in db.Orders
+                                join cycle in db.Cycles on order.CycleId equals cycle.Id
+                                join strategy in db.Strategies on cycle.StrategyId equals strategy.Id
+                                where strategy.ExchangeAccountId == accountId && !cycle.IsTerminal
+                                select new { Order = order, Strategy = strategy, Cycle = cycle }).ToListAsync(ct);
+        var candidate = candidates.FirstOrDefault(x => Exchange.HyperliquidWireCodec.CreateCloid(x.Order.ClientOrderId) == value);
+        return candidate is null ? null : (candidate.Order, candidate.Strategy, candidate.Cycle);
+    }
+
     private async Task<bool> ApplyFillAsync(StrategyEntity strategy, CycleEntity cycle, GridConfiguration config, JsonElement fill, CancellationToken ct)
     {
         var oid = fill.GetProperty("oid").ToString();
@@ -230,6 +292,7 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
             if (order is not null) order.ExchangeOrderId = oid;
         }
         if (order is null) return false;
+        var terminalStatusBeforeFill = order.Status is "CANCELLED" or "REJECTED";
         var executionKey = $"hl:{fill.GetProperty("hash").GetString()}:{oid}:{ReadTime(fill)}:{ReadString(fill, "tid")}";
         if (await db.Executions.AnyAsync(x => x.ExchangeExecutionId == executionKey, ct)) return false;
         var quantity = ReadDecimal(fill, "sz"); var price = ReadDecimal(fill, "px"); var fee = Math.Abs(ReadDecimal(fill, "fee"));
@@ -242,7 +305,8 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
         };
         db.Executions.Add(execution);
         order.FilledQuantity = Math.Min(order.Quantity, order.FilledQuantity + quantity);
-        order.Status = order.FilledQuantity >= order.Quantity ? "FILLED" : "PARTIALLY_FILLED";
+        if (!terminalStatusBeforeFill)
+            order.Status = order.FilledQuantity >= order.Quantity ? "FILLED" : "PARTIALLY_FILLED";
         order.UpdatedAt = DateTimeOffset.UtcNow;
         cycle.PaidFees += fee;
         cycle.ActualNetQuantity += side == "BUY" ? quantity : -quantity;
@@ -303,10 +367,23 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
         foreach (var side in new[] { OrderSide.Buy, OrderSide.Sell })
         {
             var sideName = side.ToString().ToUpperInvariant();
-            if (active.Any(x => x.Kind == "ENTRY" && x.Side == sideName)) continue;
-            var occupied = active.Where(x => x.Kind == "ENTRY" && x.Side == sideName).Select(x => x.GridLevel)
-                .Concat(openLots.Where(x => x.Side == sideName).Select(x => x.GridLevel));
+            var currentEntries = active.Where(x => x.Kind == "ENTRY" && x.Side == sideName).ToList();
+            var occupied = openLots.Where(x => x.Side == sideName).Select(x => x.GridLevel);
             var level = GridMath.SelectWorkingEntryLevel(plan, side, book.Mid, occupied);
+
+            if (currentEntries.Count > 0)
+            {
+                // A partially filled or exchange-ambiguous order must stay in place until its existing
+                // fill/cancellation workflow resolves it. Only a confirmed, completely unfilled order
+                // may follow the nearest valid grid level as the mid price moves.
+                if (currentEntries.Any(x => x.Status != "NEW" || x.FilledQuantity != 0m)) continue;
+                if (level is not null && currentEntries.Count == 1 &&
+                    currentEntries[0].GridLevel == level.LevelIndex) continue;
+
+                await CancelAsync(strategy.ExchangeAccountId, currentEntries, ct);
+                active.RemoveAll(currentEntries.Contains);
+            }
+
             if (level is null) continue;
             var reservations = active.Select(x => new ActiveOrderReservation(Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
             var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, cycle.ActualNetQuantity,
@@ -326,10 +403,43 @@ public sealed class HyperliquidCycleCoordinator(TradingDbContext db, Hyperliquid
         await PlacePendingOrdersAsync(strategy.ExchangeAccountId, config, created, ct);
     }
 
+    private async Task CancelExpiredPartiallyFilledEntriesAsync(StrategyEntity strategy, CycleEntity cycle,
+        GridConfiguration config, IReadOnlySet<string> exchangeOpenOrderIds, CancellationToken ct)
+    {
+        if (config.PartialFillCancelAfterMinutes <= 0) return;
+        var orders = await db.Orders.Where(x => x.CycleId == cycle.Id && x.Kind == "ENTRY" &&
+            x.Status == "PARTIALLY_FILLED" && x.FilledQuantity > 0m && x.FilledQuantity < x.Quantity).ToListAsync(ct);
+        if (orders.Count == 0) return;
+
+        var orderIds = orders.Select(x => x.Id).ToArray();
+        var firstFills = await db.Executions.AsNoTracking().Where(x => orderIds.Contains(x.OrderId))
+            .GroupBy(x => x.OrderId)
+            .Select(x => new { OrderId = x.Key, FirstFillAt = x.Min(fill => fill.OccurredAt) })
+            .ToDictionaryAsync(x => x.OrderId, x => x.FirstFillAt, ct);
+        var now = DateTimeOffset.UtcNow;
+        var expired = orders.Where(order => exchangeOpenOrderIds.Contains(order.ExchangeOrderId) &&
+            firstFills.TryGetValue(order.Id, out var firstFillAt) &&
+            GridMath.PartialFillCancellationDue(firstFillAt, now, config.PartialFillCancelAfterMinutes)).ToArray();
+        if (expired.Length == 0) return;
+
+        await CancelAsync(strategy.ExchangeAccountId, expired, ct);
+    }
+
     private async Task<decimal> ReconstructedPosition(string cycleId, CancellationToken ct)
     {
         var executions = await db.Executions.Where(x => x.CycleId == cycleId).ToListAsync(ct);
         return executions.Sum(x => x.Side == "BUY" ? x.Quantity : -x.Quantity);
+    }
+
+    private static string MapOrderUpdateStatus(string exchangeStatus, decimal filledQuantity)
+    {
+        var status = exchangeStatus.Trim().ToLowerInvariant();
+        if (status == "open") return filledQuantity > 0m ? "PARTIALLY_FILLED" : "NEW";
+        if (status == "filled") return "FILLED";
+        if (status.Contains("rejected", StringComparison.Ordinal)) return "REJECTED";
+        if (status == "canceled" || status.EndsWith("canceled", StringComparison.Ordinal) || status == "scheduledcancel")
+            return "CANCELLED";
+        return "UNKNOWN";
     }
 
     private static bool IsActive(OrderEntity x) => x.Status is "PENDING_EXCHANGE" or "NEW" or "PARTIALLY_FILLED" or "UNKNOWN";

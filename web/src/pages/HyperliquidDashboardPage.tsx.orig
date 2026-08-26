@@ -406,7 +406,6 @@ function MetricCard({ title, rows, accent }: { title: string; rows: [string, str
 export function Empty({ text }: { text: string }) { return <div className="empty"><span>◇</span>{text}</div> }
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
-function signedUsd(value: string) { return +value >= 0 ? `+$${format(value)}` : `-$${format(Math.abs(+value))}` }
 function plannedLevelCount(strategy: Strategy) { const config = strategy.activeCycle?.frozenConfiguration ?? strategy.configuration; return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }
 function availableBalance(total: string, hold: string) { return String(Math.max(0, +total - +hold)) }
 function time(value?: string) { return value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—' }

@@ -6,7 +6,8 @@ using Microsoft.EntityFrameworkCore;
 
 namespace GridTrading.Api.Services;
 
-public sealed record HyperliquidOrderOwner(string StrategyId, string StrategyName, string CycleId, string LocalOrderId);
+public sealed record HyperliquidOrderOwner(string StrategyId, string StrategyName, string CycleId,
+    string LocalOrderId, string Side, string Kind, int GridLevel);
 
 public sealed class HyperliquidOrderOwnershipService(TradingDbContext db)
 {
@@ -55,8 +56,8 @@ public sealed class HyperliquidOrderOwnershipService(TradingDbContext db)
             where strategy.ExchangeAccountId == accountId && (cycleId == null || cycle.Id == cycleId)
             select new
             {
-                order.Id, order.CycleId, order.ClientOrderId, order.ExchangeOrderId, order.Symbol,
-                StrategyId = strategy.Id, StrategyName = strategy.Name
+                order.Id, order.CycleId, order.ClientOrderId, order.ExchangeOrderId, order.Symbol, order.Side,
+                order.Kind, order.GridLevel, StrategyId = strategy.Id, StrategyName = strategy.Name
             }).ToListAsync(ct);
 
         if (!string.IsNullOrWhiteSpace(symbol))
@@ -66,7 +67,8 @@ public sealed class HyperliquidOrderOwnershipService(TradingDbContext db)
         var byCloid = new Dictionary<string, HyperliquidOrderOwner>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in rows)
         {
-            var owner = new HyperliquidOrderOwner(row.StrategyId, row.StrategyName, row.CycleId, row.Id);
+            var owner = new HyperliquidOrderOwner(row.StrategyId, row.StrategyName, row.CycleId, row.Id,
+                row.Side, row.Kind, row.GridLevel);
             if (!string.IsNullOrWhiteSpace(row.ExchangeOrderId) && row.ExchangeOrderId != "pending")
                 byOid[row.ExchangeOrderId] = owner;
             byCloid[HyperliquidWireCodec.CreateCloid(row.ClientOrderId)] = owner;
@@ -81,6 +83,20 @@ public sealed class HyperliquidOrderOwnershipService(TradingDbContext db)
         row["strategyName"] = owner?.StrategyName;
         row["cycleId"] = owner?.CycleId;
         row["localOrderId"] = owner?.LocalOrderId;
+        row["gridLevel"] = owner?.GridLevel;
+        row["orderKind"] = owner?.Kind;
+        row["levelLabel"] = owner is null ? null : LevelLabel(owner);
+    }
+
+    private static string? LevelLabel(HyperliquidOrderOwner owner)
+    {
+        if (owner.GridLevel < 0) return null;
+        var isTakeProfit = owner.Kind.Equals("TAKE_PROFIT", StringComparison.OrdinalIgnoreCase);
+        var isBuy = owner.Side.Equals("BUY", StringComparison.OrdinalIgnoreCase);
+        var entrySide = isTakeProfit
+            ? isBuy ? "S" : "B"
+            : isBuy ? "B" : "S";
+        return $"{entrySide}{owner.GridLevel}{(isTakeProfit ? "-TP" : "")}";
     }
 
     private static bool SameCoin(string left, string right) =>

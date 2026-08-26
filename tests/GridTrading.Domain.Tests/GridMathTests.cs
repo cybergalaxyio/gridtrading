@@ -146,6 +146,17 @@ public sealed class GridMathTests
     public void ZeroBasketStopLossIsDisabled(string pnl, string limit, bool expected) =>
         Assert.Equal(expected, GridMath.BasketStopLossTriggered(decimal.Parse(pnl), decimal.Parse(limit)));
 
+    [Theory]
+    [InlineData(9, false)]
+    [InlineData(10, true)]
+    [InlineData(11, true)]
+    public void PartialFillCancellationStartsAtFirstFill(int elapsedMinutes, bool expected)
+    {
+        var firstFill = new DateTimeOffset(2026, 8, 26, 12, 0, 0, TimeSpan.Zero);
+        Assert.Equal(expected, GridMath.PartialFillCancellationDue(firstFill, firstFill.AddMinutes(elapsedMinutes), 10));
+        Assert.False(GridMath.PartialFillCancellationDue(firstFill, firstFill.AddDays(1), 0));
+    }
+
     [Fact]
     public void ExposureReservationReducesFinalBuyOrder()
     {

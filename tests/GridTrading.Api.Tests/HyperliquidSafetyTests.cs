@@ -26,6 +26,18 @@ public sealed class HyperliquidSafetyTests
     }
 
     [Fact]
+    public void OrderUpdatesSubscriptionUsesOfficialWebSocketShape()
+    {
+        using var subscription = JsonDocument.Parse(
+            Encoding.UTF8.GetString(HyperliquidWebSocketProtocol.SubscribeOrderUpdates("0xabc")));
+
+        Assert.Equal("subscribe", subscription.RootElement.GetProperty("method").GetString());
+        var details = subscription.RootElement.GetProperty("subscription");
+        Assert.Equal("orderUpdates", details.GetProperty("type").GetString());
+        Assert.Equal("0xabc", details.GetProperty("user").GetString());
+    }
+
+    [Fact]
     public void AllMidsSubscriptionAndMessageUseOfficialWebSocketShape()
     {
         using var subscription = JsonDocument.Parse(
@@ -87,6 +99,33 @@ public sealed class HyperliquidSafetyTests
         var fill = Assert.Single(update.Fills);
         Assert.Equal("58500486622", fill.GetProperty("oid").ToString());
         Assert.Equal("B", fill.GetProperty("side").GetString());
+    }
+
+    [Fact]
+    public void OrderUpdatesMessagePreservesCompleteOrderStatusPayload()
+    {
+        using var message = JsonDocument.Parse("""
+            {
+              "channel": "orderUpdates",
+              "data": [{
+                "order": {
+                  "coin": "SOL", "side": "B", "limitPx": "98.31", "sz": "0.1",
+                  "oid": 58500486622, "timestamp": 1787695200000, "origSz": "0.2",
+                  "cloid": "0x0123456789abcdef0123456789abcdef"
+                },
+                "status": "marginCanceled",
+                "statusTimestamp": 1787695260000
+              }]
+            }
+            """);
+
+        var recognized = HyperliquidWebSocketProtocol.TryReadOrderUpdates(message.RootElement, out var update);
+
+        Assert.True(recognized);
+        Assert.NotNull(update);
+        var orderUpdate = Assert.Single(update.Updates);
+        Assert.Equal("marginCanceled", orderUpdate.GetProperty("status").GetString());
+        Assert.Equal("58500486622", orderUpdate.GetProperty("order").GetProperty("oid").ToString());
     }
 
     [Fact]
@@ -197,7 +236,7 @@ public sealed class HyperliquidSafetyTests
         });
         db.Orders.AddRange(
             Order("order_by_oid", "client_oid", "101", now),
-            Order("order_by_cloid", "client_cloid", "pending", now));
+            Order("order_by_cloid", "client_cloid", "pending", now, side: "SELL", kind: "TAKE_PROFIT", gridLevel: 3));
         await db.SaveChangesAsync(ct);
         var clientCloid = HyperliquidWireCodec.CreateCloid("client_cloid");
         using var exchangeOrders = JsonDocument.Parse($$"""
@@ -216,9 +255,14 @@ public sealed class HyperliquidSafetyTests
         Assert.Equal(2, count);
         Assert.Equal("STRATEGY", annotated[0]!["orderSource"]!.GetValue<string>());
         Assert.Equal("strategy_grid", annotated[0]!["strategyId"]!.GetValue<string>());
+        Assert.Equal("B0", annotated[0]!["levelLabel"]!.GetValue<string>());
+        Assert.Equal(0, annotated[0]!["gridLevel"]!.GetValue<int>());
+        Assert.Equal("ENTRY", annotated[0]!["orderKind"]!.GetValue<string>());
         Assert.Equal("strategy_grid", annotated[1]!["strategyId"]!.GetValue<string>());
+        Assert.Equal("B3-TP", annotated[1]!["levelLabel"]!.GetValue<string>());
         Assert.Equal("EXTERNAL", annotated[2]!["orderSource"]!.GetValue<string>());
         Assert.Null(annotated[2]!["strategyId"]);
+        Assert.Null(annotated[2]!["levelLabel"]);
     }
 
     [Fact]
@@ -242,7 +286,7 @@ public sealed class HyperliquidSafetyTests
             FrozenConfigurationJson = "{}", FrozenPlanJson = "{}", ExitReason = "DONE", StartedAt = now,
             EndedAt = now, LastReconciledAt = now
         });
-        db.Orders.Add(Order("order_history", "client_history", "701", now, "cycle_history"));
+        db.Orders.Add(Order("order_history", "client_history", "701", now, "cycle_history", "SELL", gridLevel: 1));
         await db.SaveChangesAsync(ct);
         using var history = JsonDocument.Parse("""
             [
@@ -255,14 +299,15 @@ public sealed class HyperliquidSafetyTests
         var annotated = await service.AnnotateHistoricalOrdersAsync("account_testnet", history.RootElement, ct);
 
         Assert.Equal("strategy_history", annotated[0]!["strategyId"]!.GetValue<string>());
+        Assert.Equal("S1", annotated[0]!["levelLabel"]!.GetValue<string>());
         Assert.Equal("EXTERNAL", annotated[1]!["orderSource"]!.GetValue<string>());
     }
 
     private static OrderEntity Order(string id, string clientOrderId, string exchangeOrderId, DateTimeOffset now,
-        string cycleId = "cycle_grid") => new()
+        string cycleId = "cycle_grid", string side = "BUY", string kind = "ENTRY", int gridLevel = 0) => new()
     {
         Id = id, CycleId = cycleId, ClientOrderId = clientOrderId, ExchangeOrderId = exchangeOrderId,
-        Symbol = "SOLUSDT", Side = "BUY", Kind = "ENTRY", Status = "NEW", GridLevel = 0,
+        Symbol = "SOLUSDT", Side = side, Kind = kind, Status = "NEW", GridLevel = gridLevel,
         Price = 100m, Quantity = 1m, CreatedAt = now, UpdatedAt = now
     };
 }

@@ -23,7 +23,7 @@ public sealed class HyperliquidStrategyBootstrap(IServiceScopeFactory scopeFacto
         var now = DateTimeOffset.UtcNow;
         db.Strategies.Add(new StrategyEntity
         {
-            Id = Ids.New("strategy"), Name = request.Name, ExchangeAccountId = request.ExchangeAccountId,
+            Id = Ids.NewStrategy(), Name = request.Name, ExchangeAccountId = request.ExchangeAccountId,
             Symbol = request.Symbol, ConfigurationJson = JsonSerializer.Serialize(request, JsonSupport.Options),
             CreatedAt = now, UpdatedAt = now
         });
