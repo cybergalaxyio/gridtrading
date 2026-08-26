@@ -106,7 +106,7 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         var open = db.Orders.Where(x => x.CycleId == cycle.Id &&
                 (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" || x.Status == "UNKNOWN"))
             .ToDictionary(x => x.ClientOrderId, x => x.ExchangeOrderId);
-        return Task.FromResult(new ExecutionReconciliationSnapshot([], [], open, new ExecutionPosition(cycle.ActualNetQuantity,
+        return Task.FromResult(new ExecutionReconciliationSnapshot([], [], [], open, new ExecutionPosition(cycle.ActualNetQuantity,
                 cycle.ActualNetQuantity * market.Snapshot(config.Symbol).Mid, 0m)));
     }
 

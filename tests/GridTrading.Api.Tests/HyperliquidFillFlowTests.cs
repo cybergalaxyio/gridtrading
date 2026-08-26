@@ -18,6 +18,71 @@ namespace GridTrading.Api.Tests;
 public sealed class HyperliquidFillFlowTests
 {
     [Fact]
+    public void WebSocketAndRestFundingPayloadsNormalizeToTheSameId()
+    {
+        using var websocket = JsonDocument.Parse("""
+            [{ "time": 1787695200000, "coin": "SOL", "usdc": "-0.125",
+               "szi": "0.45", "fundingRate": "0.0001" }]
+            """);
+        using var rest = JsonDocument.Parse("""
+            [{ "time": 1787695200000, "hash": "0xfunding",
+               "delta": { "type": "funding", "coin": "SOL", "usdc": "-0.125",
+                          "szi": "0.45", "fundingRate": "0.0001" } }]
+            """);
+
+        var websocketPayment = Assert.Single(HyperliquidExecutionAdapter.NormalizeFundingPayments(
+            "account_testnet", websocket.RootElement.EnumerateArray().ToArray()));
+        var restPayment = Assert.Single(HyperliquidExecutionAdapter.NormalizeFundingPayments(
+            "account_testnet", rest.RootElement.EnumerateArray().ToArray()));
+
+        Assert.Equal(websocketPayment, restPayment);
+        Assert.Equal("hl-funding:account_testnet:SOL:1787695200000", websocketPayment.FundingId);
+        Assert.Equal(-.125m, websocketPayment.UsdcDelta);
+    }
+
+    [Fact]
+    public async Task FundingPaymentsAreAppliedOnceToTheMatchingCycle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(ct);
+        var options = new DbContextOptionsBuilder<TradingDbContext>().UseSqlite(connection).Options;
+        await using var db = new TradingDbContext(options);
+        await db.Database.EnsureCreatedAsync(ct);
+        var settledAt = DateTimeOffset.FromUnixTimeMilliseconds(1787695200000);
+        var config = new GridConfiguration { Symbol = "SOL-USDC", IncludeFunding = true };
+        var cycle = new CycleEntity
+        {
+            Id = "cycle_funding", StrategyId = "strategy_funding",
+            ExecutionEnvironmentId = ExecutionEnvironmentIds.HyperliquidTestnet,
+            ExecutionAccountId = "account_testnet", State = "PAUSED",
+            FrozenConfigurationJson = JsonSerializer.Serialize(config, JsonSupport.Options),
+            FrozenPlanJson = "{}", ExitReason = "", StartedAt = settledAt.AddHours(-1),
+            LastReconciledAt = settledAt.AddMinutes(-1)
+        };
+        db.Cycles.Add(cycle);
+        await db.SaveChangesAsync(ct);
+        var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([]),
+            new ExecutionAccountOperationGate());
+        var payments = new[]
+        {
+            new NormalizedFundingPayment("funding-paid", "SOL", -.125m, .45m, .0001m, settledAt),
+            new NormalizedFundingPayment("funding-received", "SOL", .025m, .45m, -.00002m, settledAt.AddMinutes(1)),
+            new NormalizedFundingPayment("funding-other-coin", "BTC", -1m, .01m, .0001m, settledAt)
+        };
+
+        var processed = await lifecycle.ProcessFundingPaymentsAsync("account_testnet", payments, ct);
+        var repeated = await lifecycle.ProcessFundingPaymentsAsync("account_testnet", payments, ct);
+
+        Assert.Equal(2, processed);
+        Assert.Equal(0, repeated);
+        Assert.Equal(.1m, cycle.AccruedFunding);
+        var stored = (await db.FundingPayments.ToListAsync(ct)).OrderBy(x => x.OccurredAt).ToList();
+        Assert.Equal(2, stored.Count);
+        Assert.Equal(.125m, stored[0].FundingCost);
+        Assert.Equal(-.025m, stored[1].FundingCost);
+    }
+    [Fact]
     public async Task EntryFillCreatesTakeProfitAndReplacementEntry()
     {
         var ct = TestContext.Current.CancellationToken;

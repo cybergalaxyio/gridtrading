@@ -281,7 +281,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const unrealized = isTestnet ? accountState?.unrealizedPnl ?? '0' : strategyMatchesMarket ? snapshot?.basketPnl.unrealisedAtExecutablePrice ?? '0' : '0'
   const realised = snapshot?.basketPnl.realisedCyclePnl ?? '0'
   const fees = snapshot?.basketPnl.paidFees ?? '0'
-  const liquidation = String(+realised + +unrealized - +fees)
+  const funding = snapshot?.basketPnl.accruedFunding ?? '0'
+  const liquidation = String(+realised + +unrealized - +fees - +funding)
   const maxNetLot = +(strategy?.configuration.maxNetLot ?? 0)
   const maxNetUsage = maxNetLot > 0 ? Math.abs(+netPosition) / maxNetLot * 100 : 0
   const instrument = displaySymbol(marketSymbol, isTestnet)
@@ -300,18 +301,22 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       onAccountChange={setRunAccountId}
     />}
     <section className="instrument-bar">
-      <div><h1><label className="symbol-picker" title="切换行情交易对"><span className="sr-only">交易对</span><select value={marketSymbol} onChange={event => { setSymbol(event.target.value); setTestnetMid(null); setAccountState(null); setCandles([]) }} aria-label="选择交易对">
+      <div className="instrument-summary"><h1><label className="symbol-picker" title="切换行情交易对"><span className="sr-only">交易对</span><select value={marketSymbol} onChange={event => { setSymbol(event.target.value); setTestnetMid(null); setAccountState(null); setCandles([]) }} aria-label="选择交易对">
         {!instruments.includes(marketSymbol) && <option value={marketSymbol}>{instrument}</option>}
         {instruments.map(item => <option key={item} value={item}>{displaySymbol(item, isTestnet)}</option>)}
       </select></label> 永续 <span className="mono">{format(mid, 3)}</span> <em className={change < 0 ? 'negative' : ''}>{change >= 0 ? '+' : ''}{change.toFixed(2)}%</em></h1>
-        <p>Last Update: {time(isTestnet ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</p></div>
+        <div className="instrument-meta">
+          <span className={`cycle-state-display ${cycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {cycle?.state ?? 'IDLE'}</span>
+          <span className="instrument-last-update">Last Update: {time(isTestnet ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</span>
+        </div>
+      </div>
       <div className="control-buttons">
         {strategy && <button className="secondary" onClick={() => setParametersOpen(true)}>View</button>}
-        {!cycle && <button className="primary" disabled={!strategy || !runAccountId || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : '确认预览并开启'}</button>}
+        {!cycle && <button className="primary" disabled={!strategy || !runAccountId || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : 'Start'}</button>}
         {cycle?.state === 'RUNNING' && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>Pause Entry</button>}
         {cycle?.state === 'PAUSED' && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', '已按固定中心恢复 Entry')}>Resume Entry</button>}
         {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
-        {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>Shutdown</button>}
+        {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>Exit</button>}
       </div>
     </section>
     <div className="dashboard-grid">
@@ -333,7 +338,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
         ]} />
         <MetricCard title="Basket 清算盈亏" rows={[
-          ['浮动', signedUsd(unrealized)], ['已实现', signedUsd(realised)], ['费用', `-$${format(Math.abs(+fees), 3)}`], ['估算净值', signedUsd(liquidation)],
+          ['浮动', signedUsd(unrealized)], ['已实现', signedUsd(realised)], ['费用', `-$${format(Math.abs(+fees), 3)}`],
+          ['资金费', signedUsd(String(-Number(funding)))], ['估算净值', signedUsd(liquidation)],
         ]} accent />
       </aside>
       <section className="orders-panel panel">

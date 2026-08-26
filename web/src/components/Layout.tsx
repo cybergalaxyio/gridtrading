@@ -36,7 +36,7 @@ export function Layout({ route, environment, onRoute, onEmergency, children }: {
         <div className="brand">GRID TRADING</div><div id="execution-context-slot" className="execution-context-slot">{route !== 'dashboard' && <span className="env">{environment}</span>}</div>
         <span className="connection"><i />{isTestnet ? 'Hyperliquid Testnet · 已连接' : '本地模拟 · 已连接'}</span><span className="latency">{isTestnet ? '官方行情 · 10s 刷新' : '行情延迟 < 10ms'}</span>
         <time>UTC {clock.toISOString().slice(11, 19)}</time>
-        <button className="danger-outline" onClick={onEmergency}>紧急停止</button>
+        <button className="danger-outline" onClick={onEmergency}>Shutdown</button>
       </header>
       <main>{children}</main>
     </div>

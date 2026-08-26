@@ -281,7 +281,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const unrealized = isTestnet ? accountState?.unrealizedPnl ?? '0' : strategyMatchesMarket ? snapshot?.basketPnl.unrealisedAtExecutablePrice ?? '0' : '0'
   const realised = snapshot?.basketPnl.realisedCyclePnl ?? '0'
   const fees = snapshot?.basketPnl.paidFees ?? '0'
-  const liquidation = String(+realised + +unrealized - +fees)
+  const funding = snapshot?.basketPnl.accruedFunding ?? '0'
+  const liquidation = String(+realised + +unrealized - +fees - +funding)
   const maxNetLot = +(strategy?.configuration.maxNetLot ?? 0)
   const maxNetUsage = maxNetLot > 0 ? Math.abs(+netPosition) / maxNetLot * 100 : 0
   const instrument = displaySymbol(marketSymbol, isTestnet)
@@ -333,7 +334,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
         ]} />
         <MetricCard title="Basket 清算盈亏" rows={[
-          ['浮动', signedUsd(unrealized)], ['已实现', signedUsd(realised)], ['费用', `-$${format(Math.abs(+fees), 3)}`], ['估算净值', signedUsd(liquidation)],
+          ['浮动', signedUsd(unrealized)], ['已实现', signedUsd(realised)], ['费用', `-$${format(Math.abs(+fees), 3)}`],
+          ['资金费', signedUsd(String(-Number(funding)))], ['估算净值', signedUsd(liquidation)],
         ]} accent />
       </aside>
       <section className="orders-panel panel">
@@ -419,9 +421,19 @@ function PositionRow({ position }: { position: HyperliquidPosition }) {
 function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
   if (!rows) return <Empty text="正在加载 Hyperliquid frontendOpenOrders…" />
   return <div className="table-wrap open-orders-scroll"><table><thead><tr><th>时间</th><th>市场</th><th>Strategy</th><th>Level</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>Reduce Only</th><th>订单 ID</th></tr></thead>
-    <tbody>{rows.map(order => <tr key={order.oid}><td>{exchangeTime(order.timestamp)}</td><td><strong>{order.coin}-USDC</strong></td>
-      <StrategyOwnership value={order} /><OrderLevel value={order} /><td className={order.side === 'B' ? 'positive' : 'negative'}>{order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{order.orderType}</td><td>{format(order.limitPx, 4)}</td>
-      <td>{order.origSz}</td><td>{order.sz}</td><td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td></tr>)}</tbody>
+    <tbody>{rows.map(order => {
+      const remainingQuantity = Number(order.sz)
+      const originalQuantity = Number(order.origSz)
+      const isPartiallyFilled = Number.isFinite(remainingQuantity) && Number.isFinite(originalQuantity)
+        && originalQuantity > 0 && remainingQuantity >= 0 && remainingQuantity < originalQuantity
+      return <tr key={order.oid}><td>{exchangeTime(order.timestamp)}</td><td><strong>{order.coin}-USDC</strong></td>
+        <StrategyOwnership value={order} /><OrderLevel value={order} /><td className={order.side === 'B' ? 'positive' : 'negative'}>{order.side === 'B' ? 'BUY' : 'SELL'}</td><td>{order.orderType}</td><td>{format(order.limitPx, 4)}</td>
+        <td>{order.origSz}</td>
+        <td>{isPartiallyFilled
+          ? <span className="partial-fill-quantity" title={`已部分成交：原始 ${order.origSz}，剩余 ${order.sz}`}>{order.sz}</span>
+          : order.sz}</td>
+        <td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td></tr>
+    })}</tbody>
   </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
 }
 

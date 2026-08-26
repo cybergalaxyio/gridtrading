@@ -29,9 +29,13 @@ public sealed record NormalizedExecutionFill(
     decimal Price, decimal Quantity, decimal Fee, DateTimeOffset OccurredAt);
 public sealed record NormalizedOrderUpdate(
     string ExchangeOrderId, string? ClientOrderId, string Status, decimal FilledQuantity, DateTimeOffset OccurredAt);
+public sealed record NormalizedFundingPayment(
+    string FundingId, string Coin, decimal UsdcDelta, decimal PositionQuantity,
+    decimal FundingRate, DateTimeOffset OccurredAt);
 public sealed record ExecutionPosition(decimal Quantity, decimal PositionValue, decimal UnrealizedPnl);
 public sealed record ExecutionReconciliationSnapshot(
     IReadOnlyList<NormalizedExecutionFill> Fills,
+    IReadOnlyList<NormalizedFundingPayment> FundingPayments,
     IReadOnlyList<NormalizedOrderUpdate> OrderUpdates,
     IReadOnlyDictionary<string, string> OpenOrdersByClientId,
     ExecutionPosition Position);

@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace GridTrading.Api.Strategies.Grid;
 
-public sealed class GridOrderLifecycle(
+public sealed partial class GridOrderLifecycle(
     TradingDbContext db,
     ExecutionEnvironmentRegistry environments,
     ExecutionAccountOperationGate accountGate)
@@ -31,6 +31,41 @@ public sealed class GridOrderLifecycle(
 
         foreach (var item in affected.Values.Where(x => x.Cycle.State == "RUNNING"))
             await MaintainEntryOrdersAsync(item.Cycle, item.Config, quote: null, ct);
+        return processed;
+    }
+
+    public Task<int> ProcessFundingPaymentsAsync(string accountId, IReadOnlyList<NormalizedFundingPayment> payments, CancellationToken ct) =>
+        accountGate.RunAsync(accountId, () => ApplyFundingPaymentsCoreAsync(accountId, payments, ct), ct);
+
+    private async Task<int> ApplyFundingPaymentsCoreAsync(
+        string accountId, IReadOnlyList<NormalizedFundingPayment> payments, CancellationToken ct)
+    {
+        if (payments.Count == 0) return 0;
+        var cycles = await db.Cycles.Where(x => x.ExecutionAccountId == accountId).ToListAsync(ct);
+        var processed = 0;
+        foreach (var payment in payments.OrderBy(x => x.OccurredAt))
+        {
+            if (await db.FundingPayments.AnyAsync(x => x.ExchangeFundingId == payment.FundingId, ct)) continue;
+            var cycle = cycles
+                .Where(x => x.StartedAt <= payment.OccurredAt &&
+                    (x.EndedAt == null || x.EndedAt >= payment.OccurredAt))
+                .OrderByDescending(x => x.StartedAt)
+                .FirstOrDefault(x => FundingCoin(DeserializeConfig(x).Symbol) == FundingCoin(payment.Coin));
+            if (cycle is null) continue;
+            var config = DeserializeConfig(cycle);
+            if (!config.IncludeFunding) continue;
+            var fundingCost = -payment.UsdcDelta;
+            db.FundingPayments.Add(new FundingPaymentEntity
+            {
+                Id = Ids.New("funding"), ExchangeFundingId = payment.FundingId, CycleId = cycle.Id,
+                ExecutionAccountId = accountId, Coin = payment.Coin, UsdcDelta = payment.UsdcDelta,
+                FundingCost = fundingCost, PositionQuantity = payment.PositionQuantity,
+                FundingRate = payment.FundingRate, OccurredAt = payment.OccurredAt
+            });
+            cycle.AccruedFunding += fundingCost;
+            processed++;
+        }
+        await db.SaveChangesAsync(ct);
         return processed;
     }
 
@@ -71,6 +106,7 @@ public sealed class GridOrderLifecycle(
 
         foreach (var fill in snapshot.Fills.OrderBy(x => x.OccurredAt))
             await ApplyFillAsync(cycle, config, fill, ct);
+        await ApplyFundingPaymentsCoreAsync(selection.AccountId, snapshot.FundingPayments, ct);
         foreach (var update in snapshot.OrderUpdates)
         {
             var order = await FindOrderAsync(selection.AccountId, update.ExchangeOrderId, update.ClientOrderId, ct);
@@ -89,7 +125,15 @@ public sealed class GridOrderLifecycle(
             order.UpdatedAt = DateTimeOffset.UtcNow;
         }
         await db.SaveChangesAsync(ct);
-        await adapter.PlaceOrdersAsync(selection, config, pending.Where(x => x.Status == "PENDING_EXCHANGE"), ct);
+        try
+        {
+            await adapter.PlaceOrdersAsync(selection, config, pending.Where(x => x.Status == "PENDING_EXCHANGE"), ct);
+        }
+        catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
+        {
+            await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct);
+            throw;
+        }
 
         var openClientIds = snapshot.OpenOrdersByClientId.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var order in await ActiveOrdersAsync(cycle.Id, ct))
@@ -113,51 +157,6 @@ public sealed class GridOrderLifecycle(
             cycle.PaidFees, config.IncludeFunding ? cycle.AccruedFunding : 0m, finalFee, slippage)).LiquidationPnl;
     }
 
-    public async Task MaintainEntryOrdersAsync(CycleEntity cycle, GridConfiguration config, ExecutionQuote? quote, CancellationToken ct)
-    {
-        if (cycle.State != "RUNNING") return;
-        var selection = Selection(cycle);
-        var adapter = environments.Adapter(selection.EnvironmentId);
-        quote ??= await adapter.GetQuoteAsync(selection, config.Symbol, ct);
-        var plan = JsonSerializer.Deserialize<GridPlan>(cycle.FrozenPlanJson, JsonSupport.Options)!;
-        var active = await ActiveOrdersAsync(cycle.Id, ct);
-        var openLots = await db.VirtualLots.Where(x => x.CycleId == cycle.Id && x.Status != "CLOSED").ToListAsync(ct);
-        var created = new List<OrderEntity>();
-
-        foreach (var side in new[] { OrderSide.Buy, OrderSide.Sell })
-        {
-            if ((config.GridMode == GridMode.BuyOnly && side == OrderSide.Sell) ||
-                (config.GridMode == GridMode.SellOnly && side == OrderSide.Buy)) continue;
-            var sideName = side.ToString().ToUpperInvariant();
-            var currentEntries = active.Where(x => x.Kind == "ENTRY" && x.Side == sideName).ToList();
-            var occupiedLevels = GridOrderRules.OccupiedLevels(side, openLots.Select(x =>
-                (Enum.Parse<OrderSide>(x.Side, true), x.GridLevel, x.Status == "CLOSED")));
-            var level = GridMath.SelectWorkingEntryLevel(plan, side, quote.Mid, occupiedLevels);
-
-            if (currentEntries.Count > 0)
-            {
-                if (currentEntries.Any(x => !GridOrderRules.CanMoveEntry(x.Status, x.FilledQuantity))) continue;
-                if (level is not null && currentEntries.Count == 1 && currentEntries[0].GridLevel == level.LevelIndex) continue;
-                await adapter.CancelOrdersAsync(selection, currentEntries, ct);
-                active.RemoveAll(currentEntries.Contains);
-            }
-            if (level is null) continue;
-
-            var reservations = active.Select(x => new ActiveOrderReservation(
-                Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
-            var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, cycle.ActualNetQuantity,
-                reservations, config.MaxNetLot, TradingService.RulesFor(config));
-            if (quantity <= 0m) continue;
-            var order = CreateEntry(cycle, config.Symbol, level, quantity);
-            db.Orders.Add(order);
-            active.Add(order);
-            created.Add(order);
-        }
-
-        if (created.Count == 0) return;
-        await db.SaveChangesAsync(ct);
-        await adapter.PlaceOrdersAsync(selection, config, created, ct);
-    }
 
     private async Task<bool> ApplyFillAsync(CycleEntity cycle, GridConfiguration config, NormalizedExecutionFill fill, CancellationToken ct)
     {
@@ -186,44 +185,7 @@ public sealed class GridOrderLifecycle(
         return true;
     }
 
-    private async Task CreateTakeProfitAsync(CycleEntity cycle, GridConfiguration config, OrderEntity entry,
-        ExecutionEntity execution, CancellationToken ct)
-    {
-        var entrySide = Enum.Parse<OrderSide>(entry.Side, true);
-        var tpSide = entrySide == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-        var price = GridMath.TakeProfitPrice(entrySide, execution.Price, config.TakeProfitPoints, TradingService.RulesFor(config).TickSize);
-        var tp = new OrderEntity
-        {
-            Id = Ids.New("order"), CycleId = cycle.Id, ClientOrderId = Ids.New($"tp-{entry.GridLevel}"), ExchangeOrderId = "pending",
-            Symbol = entry.Symbol, Side = tpSide.ToString().ToUpperInvariant(), Kind = "TAKE_PROFIT", Status = "PENDING_EXCHANGE",
-            GridLevel = entry.GridLevel, Price = price, Quantity = execution.Quantity,
-            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
-        };
-        db.Orders.Add(tp);
-        db.VirtualLots.Add(new VirtualLotEntity
-        {
-            Id = Ids.New("lot"), CycleId = cycle.Id, EntryOrderId = entry.Id, TakeProfitOrderId = tp.Id, Side = entry.Side,
-            Status = "TP_PENDING", GridLevel = entry.GridLevel, EntryFillPrice = execution.Price,
-            FilledQuantity = execution.Quantity, RemainingQuantity = execution.Quantity,
-            TakeProfitPrice = price, EntryFee = execution.Fee
-        });
-        await db.SaveChangesAsync(ct);
-        var selection = Selection(cycle);
-        await environments.Adapter(selection.EnvironmentId).PlaceOrdersAsync(selection, config, [tp], ct);
-    }
 
-    private async Task CloseLotAsync(CycleEntity cycle, OrderEntity tp, ExecutionEntity execution, CancellationToken ct)
-    {
-        var lot = await db.VirtualLots.SingleOrDefaultAsync(x => x.TakeProfitOrderId == tp.Id, ct);
-        if (lot is null) return;
-        var closed = Math.Min(lot.RemainingQuantity, execution.Quantity);
-        lot.RemainingQuantity -= closed;
-        lot.ExitFee += execution.Fee;
-        cycle.RealisedCyclePnl += lot.Side == "BUY"
-            ? (execution.Price - lot.EntryFillPrice) * closed
-            : (lot.EntryFillPrice - execution.Price) * closed;
-        if (lot.RemainingQuantity <= 0m) lot.Status = "CLOSED";
-    }
 
     private async Task<CycleEntity?> FindCycleAsync(string accountId, string exchangeOrderId, string? clientOrderId, CancellationToken ct)
     {
@@ -238,29 +200,6 @@ public sealed class GridOrderLifecycle(
                      (order.ExchangeOrderId == exchangeOrderId || (clientOrderId != null && order.ClientOrderId == clientOrderId))
                select order).FirstOrDefaultAsync(ct);
 
-    private async Task CancelExpiredPartialEntriesAsync(CycleEntity cycle, GridConfiguration config,
-        IReadOnlySet<string> openClientIds, CancellationToken ct)
-    {
-        if (config.PartialFillCancelAfterMinutes <= 0) return;
-        var orders = await db.Orders.Where(x => x.CycleId == cycle.Id && x.Kind == "ENTRY" &&
-            x.Status == "PARTIALLY_FILLED" && x.FilledQuantity > 0m && x.FilledQuantity < x.Quantity).ToListAsync(ct);
-        var orderIds = orders.Select(x => x.Id).ToArray();
-        // SQLite cannot translate Min over DateTimeOffset. Keep the database query
-        // selective, then calculate the first fill per order in memory.
-        var fillTimes = await db.Executions.AsNoTracking()
-            .Where(x => orderIds.Contains(x.OrderId))
-            .Select(x => new { x.OrderId, x.OccurredAt })
-            .ToListAsync(ct);
-        var firstFills = fillTimes
-            .GroupBy(x => x.OrderId)
-            .ToDictionary(x => x.Key, x => x.Min(fill => fill.OccurredAt));
-        var expired = orders.Where(x => openClientIds.Contains(x.ClientOrderId) &&
-            firstFills.TryGetValue(x.Id, out var first) &&
-            GridMath.PartialFillCancellationDue(first, DateTimeOffset.UtcNow, config.PartialFillCancelAfterMinutes)).ToArray();
-        if (expired.Length == 0) return;
-        var selection = Selection(cycle);
-        await environments.Adapter(selection.EnvironmentId).CancelOrdersAsync(selection, expired, ct);
-    }
 
     private Task<List<OrderEntity>> ActiveOrdersAsync(string cycleId, CancellationToken ct) =>
         db.Orders.Where(x => x.CycleId == cycleId &&
@@ -271,17 +210,17 @@ public sealed class GridOrderLifecycle(
         (await db.Executions.Where(x => x.CycleId == cycleId).ToListAsync(ct))
             .Sum(x => x.Side == "BUY" ? x.Quantity : -x.Quantity);
 
+    private static string FundingCoin(string symbol)
+    {
+        var normalized = symbol.Trim().ToUpperInvariant().Replace("-", "").Replace("_", "").Replace("/", "");
+        if (normalized.EndsWith("USDC", StringComparison.Ordinal)) return normalized[..^4];
+        if (normalized.EndsWith("USDT", StringComparison.Ordinal)) return normalized[..^4];
+        return normalized;
+    }
+
     private static GridConfiguration DeserializeConfig(CycleEntity cycle) =>
         JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
     private static ExecutionSelection Selection(CycleEntity cycle) =>
         new(cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId);
 
-    public static OrderEntity CreateEntry(CycleEntity cycle, string symbol, GridLevel level, decimal quantity) => new()
-    {
-        Id = Ids.New("order"), CycleId = cycle.Id,
-        ClientOrderId = Ids.New($"grid-{level.Side.ToString()[0]}-{level.LevelIndex}"), ExchangeOrderId = "pending",
-        Symbol = symbol, Side = level.Side.ToString().ToUpperInvariant(), Kind = "ENTRY", Status = "PENDING_EXCHANGE",
-        GridLevel = level.LevelIndex, Price = level.EntryPrice, Quantity = quantity,
-        CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
-    };
 }

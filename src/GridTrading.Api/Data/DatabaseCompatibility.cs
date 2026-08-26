@@ -25,6 +25,28 @@ public static class DatabaseCompatibility
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_HyperliquidAccounts_AgentAddress"
             ON "HyperliquidAccounts" ("AgentAddress");
             """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "FundingPayments" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_FundingPayments" PRIMARY KEY,
+                "ExchangeFundingId" TEXT NOT NULL,
+                "CycleId" TEXT NOT NULL,
+                "ExecutionAccountId" TEXT NOT NULL,
+                "Coin" TEXT NOT NULL,
+                "UsdcDelta" TEXT NOT NULL,
+                "FundingCost" TEXT NOT NULL,
+                "PositionQuantity" TEXT NOT NULL,
+                "FundingRate" TEXT NOT NULL,
+                "OccurredAt" TEXT NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_FundingPayments_ExchangeFundingId"
+            ON "FundingPayments" ("ExchangeFundingId");
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS "IX_FundingPayments_CycleId_OccurredAt"
+            ON "FundingPayments" ("CycleId", "OccurredAt");
+            """);
 
         var strategyTypeAdded = await AddColumnIfMissingAsync(db, "Strategies", "StrategyType", "TEXT NOT NULL DEFAULT 'GRID'");
         var strategyEnvironmentAdded = await AddColumnIfMissingAsync(db, "Strategies", "DefaultExecutionEnvironmentId", "TEXT NOT NULL DEFAULT 'paper-local'");

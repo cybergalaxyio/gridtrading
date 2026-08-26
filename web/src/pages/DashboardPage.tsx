@@ -57,11 +57,11 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
       <div><h1>SOL-USDC 永续 <span className="mono">{format(mid, 3)}</span> <em>+0.82%</em></h1>
         <p>Strategy: {strategy?.name ?? '尚未创建'} <b className={`state ${state.toLowerCase()}`}>{state}</b> <span>{strategy?.defaultExecutionAccountId === 'acct_paper_01' ? 'Paper' : 'Hyperliquid Testnet'} · {gridModeLabel(strategy)} · 1x | 上次同步 {snapshot ? '刚刚' : '—'}</span></p></div>
       <div className="control-buttons">
-        {!cycle && <button className="primary" disabled={!strategy || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : '确认预览并开启'}</button>}
+        {!cycle && <button className="primary" disabled={!strategy || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : 'Start'}</button>}
         {cycle?.state === 'RUNNING' && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>暂停 Entry</button>}
         {cycle?.state === 'PAUSED' && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', '已按固定中心恢复 Entry')}>继续</button>}
         {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
-        {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>关闭 Cycle</button>}
+        {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>Exit</button>}
       </div>
     </section>
     <div className="dashboard-grid">
@@ -80,7 +80,8 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
         ]} />
         <MetricCard title="Basket 清算盈亏" rows={[
           ['浮动', snapshot ? signed(snapshot.basketPnl.unrealisedAtExecutablePrice) : '+0.00'], ['已实现', snapshot ? signed(snapshot.basketPnl.realisedCyclePnl) : '+0.00'],
-          ['费用', snapshot ? `-${format(snapshot.basketPnl.paidFees, 3)}` : '-0.00'], ['净清算盈亏', snapshot ? signed(snapshot.basketPnl.liquidationPnl) : '+0.00'],
+          ['费用', snapshot ? `-${format(snapshot.basketPnl.paidFees, 3)}` : '-0.00'],
+          ['资金费', snapshot ? signed(String(-Number(snapshot.basketPnl.accruedFunding))) : '+0.00'], ['净清算盈亏', snapshot ? signed(snapshot.basketPnl.liquidationPnl) : '+0.00'],
         ]} accent />
       </aside>
       <section className="orders-panel panel">

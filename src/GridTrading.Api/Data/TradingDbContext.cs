@@ -8,6 +8,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
     public DbSet<CycleEntity> Cycles => Set<CycleEntity>();
     public DbSet<OrderEntity> Orders => Set<OrderEntity>();
     public DbSet<ExecutionEntity> Executions => Set<ExecutionEntity>();
+    public DbSet<FundingPaymentEntity> FundingPayments => Set<FundingPaymentEntity>();
     public DbSet<VirtualLotEntity> VirtualLots => Set<VirtualLotEntity>();
     public DbSet<OperationEntity> Operations => Set<OperationEntity>();
     public DbSet<AuditEntity> AuditLogs => Set<AuditEntity>();
@@ -22,6 +23,8 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
         modelBuilder.Entity<OrderEntity>().HasIndex(x => x.ClientOrderId).IsUnique();
         modelBuilder.Entity<OrderEntity>().HasIndex(x => new { x.CycleId, x.Status });
         modelBuilder.Entity<ExecutionEntity>().HasIndex(x => x.ExchangeExecutionId).IsUnique();
+        modelBuilder.Entity<FundingPaymentEntity>().HasIndex(x => x.ExchangeFundingId).IsUnique();
+        modelBuilder.Entity<FundingPaymentEntity>().HasIndex(x => new { x.CycleId, x.OccurredAt });
         modelBuilder.Entity<OperationEntity>().HasIndex(x => x.IdempotencyKey).IsUnique();
         modelBuilder.Entity<RiskAlertEntity>().HasIndex(x => new { x.CycleId, x.CreatedAt });
         modelBuilder.Entity<HyperliquidAccountEntity>().HasIndex(x => x.AgentAddress).IsUnique();
@@ -108,6 +111,20 @@ public sealed class ExecutionEntity
     public decimal Price { get; set; }
     public decimal Quantity { get; set; }
     public decimal Fee { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+}
+
+public sealed class FundingPaymentEntity
+{
+    public required string Id { get; set; }
+    public required string ExchangeFundingId { get; set; }
+    public required string CycleId { get; set; }
+    public required string ExecutionAccountId { get; set; }
+    public required string Coin { get; set; }
+    public decimal UsdcDelta { get; set; }
+    public decimal FundingCost { get; set; }
+    public decimal PositionQuantity { get; set; }
+    public decimal FundingRate { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
 }
 

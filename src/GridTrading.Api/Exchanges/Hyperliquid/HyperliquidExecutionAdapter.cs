@@ -76,10 +76,29 @@ public sealed class HyperliquidExecutionAdapter(
                     order.Quantity - order.FilledQuantity, false, order.ClientOrderId, ct);
             if (result.Status == "REJECTED")
             {
+                var rejectedAt = DateTimeOffset.UtcNow;
+                var venueError = result.Error ?? "Hyperliquid rejected an order.";
                 order.Status = "REJECTED";
-                order.UpdatedAt = DateTimeOffset.UtcNow;
+                order.UpdatedAt = rejectedAt;
+                if (order.Kind == "ENTRY")
+                {
+                    var warningCutoff = rejectedAt.AddMinutes(-1);
+                    var priorWarnings = await db.RiskAlerts.Where(x => x.CycleId == order.CycleId &&
+                        x.Code == "ENTRY_ORDER_REJECTED").Select(x => x.CreatedAt).ToListAsync(ct);
+                    var recentWarningExists = priorWarnings.Any(x => x >= warningCutoff);
+                    if (!recentWarningExists)
+                        db.RiskAlerts.Add(new RiskAlertEntity
+                        {
+                            Id = Ids.New("alert"), CycleId = order.CycleId, Severity = "WARNING",
+                            Code = "ENTRY_ORDER_REJECTED",
+                            Message = $"Entry {(order.Side == "BUY" ? "B" : "S")}{order.GridLevel} was rejected and will be retried on the next Sync. Venue: {venueError}",
+                            CreatedAt = rejectedAt
+                        });
+                    await db.SaveChangesAsync(ct);
+                    continue;
+                }
                 await db.SaveChangesAsync(ct);
-                throw new TradingProblemException(422, "TESTNET_ORDER_REJECTED", result.Error ?? "Hyperliquid rejected an order.");
+                throw new TradingProblemException(422, "PROTECTIVE_ORDER_REJECTED", venueError);
             }
             order.ExchangeOrderId = result.ExchangeOrderId ?? result.Cloid;
             order.Status = result.Status switch
@@ -172,6 +191,12 @@ public sealed class HyperliquidExecutionAdapter(
             ? await NormalizeFillsAsync(selection.AccountId, fillsDocument.RootElement.EnumerateArray().ToArray(), ct)
             : [];
 
+        using var fundingDocument = await client.GetUserFundingAsync(selection.AccountId,
+            Math.Max(0, cycle.LastReconciledAt.AddSeconds(-5).ToUnixTimeMilliseconds()), ct);
+        var fundingPayments = fundingDocument.RootElement.ValueKind == JsonValueKind.Array
+            ? NormalizeFundingPayments(selection.AccountId, fundingDocument.RootElement.EnumerateArray().ToArray())
+            : [];
+
         using var openDocument = await client.GetOpenOrdersAsync(selection.AccountId, ct);
         var openByClientId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (openDocument.RootElement.ValueKind == JsonValueKind.Array)
@@ -188,7 +213,7 @@ public sealed class HyperliquidExecutionAdapter(
         }
 
         var position = await client.GetPositionSnapshotAsync(selection.AccountId, config.Symbol, ct);
-        return new ExecutionReconciliationSnapshot(fills, [], openByClientId,
+        return new ExecutionReconciliationSnapshot(fills, fundingPayments, [], openByClientId,
             new ExecutionPosition(position.Quantity, position.PositionValue, position.UnrealizedPnl));
     }
 
@@ -208,6 +233,31 @@ public sealed class HyperliquidExecutionAdapter(
             result.Add(new NormalizedExecutionFill(id, oid, local?.ClientOrderId,
                 ReadString(fill, "side") == "B" ? "BUY" : "SELL", ReadDecimal(fill, "px"),
                 ReadDecimal(fill, "sz"), Math.Abs(ReadDecimal(fill, "fee")), DateTimeOffset.FromUnixTimeMilliseconds(time)));
+        }
+        return result;
+    }
+
+    public static IReadOnlyList<NormalizedFundingPayment> NormalizeFundingPayments(
+        string accountId, IReadOnlyList<JsonElement> values)
+    {
+        var result = new List<NormalizedFundingPayment>();
+        foreach (var value in values)
+        {
+            var details = value.TryGetProperty("delta", out var delta) && delta.ValueKind == JsonValueKind.Object
+                ? delta : value;
+            if (details.TryGetProperty("type", out var type) &&
+                !string.Equals(type.GetString(), "funding", StringComparison.OrdinalIgnoreCase)) continue;
+            var coin = ReadString(details, "coin");
+            if (string.IsNullOrWhiteSpace(coin)) continue;
+            var time = value.TryGetProperty("time", out var rootTime) && rootTime.TryGetInt64(out var rootMilliseconds)
+                ? rootMilliseconds
+                : details.TryGetProperty("time", out var detailTime) && detailTime.TryGetInt64(out var detailMilliseconds)
+                    ? detailMilliseconds : 0L;
+            if (time <= 0) continue;
+            var id = $"hl-funding:{accountId}:{coin.ToUpperInvariant()}:{time}";
+            result.Add(new NormalizedFundingPayment(id, coin, ReadDecimal(details, "usdc"),
+                ReadDecimal(details, "szi"), ReadDecimal(details, "fundingRate"),
+                DateTimeOffset.FromUnixTimeMilliseconds(time)));
         }
         return result;
     }

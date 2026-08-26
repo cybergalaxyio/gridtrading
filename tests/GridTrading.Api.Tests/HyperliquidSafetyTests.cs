@@ -26,6 +26,44 @@ public sealed class HyperliquidSafetyTests
     }
 
     [Fact]
+    public void UserFundingsSubscriptionUsesOfficialWebSocketShape()
+    {
+        using var subscription = JsonDocument.Parse(
+            Encoding.UTF8.GetString(HyperliquidWebSocketProtocol.SubscribeUserFundings("0xabc")));
+
+        Assert.Equal("subscribe", subscription.RootElement.GetProperty("method").GetString());
+        var details = subscription.RootElement.GetProperty("subscription");
+        Assert.Equal("userFundings", details.GetProperty("type").GetString());
+        Assert.Equal("0xabc", details.GetProperty("user").GetString());
+    }
+
+    [Fact]
+    public void UserFundingsMessagePreservesSnapshotAndPayments()
+    {
+        using var message = JsonDocument.Parse("""
+            {
+              "channel": "userFundings",
+              "data": {
+                "user": "0xabc",
+                "isSnapshot": true,
+                "fundings": [{
+                  "time": 1787695200000, "coin": "SOL", "usdc": "-0.125",
+                  "szi": "0.45", "fundingRate": "0.0001"
+                }]
+              }
+            }
+            """);
+
+        var recognized = HyperliquidWebSocketProtocol.TryReadUserFundings(message.RootElement, out var update);
+
+        Assert.True(recognized);
+        Assert.NotNull(update);
+        Assert.Equal("0xabc", update.User);
+        Assert.True(update.IsSnapshot);
+        Assert.Equal("-0.125", Assert.Single(update.Fundings).GetProperty("usdc").GetString());
+    }
+
+    [Fact]
     public void OrderUpdatesSubscriptionUsesOfficialWebSocketShape()
     {
         using var subscription = JsonDocument.Parse(

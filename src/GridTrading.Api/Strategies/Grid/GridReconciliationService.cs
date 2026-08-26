@@ -47,19 +47,9 @@ public sealed class GridReconciliationService(
                         $"basket-{cycle.Id}-{cycle.StateVersion}", null, false, ct);
                 }
             }
-            catch (TradingProblemException ex) when (ex.Code == "TESTNET_ORDER_REJECTED")
+            catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
             {
-                cycle.State = "FAULT";
-                cycle.StateVersion++;
-                db.RiskAlerts.Add(new RiskAlertEntity
-                {
-                    Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "CRITICAL",
-                    Code = "PROTECTIVE_ORDER_REJECTED",
-                    Message = "The execution venue rejected a strategy order; inspect the actual position.",
-                    CreatedAt = DateTimeOffset.UtcNow
-                });
-                await db.SaveChangesAsync(ct);
-                logger.LogError("GRID cycle {CycleId} entered FAULT after an order rejection.", cycle.Id);
+                logger.LogError(ex, "GRID cycle {CycleId} entered FAULT after a protective order rejection.", cycle.Id);
             }
         }
     }

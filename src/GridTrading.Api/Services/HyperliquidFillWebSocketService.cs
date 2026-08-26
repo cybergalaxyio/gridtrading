@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore;
 namespace GridTrading.Api.Services;
 
 public sealed record HyperliquidUserFillsMessage(string User, bool IsSnapshot, IReadOnlyList<JsonElement> Fills);
+public sealed record HyperliquidUserFundingsMessage(string User, bool IsSnapshot, IReadOnlyList<JsonElement> Fundings);
 public sealed record HyperliquidMidPricesMessage(IReadOnlyDictionary<string, string> Mids);
 public sealed record HyperliquidOrderUpdatesMessage(IReadOnlyList<JsonElement> Updates);
 
@@ -20,6 +21,12 @@ public static class HyperliquidWebSocketProtocol
     {
         method = "subscribe",
         subscription = new { type = "userFills", user, aggregateByTime = false }
+    });
+
+    public static byte[] SubscribeUserFundings(string user) => JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        method = "subscribe",
+        subscription = new { type = "userFundings", user }
     });
 
     public static byte[] SubscribeOrderUpdates(string user) => JsonSerializer.SerializeToUtf8Bytes(new
@@ -49,6 +56,22 @@ public static class HyperliquidWebSocketProtocol
             user.GetString()!,
             data.TryGetProperty("isSnapshot", out var snapshot) && snapshot.ValueKind == JsonValueKind.True,
             fills.EnumerateArray().Select(x => x.Clone()).ToArray());
+        return true;
+    }
+
+    public static bool TryReadUserFundings(JsonElement message, out HyperliquidUserFundingsMessage? result)
+    {
+        result = null;
+        if (!message.TryGetProperty("channel", out var channel) || channel.GetString() != "userFundings" ||
+            !message.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("user", out var user) || user.ValueKind != JsonValueKind.String ||
+            !data.TryGetProperty("fundings", out var fundings) || fundings.ValueKind != JsonValueKind.Array)
+            return false;
+
+        result = new HyperliquidUserFundingsMessage(
+            user.GetString()!,
+            data.TryGetProperty("isSnapshot", out var snapshot) && snapshot.ValueKind == JsonValueKind.True,
+            fundings.EnumerateArray().Select(x => x.Clone()).ToArray());
         return true;
     }
 
@@ -150,11 +173,12 @@ public sealed class HyperliquidFillWebSocketService(
         else
         {
             await Send(socket, HyperliquidWebSocketProtocol.SubscribeUserFills(account.User), ct);
+            await Send(socket, HyperliquidWebSocketProtocol.SubscribeUserFundings(account.User), ct);
             await Send(socket, HyperliquidWebSocketProtocol.SubscribeOrderUpdates(account.User), ct);
         }
 
         logger.LogInformation("Hyperliquid {Feed} WebSocket connected{Account}.",
-            account is null ? "market" : "userFills/orderUpdates",
+            account is null ? "market" : "userFills/userFundings/orderUpdates",
             account is null ? "" : $" for account {account.AccountId}");
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var receiveTask = ReceiveLoop(socket, account, connectionCts.Token);
@@ -185,6 +209,12 @@ public sealed class HyperliquidFillWebSocketService(
                 {
                     if (string.Equals(account.User, update.User, StringComparison.OrdinalIgnoreCase))
                         await ProcessFills(account.AccountId, update, ct);
+                }
+                else if (account is not null && HyperliquidWebSocketProtocol.TryReadUserFundings(
+                    document.RootElement, out var fundings) && fundings is not null)
+                {
+                    if (string.Equals(account.User, fundings.User, StringComparison.OrdinalIgnoreCase))
+                        await ProcessFundings(account.AccountId, fundings, ct);
                 }
                 else if (account is not null && HyperliquidWebSocketProtocol.TryReadOrderUpdates(
                     document.RootElement, out var orders) && orders is not null)
@@ -225,6 +255,18 @@ public sealed class HyperliquidFillWebSocketService(
         var processed = await lifecycle.ProcessFillsAsync(accountId, normalized, ct);
         if (processed > 0)
             logger.LogInformation("Processed {FillCount} Hyperliquid WebSocket fill(s) for account {AccountId}{Snapshot}.",
+                processed, accountId, update.IsSnapshot ? " from snapshot" : "");
+    }
+
+    private async Task ProcessFundings(string accountId, HyperliquidUserFundingsMessage update, CancellationToken ct)
+    {
+        if (update.Fundings.Count == 0) return;
+        using var scope = scopeFactory.CreateScope();
+        var lifecycle = scope.ServiceProvider.GetRequiredService<GridOrderLifecycle>();
+        var normalized = HyperliquidExecutionAdapter.NormalizeFundingPayments(accountId, update.Fundings);
+        var processed = await lifecycle.ProcessFundingPaymentsAsync(accountId, normalized, ct);
+        if (processed > 0)
+            logger.LogInformation("Processed {FundingCount} Hyperliquid WebSocket funding payment(s) for account {AccountId}{Snapshot}.",
                 processed, accountId, update.IsSnapshot ? " from snapshot" : "");
     }
 
