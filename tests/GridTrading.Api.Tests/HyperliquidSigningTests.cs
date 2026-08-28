@@ -75,6 +75,34 @@ public sealed class HyperliquidSigningTests
         Assert.True(reader.End);
     }
 
+    [Fact]
+    public void ModifyOrderUsesCloidAndCompleteLimitOrder()
+    {
+        const string cloid = "0x11111111111111111111111111111111";
+        var order = new HyperliquidLimitOrder(5, false, "100.19", "0.2", false, "Alo", cloid);
+
+        var reader = new MessagePackReader(HyperliquidWireCodec.PackModifyAction(cloid, order));
+        Assert.Equal(3, reader.ReadMapHeader());
+        Assert.Equal("type", reader.ReadString()); Assert.Equal("modify", reader.ReadString());
+        Assert.Equal("oid", reader.ReadString()); Assert.Equal(cloid, reader.ReadString());
+        Assert.Equal("order", reader.ReadString());
+        Assert.Equal(7, reader.ReadMapHeader());
+        Assert.Equal("a", reader.ReadString()); Assert.Equal(5, reader.ReadInt32());
+        Assert.Equal("b", reader.ReadString()); Assert.False(reader.ReadBoolean());
+        Assert.Equal("p", reader.ReadString()); Assert.Equal("100.19", reader.ReadString());
+        Assert.Equal("s", reader.ReadString()); Assert.Equal("0.2", reader.ReadString());
+        Assert.Equal("r", reader.ReadString()); Assert.False(reader.ReadBoolean());
+        Assert.Equal("t", reader.ReadString()); Assert.Equal(1, reader.ReadMapHeader());
+        Assert.Equal("limit", reader.ReadString()); Assert.Equal(1, reader.ReadMapHeader());
+        Assert.Equal("tif", reader.ReadString()); Assert.Equal("Alo", reader.ReadString());
+        Assert.Equal("c", reader.ReadString()); Assert.Equal(cloid, reader.ReadString());
+        Assert.True(reader.End);
+    }
+
+    [Fact]
+    public void HyperliquidMinimumOrderNotionalMatchesVenue() =>
+        Assert.Equal(10m, HyperliquidInfoClient.MinimumOrderNotional);
+
     [Theory]
     [InlineData("waitingForFill")]
     [InlineData("waitingForTrigger")]

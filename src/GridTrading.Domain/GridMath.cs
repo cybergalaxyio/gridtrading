@@ -37,6 +37,8 @@ public static class GridMath
                 throw new GridValidationException("MIN_ORDER_QUANTITY", $"Level {i} quantity is below the exchange minimum.");
             var buyLevelNotional = quantity * buyPrice;
             var sellLevelNotional = quantity * sellPrice;
+            var buyTakeProfitNotional = quantity * TakeProfitPrice(OrderSide.Buy, buyPrice, config.TakeProfitPoints, rules.TickSize);
+            var sellTakeProfitNotional = quantity * TakeProfitPrice(OrderSide.Sell, sellPrice, config.TakeProfitPoints, rules.TickSize);
             if (includeBuy && buyLevelNotional < rules.MinOrderNotional)
                 throw new GridValidationException("MIN_ORDER_NOTIONAL",
                     $"Level {i} BUY notional {buyLevelNotional} ({quantity} × {buyPrice}) is below the exchange minimum {rules.MinOrderNotional}.");
@@ -44,6 +46,12 @@ public static class GridMath
                 throw new GridValidationException("MIN_ORDER_NOTIONAL",
                     $"Level {i} SELL notional {sellLevelNotional} ({quantity} × {sellPrice}) is below the exchange minimum {rules.MinOrderNotional}.");
 
+            if (includeBuy && buyTakeProfitNotional < rules.MinOrderNotional)
+                throw new GridValidationException("MIN_TAKE_PROFIT_NOTIONAL",
+                    $"Level {i} BUY take-profit notional {buyTakeProfitNotional} is below the exchange minimum {rules.MinOrderNotional}.");
+            if (includeSell && sellTakeProfitNotional < rules.MinOrderNotional)
+                throw new GridValidationException("MIN_TAKE_PROFIT_NOTIONAL",
+                    $"Level {i} SELL take-profit notional {sellTakeProfitNotional} is below the exchange minimum {rules.MinOrderNotional}.");
             if (includeBuy)
             {
                 buyQty += quantity; buyNotional += buyLevelNotional;

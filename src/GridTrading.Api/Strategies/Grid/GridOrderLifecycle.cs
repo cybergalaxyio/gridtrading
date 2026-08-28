@@ -179,7 +179,7 @@ public sealed partial class GridOrderLifecycle(
         cycle.ActualNetQuantity += fill.Side == "BUY" ? fill.Quantity : -fill.Quantity;
         cycle.ReconstructedNetQuantity += fill.Side == "BUY" ? fill.Quantity : -fill.Quantity;
 
-        if (order.Kind == "ENTRY") await CreateTakeProfitAsync(cycle, config, order, execution, ct);
+        if (order.Kind == "ENTRY") await CreateOrAmendTakeProfitAsync(cycle, config, order, execution, ct);
         else if (order.Kind == "TAKE_PROFIT") await CloseLotAsync(cycle, order, execution, ct);
         await db.SaveChangesAsync(ct);
         return true;

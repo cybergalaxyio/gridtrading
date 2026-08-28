@@ -89,6 +89,25 @@ public sealed class GridMathTests
     }
 
     [Fact]
+    public void PlanRejectsEntryWhoseTakeProfitFallsBelowVenueNotionalMinimum()
+    {
+        var config = Configuration() with
+        {
+            GridMode = GridMode.SellOnly,
+            CenterPrice = 100m,
+            MaxLevelsPerSide = 1,
+            InitialGapPoints = 1m,
+            TakeProfitPoints = 2000m,
+            BaseLotSize = .1m
+        };
+        var rules = Rules with { MinOrderNotional = 10m };
+
+        var error = Assert.Throws<GridValidationException>(() => GridMath.BuildPlan(config, rules));
+
+        Assert.Equal("MIN_TAKE_PROFIT_NOTIONAL", error.Code);
+    }
+
+    [Fact]
     public void WorkingEntriesStraddleCurrentPriceAndSkipOccupiedLevels()
     {
         var plan = GridMath.BuildPlan(Configuration(), Rules);

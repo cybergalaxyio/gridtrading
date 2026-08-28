@@ -13,7 +13,7 @@ public sealed class HyperliquidExecutionAdapter(
     TradingDbContext db,
     HyperliquidTradingClient client,
     HyperliquidInfoClient instruments,
-    HyperliquidOrderOwnershipService ownership) : IExecutionAdapter
+    HyperliquidOrderOwnershipService ownership) : IExecutionAdapter, IOrderAmendmentAdapter
 {
     public ExecutionEnvironmentDescriptor Environment { get; } =
         new(ExecutionEnvironmentIds.HyperliquidTestnet, "HYPERLIQUID", "TESTNET", "Hyperliquid Testnet");
@@ -123,6 +123,36 @@ public sealed class HyperliquidExecutionAdapter(
             order.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
         }
+    }
+
+    public async Task AmendOrderAsync(ExecutionSelection selection, GridConfiguration config, OrderEntity order,
+        decimal price, decimal quantity, CancellationToken ct)
+    {
+        await AccountAsync(selection, ct);
+        var remaining = quantity - order.FilledQuantity;
+        var postOnly = order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits;
+        var result = await client.ModifyLimitAsync(selection.AccountId, order.Symbol, order.Side == "BUY", price,
+            remaining, postOnly, order.ClientOrderId, ct);
+        if (result.Status == "REJECTED" && order.Kind == "TAKE_PROFIT" && postOnly)
+            result = await client.ModifyLimitAsync(selection.AccountId, order.Symbol, order.Side == "BUY", price,
+                remaining, false, order.ClientOrderId, ct);
+        if (result.Status == "REJECTED")
+            throw new TradingProblemException(422,
+                order.Kind == "TAKE_PROFIT" ? "PROTECTIVE_ORDER_REJECTED" : "ORDER_AMEND_REJECTED",
+                result.Error ?? "Hyperliquid rejected an order amendment.");
+
+        order.ExchangeOrderId = result.ExchangeOrderId ?? order.ExchangeOrderId;
+        order.Price = price;
+        order.Quantity = quantity;
+        order.Status = result.Status switch
+        {
+            "WAITING" => "PENDING_EXCHANGE",
+            "UNKNOWN" => "UNKNOWN",
+            "FILLED" => "PARTIALLY_FILLED",
+            _ => order.FilledQuantity > 0m ? "PARTIALLY_FILLED" : "NEW"
+        };
+        order.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
     }
 
     public async Task<decimal> FlattenAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config, CancellationToken ct)

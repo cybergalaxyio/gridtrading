@@ -118,6 +118,27 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         return await SendOrderAction(account, action, actionBytes, cloid, ct);
     }
 
+    public async Task<HyperliquidOrderResult> ModifyLimitAsync(string accountId, string symbol, bool isBuy, decimal price,
+        decimal size, bool postOnly, string stableClientOrderId, CancellationToken ct)
+    {
+        var account = await Account(accountId, ct);
+        var (asset, sizeDecimals) = await ResolveAsset(symbol, ct);
+        var cloid = HyperliquidWireCodec.CreateCloid(stableClientOrderId);
+        var order = new HyperliquidLimitOrder(asset, isBuy, HyperliquidWireCodec.PriceToWire(price, sizeDecimals),
+            HyperliquidWireCodec.SizeToWire(size, sizeDecimals), false, postOnly ? "Alo" : "Gtc", cloid);
+        var actionBytes = HyperliquidWireCodec.PackModifyAction(cloid, order);
+        var action = new Dictionary<string, object>
+        {
+            ["type"] = "modify",
+            ["oid"] = cloid,
+            ["order"] = new Dictionary<string, object> { ["a"] = order.Asset, ["b"] = order.IsBuy,
+                ["p"] = order.Price, ["s"] = order.Size, ["r"] = order.ReduceOnly,
+                ["t"] = new Dictionary<string, object> { ["limit"] = new Dictionary<string, object> { ["tif"] = order.Tif } },
+                ["c"] = order.Cloid }
+        };
+        return await SendOrderAction(account, action, actionBytes, cloid, ct);
+    }
+
     public async Task CancelByCloidAsync(string accountId, string symbol, string stableClientOrderId, CancellationToken ct)
     {
         var account = await Account(accountId, ct); var (asset, _) = await ResolveAsset(symbol, ct);

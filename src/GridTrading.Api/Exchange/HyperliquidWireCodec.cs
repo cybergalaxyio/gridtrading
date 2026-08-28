@@ -18,6 +18,16 @@ public static class HyperliquidWireCodec
         writer.Write("grouping"); writer.Write("na"); writer.Flush(); return buffer.WrittenSpan.ToArray();
     }
 
+    public static byte[] PackModifyAction(string oid, HyperliquidLimitOrder order)
+    {
+        var buffer = new ArrayBufferWriter<byte>(); var writer = new MessagePackWriter(buffer);
+        writer.WriteMapHeader(3);
+        writer.Write("type"); writer.Write("modify");
+        writer.Write("oid"); writer.Write(oid);
+        writer.Write("order"); WriteLimitOrder(ref writer, order);
+        writer.Flush(); return buffer.WrittenSpan.ToArray();
+    }
+
     private static void WriteLimitOrder(ref MessagePackWriter writer, HyperliquidLimitOrder order)
     {
         writer.WriteMapHeader(7);

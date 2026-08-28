@@ -53,6 +53,12 @@ public interface IExecutionAdapter
     Task<ExecutionReconciliationSnapshot> ReconcileAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config, CancellationToken ct);
 }
 
+public interface IOrderAmendmentAdapter
+{
+    Task AmendOrderAsync(ExecutionSelection selection, GridConfiguration config, OrderEntity order,
+        decimal price, decimal quantity, CancellationToken ct);
+}
+
 public sealed class ExecutionEnvironmentRegistry(IEnumerable<IExecutionAdapter> adapters)
 {
     private readonly IReadOnlyDictionary<string, IExecutionAdapter> _adapters =

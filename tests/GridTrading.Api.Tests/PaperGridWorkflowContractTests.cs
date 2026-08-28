@@ -14,7 +14,7 @@ namespace GridTrading.Api.Tests;
 public sealed class PaperGridWorkflowContractTests
 {
     [Fact]
-    public async Task FragmentedEntryCreatesFragmentedTpAndKeepsLevelOccupied()
+    public async Task FragmentedEntryAmendsOneTpAndKeepsLevelOccupied()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -69,9 +69,11 @@ public sealed class PaperGridWorkflowContractTests
 
         Assert.Equal(3, processed);
         var takeProfits = await db.Orders.Where(x => x.Kind == "TAKE_PROFIT" && x.GridLevel == 7).ToListAsync(ct);
-        Assert.Equal(3, takeProfits.Count);
-        Assert.Equal(.57m, takeProfits.Sum(x => x.Quantity));
-        Assert.Equal(3, await db.VirtualLots.CountAsync(x => x.GridLevel == 7 && x.Status == "TP_PENDING", ct));
+        var takeProfit = Assert.Single(takeProfits);
+        Assert.Equal(.57m, takeProfit.Quantity);
+        var lot = await db.VirtualLots.SingleAsync(x => x.GridLevel == 7 && x.Status == "TP_PENDING", ct);
+        Assert.Equal(.57m, lot.FilledQuantity);
+        Assert.Equal(.57m, lot.RemainingQuantity);
         Assert.DoesNotContain(await db.Orders.Where(x => x.Kind == "ENTRY" &&
             (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED")).ToListAsync(ct), x => x.GridLevel == 7);
     }

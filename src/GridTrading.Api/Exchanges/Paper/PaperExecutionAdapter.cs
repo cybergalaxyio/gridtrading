@@ -5,7 +5,7 @@ using GridTrading.Domain;
 
 namespace GridTrading.Api.Exchanges.Paper;
 
-public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext db) : IExecutionAdapter
+public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext db) : IExecutionAdapter, IOrderAmendmentAdapter
 {
     public const string AccountId = "acct_paper_01";
 
@@ -61,6 +61,16 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
             order.Status = "CANCELLED";
             order.UpdatedAt = DateTimeOffset.UtcNow;
         }
+        await db.SaveChangesAsync(ct);
+    }
+
+    public async Task AmendOrderAsync(ExecutionSelection selection, GridConfiguration config, OrderEntity order,
+        decimal price, decimal quantity, CancellationToken ct)
+    {
+        EnsureSelection(selection);
+        order.Price = price;
+        order.Quantity = quantity;
+        order.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
     }
 

@@ -38,7 +38,7 @@ The account list is intentionally plural even though each environment currently 
 5. Build and cache the preview with the resolved execution selection.
 6. Start only from that preview. The Cycle persists the same environment/account before orders are created.
 7. Route REST reconciliation, WebSocket events and Paper matches to normalized fills/order updates.
-8. Apply fills idempotently, create one TP and Virtual Lot per fill fragment, then maintain working entries.
+8. Apply fills idempotently, create one TP and Virtual Lot per Entry, atomically amend that TP for later fill fragments, then maintain working entries.
 9. On close, resolve the adapter from the Cycle binding, cancel orders, flatten, reconcile and mark terminal.
 
 A running Cycle never reads the Strategy's current default environment/account. Changing a Strategy default therefore affects only future previews and Cycles.
@@ -47,13 +47,14 @@ A running Cycle never reads the Strategy's current default environment/account. 
 
 - Only a confirmed `NEW` Entry with zero filled quantity may move with the current mid price.
 - A partially filled, pending or unknown Entry stays in place until its fill/cancel state resolves.
-- Every Entry fill fragment creates its own TP and Virtual Lot.
-- A level is occupied while any Virtual Lot from that Entry level remains open. For example, three S7 TP fragments collectively occupy S7; no new S7 Entry is allowed until all three close, while S8 or another valid level can still be selected.
+- The first Entry fill creates its TP and Virtual Lot. Later fragments update the same lot and atomically amend the same TP, so a below-minimum tail fragment is combined with already protected quantity.
+- If the first fragment cannot meet the venue's protective minimum, the Cycle enters `FAULT` immediately rather than leaving exposure unprotected.
+- A level is occupied while its Virtual Lot remains open; no new Entry is allowed at that level until the TP closes, while another valid level can still be selected.
 - Duplicate or late fills are keyed by normalized execution ID and cannot create duplicate TP orders.
-- Paper and Hyperliquid use these same rules. Their adapters differ only in execution and market simulation details.
+- Paper and Hyperliquid use these same rules. Adapters that can receive fragmented fills must implement atomic order amendment.
 
 ## Extension points
 
-To add an exchange/network, implement `IExecutionAdapter`, register a stable environment descriptor and expose its accounts. No GRID rule should be added to the adapter.
+To add an exchange/network, implement `IExecutionAdapter` and `IOrderAmendmentAdapter`, register a stable environment descriptor and expose its accounts. No GRID rule should be added to the adapter.
 
 To add a strategy type, create a separate strategy workflow and pure domain rules, then dispatch it from the application facade using persisted `StrategyType`. It must consume the same execution selection and adapter contracts rather than importing a venue client.

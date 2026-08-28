@@ -22,6 +22,8 @@ public sealed record ExchangeInstrumentMetadata(
 
 public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration configuration)
 {
+    public const decimal MinimumOrderNotional = 10m;
+
     public async Task<object> GetPerpetualMetadata(CancellationToken ct)
     {
         var configured = configuration["Hyperliquid:InfoUrl"] ?? "https://api.hyperliquid-testnet.xyz/info";
@@ -66,7 +68,7 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
         var quantityStep = PowerOfTen(-sizeDecimals);
         var (makerFeeRate, takerFeeRate, feeSource) = await GetUserFeeRates(userAddress, ct);
         return new ExchangeInstrumentMetadata(coin, "TESTNET", index, sizeDecimals, price,
-            HyperliquidWireCodec.TickSize(price, sizeDecimals), quantityStep, quantityStep, 5m, 500,
+            HyperliquidWireCodec.TickSize(price, sizeDecimals), quantityStep, quantityStep, MinimumOrderNotional, 500,
             makerFeeRate, takerFeeRate, feeSource, DateTimeOffset.UtcNow);
     }
 

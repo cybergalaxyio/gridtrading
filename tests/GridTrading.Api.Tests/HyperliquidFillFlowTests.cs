@@ -275,6 +275,85 @@ public sealed class HyperliquidFillFlowTests
     }
 
     [Fact]
+    public async Task SplitEntryFillAmendsOneTakeProfitAndStillCreatesNextLevelEntry()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(ct);
+        var options = new DbContextOptionsBuilder<TradingDbContext>().UseSqlite(connection).Options;
+        await using var db = new TradingDbContext(options);
+        await db.Database.EnsureCreatedAsync(ct);
+
+        var now = DateTimeOffset.UtcNow;
+        var config = new GridConfiguration
+        {
+            Symbol = "SOL", TickSize = .01m, QuantityStep = .01m,
+            MinOrderQuantity = .01m, MinOrderNotional = 5m, SizeDecimals = 2,
+            CenterPrice = 101.935m, MaxLevelsPerSide = 3,
+            GridSpacingPoints = 50m, TakeProfitPoints = 200m,
+            BaseLotSize = .2m, LotSizeIncreasePercent = 16.2m,
+            MaxNetLot = 10m, PostOnlyEntries = true, PostOnlyTakeProfits = true
+        };
+        var plan = GridMath.BuildPlan(config, TradingService.RulesFor(config));
+        var cycle = new CycleEntity
+        {
+            Id = "cycle_grid", StrategyId = "strategy_grid",
+            ExecutionEnvironmentId = ExecutionEnvironmentIds.HyperliquidTestnet,
+            ExecutionAccountId = "account_testnet", State = "RUNNING",
+            FrozenConfigurationJson = JsonSerializer.Serialize(config, JsonSupport.Options),
+            FrozenPlanJson = JsonSerializer.Serialize(plan, JsonSupport.Options),
+            ExitReason = "", StartedAt = now, LastReconciledAt = now
+        };
+        var buyZero = EntryOrder("entry_buy_0", "entry-buy-0", "7001", "BUY", 0, 101.68m, now);
+        var sellZero = EntryOrder("entry_sell_0", "entry-sell-0", "7002", "SELL", 0, 102.19m, now);
+        db.AddRange(cycle, buyZero, sellZero);
+        await db.SaveChangesAsync(ct);
+
+        var adapter = new RecordingAmendmentAdapter(102.2m);
+        var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
+            new ExecutionAccountOperationGate());
+
+        var first = await lifecycle.ProcessFillsAsync("account_testnet",
+            [new NormalizedExecutionFill("fill-s0-1", "7002", "entry-sell-0",
+                "SELL", 102.19m, .17m, .002605m, now)], ct);
+        var second = await lifecycle.ProcessFillsAsync("account_testnet",
+            [new NormalizedExecutionFill("fill-s0-2", "7002", "entry-sell-0",
+                "SELL", 102.19m, .03m, .000459m, now.AddSeconds(29))], ct);
+
+        Assert.Equal(1, first);
+        Assert.Equal(1, second);
+        Assert.Equal("RUNNING", cycle.State);
+        Assert.Equal("FILLED", sellZero.Status);
+        Assert.Equal(.2m, sellZero.FilledQuantity);
+
+        var takeProfit = await db.Orders.SingleAsync(x => x.Kind == "TAKE_PROFIT", ct);
+        Assert.Equal("BUY", takeProfit.Side);
+        Assert.Equal(100.19m, takeProfit.Price);
+        Assert.Equal(.2m, takeProfit.Quantity);
+        Assert.Equal("NEW", takeProfit.Status);
+
+        var lot = await db.VirtualLots.SingleAsync(ct);
+        Assert.Equal(takeProfit.Id, lot.TakeProfitOrderId);
+        Assert.Equal(.2m, lot.FilledQuantity);
+        Assert.Equal(.2m, lot.RemainingQuantity);
+        Assert.Equal(.003064m, lot.EntryFee);
+
+        var amendment = Assert.Single(adapter.Amendments);
+        Assert.Equal(takeProfit.Id, amendment.OrderId);
+        Assert.Equal(100.19m, amendment.Price);
+        Assert.Equal(.2m, amendment.Quantity);
+
+        await db.SaveChangesAsync(ct);
+        var openEntries = await db.Orders.Where(x => x.Kind == "ENTRY" &&
+            (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED")).OrderBy(x => x.Side).ToListAsync(ct);
+        Assert.True(openEntries.Count == 2,
+            string.Join("; ", (await db.Orders.ToListAsync(ct)).Select(x => $"{x.Side}/{x.Kind}/{x.Status}/L{x.GridLevel}/{x.Quantity}")));
+        Assert.Contains(openEntries, x => x.Id == buyZero.Id && x.GridLevel == 0);
+        Assert.Contains(openEntries, x => x.Side == "SELL" && x.GridLevel == 1 && x.Quantity == .23m);
+        Assert.Empty(await db.RiskAlerts.ToListAsync(ct));
+    }
+
+    [Fact]
     public async Task EntryMaintenanceMovesUnfilledOrderButLeavesPartialFillInPlace()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -435,5 +514,52 @@ public sealed class HyperliquidFillFlowTests
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json")
         };
+    }
+
+    private sealed class RecordingAmendmentAdapter(decimal mid) : IExecutionAdapter, IOrderAmendmentAdapter
+    {
+        public ExecutionEnvironmentDescriptor Environment { get; } = new(
+            ExecutionEnvironmentIds.HyperliquidTestnet, "HYPERLIQUID", "TESTNET", "Test adapter");
+        public List<(string OrderId, decimal Price, decimal Quantity)> Amendments { get; } = [];
+
+        public Task PlaceOrdersAsync(ExecutionSelection selection, GridConfiguration config,
+            IEnumerable<OrderEntity> orders, CancellationToken ct)
+        {
+            foreach (var order in orders)
+            {
+                order.ExchangeOrderId = Ids.New("exchange");
+                order.Status = "NEW";
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task AmendOrderAsync(ExecutionSelection selection, GridConfiguration config, OrderEntity order,
+            decimal price, decimal quantity, CancellationToken ct)
+        {
+            Amendments.Add((order.Id, price, quantity));
+            order.Price = price;
+            order.Quantity = quantity;
+            order.Status = "NEW";
+            return Task.CompletedTask;
+        }
+
+        public Task CancelOrdersAsync(ExecutionSelection selection, IEnumerable<OrderEntity> orders, CancellationToken ct)
+        {
+            foreach (var order in orders) order.Status = "CANCELLED";
+            return Task.CompletedTask;
+        }
+
+        public Task<ExecutionQuote> GetQuoteAsync(ExecutionSelection selection, string symbol, CancellationToken ct) =>
+            Task.FromResult(new ExecutionQuote(mid - .01m, mid + .01m, mid, DateTimeOffset.UtcNow));
+        public Task<IReadOnlyList<ExecutionAccountDescriptor>> GetAccountsAsync(CancellationToken ct) =>
+            throw new NotSupportedException();
+        public Task<ExecutionInstrument> GetInstrumentAsync(ExecutionSelection selection, string symbol,
+            decimal? referencePrice, CancellationToken ct) => throw new NotSupportedException();
+        public Task<ExecutionQuote> PreflightStartAsync(ExecutionSelection selection, string symbol, CancellationToken ct) =>
+            throw new NotSupportedException();
+        public Task<decimal> FlattenAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config,
+            CancellationToken ct) => throw new NotSupportedException();
+        public Task<ExecutionReconciliationSnapshot> ReconcileAsync(ExecutionSelection selection, CycleEntity cycle,
+            GridConfiguration config, CancellationToken ct) => throw new NotSupportedException();
     }
 }
