@@ -48,7 +48,9 @@ A running Cycle never reads the Strategy's current default environment/account. 
 - Only a confirmed `NEW` Entry with zero filled quantity may move with the current mid price.
 - A partially filled, pending or unknown Entry stays in place until its fill/cancel state resolves.
 - The first Entry fill creates its TP and Virtual Lot. Later fragments update the same lot and atomically amend the same TP, so a below-minimum tail fragment is combined with already protected quantity.
-- If the first fragment cannot meet the venue's protective minimum, the Cycle enters `FAULT` immediately rather than leaving exposure unprotected.
+- Once a TP starts filling, any unfilled remainder of its partially filled Entry is cancelled before the next working Entry is selected. This prevents a late tail fill from requiring a new below-minimum TP and lets the side start its next round.
+- If TP protection cannot be established, the Cycle sums its currently unprotected position value in USD. At or below `FaultExposureThresholdUsdt` it emits a warning and keeps its state; only exposure above the threshold enters `FAULT` and cancels active Entries.
+- `FaultExposureThresholdUsdt` defaults to 10 USD for legacy and newly created strategies; setting it to zero restores the previous any-positive-exposure FAULT behavior.
 - A level is occupied while its Virtual Lot remains open; no new Entry is allowed at that level until the TP closes, while another valid level can still be selected.
 - Duplicate or late fills are keyed by normalized execution ID and cannot create duplicate TP orders.
 - Paper and Hyperliquid use these same rules. Adapters that can receive fragmented fills must implement atomic order amendment.

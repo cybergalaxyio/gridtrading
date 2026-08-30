@@ -10,7 +10,7 @@ public sealed record StrategyRequest(
     decimal BasketStopLossUsdt, decimal MakerFeeRate, decimal TakerFeeRate, decimal EstimatedExitSlippagePct,
     bool IncludeFunding, bool PostOnlyEntries, bool PostOnlyTakeProfits, int ReconcileIntervalSeconds,
     int MarketDataStaleSeconds, int OrderCommandTimeoutSeconds, int MaxOrderFrequency,
-    int PartialFillCancelAfterMinutes = 10)
+    int PartialFillCancelAfterMinutes = 10, decimal FaultExposureThresholdUsdt = 10m)
 {
     public string StrategyType { get; init; } = "GRID";
     public string? DefaultExecutionEnvironmentId { get; init; }
@@ -27,6 +27,7 @@ public sealed record StrategyRequest(
         LotSizeIncreasePercent = LotSizeIncreasePercent, MaxTradeLot = MaxTradeLot,
         MaxNetLot = MaxNetLot, BasketTakeProfitUsdt = BasketTakeProfitUsdt,
         BasketStopLossUsdt = BasketStopLossUsdt, MakerFeeRate = MakerFeeRate,
+        FaultExposureThresholdUsdt = FaultExposureThresholdUsdt,
         TakerFeeRate = TakerFeeRate, EstimatedExitSlippagePct = EstimatedExitSlippagePct,
         IncludeFunding = IncludeFunding, PostOnlyEntries = PostOnlyEntries,
         PostOnlyTakeProfits = PostOnlyTakeProfits, ReconcileIntervalSeconds = ReconcileIntervalSeconds,

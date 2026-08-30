@@ -125,6 +125,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <NumberField label="MaxNetLot 硬上限" value={config.maxNetLot} onChange={v => set('maxNetLot', v)} suffix="SOL" />
           <NumberField label="Basket 止盈" value={config.basketTakeProfitUsdt} onChange={v => set('basketTakeProfitUsdt', v)} suffix="USDC" />
           <NumberField label="Basket 止损" value={config.basketStopLossUsdt} onChange={v => set('basketStopLossUsdt', v)} suffix="USDC" hint="0 = 不启用" />
+          <NumberField label={<HelpLabel label="FAULT 敞口阈值" text="止盈保护失败时，系统按未保护数量 × TP 参考价计算受影响 USD。只有金额超过此阈值才进入 FAULT；未超过时发送 WARNING Alert 并继续运行。设为 0 可恢复为任何正敞口都触发 FAULT。" />} value={config.faultExposureThresholdUsdt} onChange={v => set('faultExposureThresholdUsdt', v)} suffix="USD" />
           <NumberField label={<HelpLabel label="退出滑点储备" text="估算立即退出或强制平仓时可能产生的不利价格偏移。系统按当前仓位名义价值 × 此百分比预留退出成本，并从 Basket 清算 PnL 中扣除；它不会修改挂单价格。" />} value={config.estimatedExitSlippagePct} onChange={v => set('estimatedExitSlippagePct', v)} suffix="%" />
           <NumberField label={<HelpLabel label="行情过期阈值" text="允许用于交易判断的行情最大年龄。行情更新时间超过该秒数时，应停止创建新敞口，避免使用陈旧价格下单；已有减仓与安全退出仍可继续。" />} value={config.marketDataStaleSeconds} onChange={v => set('marketDataStaleSeconds', +v)} suffix="秒" />
           <NumberField label="Sync 周期" value={config.reconcileIntervalSeconds} onChange={v => set('reconcileIntervalSeconds', +v)} suffix="秒" />

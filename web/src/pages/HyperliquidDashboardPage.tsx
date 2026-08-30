@@ -285,6 +285,9 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const liquidation = String(+realised + +unrealized - +fees - +funding)
   const maxNetLot = +(strategy?.configuration.maxNetLot ?? 0)
   const maxNetUsage = maxNetLot > 0 ? Math.abs(+netPosition) / maxNetLot * 100 : 0
+  const unprotectedExposure = +(snapshot?.risk.unprotectedExposureNotionalUsdt ?? 0)
+  const faultExposureThreshold = +(snapshot?.risk.faultExposureThresholdUsdt ?? strategy?.configuration.faultExposureThresholdUsdt ?? 10)
+  const exposureTone: MetricTone = unprotectedExposure > faultExposureThreshold ? 'negative' : unprotectedExposure > 0 ? 'warning-text' : 'positive'
   const instrument = displaySymbol(marketSymbol, isTestnet)
   const quantitySymbol = coinFromSymbol(marketSymbol)
   const exchangePositions = clearinghouseState?.assetPositions.map(item => item.position) ?? null
@@ -336,6 +339,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
           ['可提余额', isTestnet ? unifiedAvailable !== null ? `${format(unifiedAvailable)} USDC` : '—' : '8,420.00 USDC'],
           ['净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['保证金使用', isTestnet ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
+          ['未保护敞口 / 阈值', snapshot ? `$${format(unprotectedExposure)} / $${format(faultExposureThreshold)}` : '—', snapshot ? exposureTone : undefined],
         ]} />
         <MetricCard title="Basket 清算盈亏" rows={[
           ['浮动', signedUsd(unrealized)], ['已实现', signedUsd(realised)], ['费用', `-$${format(Math.abs(+fees), 3)}`],
@@ -354,7 +358,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         {accountPanelTab === 'balances' && <BalanceTable state={clearinghouseState} spotState={spotClearinghouseState} pnl={exchangePnl} />}
         {accountPanelTab === 'positions' && <PositionTable positions={exchangePositions} />}
         {accountPanelTab === 'orders' && <OpenOrdersTable rows={exchangeOpenOrders} />}
-        {accountPanelTab === 'history' && <OrderHistoryTable rows={exchangeOrderHistory} refreshing={historyRefreshing} onRefresh={() => void refreshOrderHistory()} />}
+        {accountPanelTab === 'history' && <OrderHistoryTable rows={exchangeOrderHistory} currentSymbol={marketSymbol} currentCycleId={cycle?.cycleId ?? null}
+          refreshing={historyRefreshing} onRefresh={() => void refreshOrderHistory()} />}
         {accountPanelTab === 'events' && <Empty text="当前 Cycle 暂无策略事件" />}
         {accountPanelTab === 'alerts' && <Empty text="当前 Cycle 暂无风险告警" />}
       </section>
@@ -441,22 +446,39 @@ function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
   </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
 }
 
-function OrderHistoryTable({ rows, refreshing, onRefresh }: { rows: HyperliquidHistoricalOrder[] | null; refreshing: boolean; onRefresh: () => void }) {
+function OrderHistoryTable({ rows, currentSymbol, currentCycleId, refreshing, onRefresh }: {
+  rows: HyperliquidHistoricalOrder[] | null; currentSymbol: string; currentCycleId: string | null;
+  refreshing: boolean; onRefresh: () => void
+}) {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'FILLED'>(() => localStorage.getItem('grid.orderHistoryStatus') === 'FILLED' ? 'FILLED' : 'ALL')
+  const [onlyCurrentCycle, setOnlyCurrentCycle] = useState(() => localStorage.getItem('grid.orderHistoryOnlyCurrentCycle') === 'true')
   const [page, setPage] = useState(1)
+  useEffect(() => setPage(1), [currentSymbol, currentCycleId])
   if (!rows) return <Empty text="正在加载 Hyperliquid historicalOrders…" />
-  const filledCount = rows.filter(item => item.status.toLowerCase() === 'filled').length
-  const visibleRows = statusFilter === 'FILLED' ? rows.filter(item => item.status.toLowerCase() === 'filled') : rows
+  const scopedRows = onlyCurrentCycle
+    ? rows.filter(item => currentCycleId !== null && item.cycleId === currentCycleId && sameCoin(item.order.coin, currentSymbol))
+    : rows
+  const filledCount = scopedRows.filter(item => item.status.toLowerCase() === 'filled').length
+  const visibleRows = statusFilter === 'FILLED' ? scopedRows.filter(item => item.status.toLowerCase() === 'filled') : scopedRows
   const pageSize = 20
   const pageCount = Math.max(1, Math.ceil(visibleRows.length / pageSize))
   const currentPage = Math.min(page, pageCount)
   const pageRows = visibleRows.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   const firstRow = visibleRows.length === 0 ? 0 : (currentPage - 1) * pageSize + 1
   const lastRow = Math.min(currentPage * pageSize, visibleRows.length)
+  function selectOnlyCurrentCycle(value: boolean) {
+    setOnlyCurrentCycle(value)
+    setPage(1)
+    localStorage.setItem('grid.orderHistoryOnlyCurrentCycle', String(value))
+  }
   function selectStatus(value: 'ALL' | 'FILLED') { setStatusFilter(value); setPage(1); localStorage.setItem('grid.orderHistoryStatus', value) }
   return <><div className="history-filterbar" role="group" aria-label="Order History 状态筛选"><span>状态</span>
-    <button type="button" className={statusFilter === 'ALL' ? 'active' : ''} aria-pressed={statusFilter === 'ALL'} onClick={() => selectStatus('ALL')}>All <i>{rows.length}</i></button>
+    <button type="button" className={statusFilter === 'ALL' ? 'active' : ''} aria-pressed={statusFilter === 'ALL'} onClick={() => selectStatus('ALL')}>All <i>{scopedRows.length}</i></button>
     <button type="button" className={statusFilter === 'FILLED' ? 'active' : ''} aria-pressed={statusFilter === 'FILLED'} onClick={() => selectStatus('FILLED')}>Filled <i>{filledCount}</i></button>
+    <label className="history-current-cycle" title="只显示当前 Symbol 和当前 Cycle 的订单">
+      <input type="checkbox" checked={onlyCurrentCycle} onChange={event => selectOnlyCurrentCycle(event.target.checked)} />
+      Only Current Cycle
+    </label>
     <button type="button" className="history-refresh" disabled={refreshing} onClick={onRefresh} title="重新加载历史订单">
       <Icon name="refresh" size={13} />{refreshing ? '刷新中…' : '刷新'}
     </button>
@@ -486,8 +508,10 @@ function OrderLevel({ value }: { value: HyperliquidOrderAttribution }) {
   return <td className={`order-level ${side}`}>{label ?? '—'}</td>
 }
 
-function MetricCard({ title, rows, accent }: { title: string; rows: [string, string][]; accent?: boolean }) {
-  return <section className="metric-card panel"><h3>{title}</h3><dl>{rows.map(([key, value], index) => <div key={key} className={accent && index === rows.length - 1 ? 'total' : ''}><dt>{key}</dt><dd className={value.startsWith('+') ? 'positive' : value.startsWith('-') ? 'negative' : ''}>{value}</dd></div>)}</dl></section>
+type MetricTone = 'positive' | 'negative' | 'warning-text'
+type MetricRow = [string, string, MetricTone?]
+function MetricCard({ title, rows, accent }: { title: string; rows: MetricRow[]; accent?: boolean }) {
+  return <section className="metric-card panel"><h3>{title}</h3><dl>{rows.map(([key, value, tone], index) => <div key={key} className={accent && index === rows.length - 1 ? 'total' : ''}><dt>{key}</dt><dd className={tone ?? (value.startsWith('+') ? 'positive' : value.startsWith('-') ? 'negative' : '')}>{value}</dd></div>)}</dl></section>
 }
 export function Empty({ text }: { text: string }) { return <div className="empty"><span>◇</span>{text}</div> }
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }

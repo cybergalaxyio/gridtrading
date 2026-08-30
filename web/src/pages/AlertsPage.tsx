@@ -7,7 +7,7 @@ export function AlertsPage({ notify, reportError }: { notify: (message: string) 
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [filter, setFilter] = useState('全部')
   async function load() { try { setAlerts(await api.alerts()) } catch (e) { reportError(e instanceof Error ? e.message : '告警加载失败') } }
-  useEffect(() => { void load() }, [])
+  useEffect(() => { void load(); const timer = setInterval(() => void load(), 5000); return () => clearInterval(timer) }, [])
   const rows = useMemo(() => alerts.filter(x => filter === '全部' || x.severity === filter), [alerts, filter])
   async function ack(id: string) { try { await api.acknowledge(id); notify('告警已确认并写入审计记录'); await load() } catch (e) { reportError(e instanceof Error ? e.message : '确认失败') } }
   return <div className="page padded alerts-page"><div className="page-title"><div><h1>风险与告警控制中心</h1><p>实时监控系统状态、持仓敞口及策略异常告警。</p></div><div><button className="secondary"><Icon name="download" size={16} /> 导出日志</button></div></div>
@@ -21,4 +21,10 @@ export function AlertsPage({ notify, reportError }: { notify: (message: string) 
   </div>
 }
 function Health({ title, value, detail, tone }: { title: string; value: string; detail: string; tone: string }) { return <section className="health-card panel"><span className={`health-dot ${tone}`} /><div><small>{title}</small><b>{value}</b><em>{detail}</em></div></section> }
-function action(code: string) { return code.includes('STALE') ? '阻止创建新敞口' : code.includes('RECONCILIATION') ? '无需操作' : '建议人工复核策略参数' }
+function action(code: string) {
+  if (code === 'START_FAILED') return '已尽力撤销初始挂单；Cycle 已终止'
+  if (code === 'PROTECTIVE_ORDER_BELOW_FAULT_THRESHOLD') return '影响低于 USD 阈值；仅告警，策略继续运行'
+  if (code === 'PROTECTIVE_ORDER_REJECTED') return '已停止新 Entry 并撤销活动 Entry；请核对仓位与 TP'
+  if (code === 'FLATTEN_RESIDUAL_POSITION') return '已撤销策略挂单；请核对残仓后重试平仓'
+  return code.includes('STALE') ? '阻止创建新敞口' : code.includes('RECONCILIATION') ? '无需操作' : '建议人工复核策略参数'
+}

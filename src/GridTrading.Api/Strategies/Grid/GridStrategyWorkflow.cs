@@ -191,13 +191,17 @@ public sealed class GridStrategyWorkflow(
         {
             try { await adapter.CancelOrdersAsync(selection, db.Orders.Local.Where(x => x.CycleId == cycle.Id), ct); }
             catch { }
+            var errorCode = ex is TradingProblemException problem ? problem.Code : "EXECUTION_ERROR";
             cycle.State = "FAULT";
             cycle.IsTerminal = true;
             cycle.EndedAt = DateTimeOffset.UtcNow;
             cycle.ExitReason = "START_FAILED";
             operation.Status = "FAILED";
-            operation.ErrorCode = ex is TradingProblemException problem ? problem.Code : "EXECUTION_ERROR";
+            operation.ErrorCode = errorCode;
             operation.CompletedAt = DateTimeOffset.UtcNow;
+            db.RiskAlerts.Add(FaultAlert(cycle, "START_FAILED",
+                $"Cycle {cycle.Id} 进入 FAULT：启动阶段初始 Entry 挂单失败。原因 [{errorCode}]：{ex.Message}。" +
+                "系统已尽力撤销初始挂单，并将 Cycle 标记为终态。"));
             await db.SaveChangesAsync(ct);
             throw;
         }
@@ -253,6 +257,9 @@ public sealed class GridStrategyWorkflow(
                 {
                     cycle.State = "FAULT";
                     cycle.ExitReason = "FLATTEN_RESIDUAL_POSITION";
+                    db.RiskAlerts.Add(FaultAlert(cycle, "FLATTEN_RESIDUAL_POSITION",
+                        $"Cycle {cycle.Id} 进入 FAULT：平仓未完全成交，策略残余敞口为 {residual}。" +
+                        "系统已执行策略挂单撤销；请核对实际仓位后重试 Exit 或紧急平仓。"));
                     await db.SaveChangesAsync(ct);
                     throw Problem(503, "FLATTEN_INCOMPLETE", $"Strategy exposure still has {residual} unfilled; the cycle remains non-terminal.");
                 }
@@ -287,6 +294,12 @@ public sealed class GridStrategyWorkflow(
         var quote = market.Snapshot(config.Symbol);
         var active = db.Orders.Where(x => x.CycleId == cycle.Id &&
             (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" || x.Status == "UNKNOWN")).ToArray();
+        var openLots = db.VirtualLots
+            .Where(x => x.CycleId == cycle.Id && x.Status != "CLOSED" && x.RemainingQuantity > 0m).ToArray();
+        var takeProfits = db.Orders.Where(x => x.CycleId == cycle.Id && x.Kind == "TAKE_PROFIT")
+            .ToDictionary(x => x.Id);
+        var unprotectedExposureNotionalUsdt =
+            GridOrderLifecycle.CalculateUnprotectedNotional(openLots, takeProfits);
         var finalFee = Math.Abs(cycle.ActualNetQuantity) *
             (cycle.ActualNetQuantity >= 0 ? quote.Bid : quote.Ask) * config.TakerFeeRate;
         var pnl = GridMath.CalculateBasketPnl(new BasketPnlInput(cycle.RealisedCyclePnl, 0m,
@@ -327,7 +340,10 @@ public sealed class GridStrategyWorkflow(
                 usedBuyLevels = db.Orders.Count(x => x.CycleId == cycle.Id && x.Side == "BUY"),
                 remainingBuyLevels = config.MaxLevelsPerSide,
                 usedSellLevels = db.Orders.Count(x => x.CycleId == cycle.Id && x.Side == "SELL"),
-                remainingSellLevels = config.MaxLevelsPerSide
+                remainingSellLevels = config.MaxLevelsPerSide,
+                unprotectedExposureNotionalUsdt,
+                faultExposureThresholdUsdt = config.FaultExposureThresholdUsdt,
+                faultExposureThresholdExceeded = unprotectedExposureNotionalUsdt > config.FaultExposureThresholdUsdt
             },
             health = new
             {
@@ -395,6 +411,8 @@ public sealed class GridStrategyWorkflow(
         if (request.AutoRestart || !request.IncludeFunding)
             throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires autoRestart=false and includeFunding=true.");
         _ = GridMath.BuildPlan(request.ToConfiguration(145.25m), TradingService.SolRules);
+        if (request.FaultExposureThresholdUsdt < 0m)
+            throw Problem(422, "FAULT_THRESHOLD_INVALID", "FAULT exposure threshold must be zero or greater.");
     }
 
     private static void EnsureGrid(StrategyEntity strategy)
@@ -413,6 +431,11 @@ public sealed class GridStrategyWorkflow(
 
     private static AuditEntity Audit(string id, string action, string detail) => new()
         { ResourceId = id, Action = action, Actor = "local-operator", Detail = detail, OccurredAt = DateTimeOffset.UtcNow };
+    private static RiskAlertEntity FaultAlert(CycleEntity cycle, string code, string message) => new()
+    {
+        Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "CRITICAL", Code = code,
+        Message = message, CreatedAt = DateTimeOffset.UtcNow
+    };
     private static void EnsureState(CycleEntity cycle, string required, string command)
     {
         if (cycle.State != required) throw InvalidState(cycle, command);

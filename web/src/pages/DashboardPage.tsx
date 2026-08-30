@@ -52,6 +52,9 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
 
   const mid = testnetMid ?? snapshot?.market.mid ?? candles.at(-1)?.close ?? '—'
   const state = cycle?.state ?? 'WAITING_FOR_OPERATOR'
+  const unprotectedExposure = +(snapshot?.risk.unprotectedExposureNotionalUsdt ?? 0)
+  const faultExposureThreshold = +(snapshot?.risk.faultExposureThresholdUsdt ?? strategy?.configuration.faultExposureThresholdUsdt ?? 10)
+  const exposureTone: MetricTone = unprotectedExposure > faultExposureThreshold ? 'negative' : unprotectedExposure > 0 ? 'warning-text' : 'positive'
   return <div className="dashboard-page">
     <section className="instrument-bar">
       <div><h1>SOL-USDC 永续 <span className="mono">{format(mid, 3)}</span> <em>+0.82%</em></h1>
@@ -77,6 +80,7 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
         <MetricCard title="账户与持仓" rows={[
           ['权益', strategy?.defaultExecutionAccountId === 'acct_paper_01' ? '13,420.50 USDC' : '见 Testnet 设置'], ['可用余额', strategy?.defaultExecutionAccountId === 'acct_paper_01' ? '8,420.00 USDC' : '以交易所为准'], ['净仓位', snapshot ? `${signed(snapshot.position.actualNetQuantity)} SOL` : '0 SOL'],
           ['MaxNetLot 使用', snapshot ? `${format(snapshot.position.absoluteMaxNetLotUsagePct, 1)}%` : '0%'], ['Sync', snapshot?.health.reconciliation ?? 'IN_SYNC'],
+          ['未保护敞口 / 阈值', snapshot ? `$${format(unprotectedExposure)} / $${format(faultExposureThreshold)}` : '—', snapshot ? exposureTone : undefined],
         ]} />
         <MetricCard title="Basket 清算盈亏" rows={[
           ['浮动', snapshot ? signed(snapshot.basketPnl.unrealisedAtExecutablePrice) : '+0.00'], ['已实现', snapshot ? signed(snapshot.basketPnl.realisedCyclePnl) : '+0.00'],
@@ -96,8 +100,10 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   </div>
 }
 
-function MetricCard({ title, rows, accent }: { title: string; rows: [string, string][]; accent?: boolean }) {
-  return <section className="metric-card panel"><h3>{title}</h3><dl>{rows.map(([key, value], index) => <div key={key} className={accent && index === rows.length - 1 ? 'total' : ''}><dt>{key}</dt><dd className={value.startsWith('+') ? 'positive' : value.startsWith('-') ? 'negative' : ''}>{value}</dd></div>)}</dl></section>
+type MetricTone = 'positive' | 'negative' | 'warning-text'
+type MetricRow = [string, string, MetricTone?]
+function MetricCard({ title, rows, accent }: { title: string; rows: MetricRow[]; accent?: boolean }) {
+  return <section className="metric-card panel"><h3>{title}</h3><dl>{rows.map(([key, value, tone], index) => <div key={key} className={accent && index === rows.length - 1 ? 'total' : ''}><dt>{key}</dt><dd className={tone ?? (value.startsWith('+') ? 'positive' : value.startsWith('-') ? 'negative' : '')}>{value}</dd></div>)}</dl></section>
 }
 export function Empty({ text }: { text: string }) { return <div className="empty"><span>◇</span>{text}</div> }
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }

@@ -40,6 +40,7 @@ public sealed record GridConfiguration
     public decimal BasketStopLossUsdt { get; init; } = 100m;
     public decimal MakerFeeRate { get; init; } = 0.0002m;
     public decimal TakerFeeRate { get; init; } = 0.00055m;
+    public decimal FaultExposureThresholdUsdt { get; init; } = 10m;
     public decimal EstimatedExitSlippagePct { get; init; } = 0.10m;
     public bool IncludeFunding { get; init; } = true;
     public bool PostOnlyEntries { get; init; } = true;

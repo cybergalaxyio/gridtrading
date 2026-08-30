@@ -131,8 +131,8 @@ public sealed partial class GridOrderLifecycle(
         }
         catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
         {
-            await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct);
-            throw;
+            var faulted = await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct);
+            if (faulted) throw;
         }
 
         var openClientIds = snapshot.OpenOrdersByClientId.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);

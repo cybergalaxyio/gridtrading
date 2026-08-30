@@ -354,6 +354,75 @@ public sealed class HyperliquidFillFlowTests
     }
 
     [Fact]
+    public async Task TakeProfitFillCancelsPartialEntryRemainderAndStartsNextRound()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(ct);
+        var options = new DbContextOptionsBuilder<TradingDbContext>().UseSqlite(connection).Options;
+        await using var db = new TradingDbContext(options);
+        await db.Database.EnsureCreatedAsync(ct);
+
+        var now = DateTimeOffset.UtcNow;
+        var config = new GridConfiguration
+        {
+            Symbol = "SOL", TickSize = .01m, QuantityStep = .01m,
+            MinOrderQuantity = .01m, MinOrderNotional = 5m, SizeDecimals = 2,
+            CenterPrice = 101.935m, MaxLevelsPerSide = 3,
+            GridSpacingPoints = 50m, TakeProfitPoints = 200m,
+            BaseLotSize = .2m, LotSizeIncreasePercent = 16.2m,
+            MaxNetLot = 10m, PostOnlyEntries = true, PostOnlyTakeProfits = true
+        };
+        var plan = GridMath.BuildPlan(config, TradingService.RulesFor(config));
+        var cycle = new CycleEntity
+        {
+            Id = "cycle_grid", StrategyId = "strategy_grid",
+            ExecutionEnvironmentId = ExecutionEnvironmentIds.HyperliquidTestnet,
+            ExecutionAccountId = "account_testnet", State = "RUNNING",
+            FrozenConfigurationJson = JsonSerializer.Serialize(config, JsonSupport.Options),
+            FrozenPlanJson = JsonSerializer.Serialize(plan, JsonSupport.Options),
+            ExitReason = "", StartedAt = now, LastReconciledAt = now
+        };
+        var buyZero = EntryOrder("entry_buy_0", "entry-buy-0", "7001", "BUY", 0, 101.68m, now);
+        var sellZero = EntryOrder("entry_sell_0", "entry-sell-0", "7002", "SELL", 0, 102.19m, now);
+        db.AddRange(cycle, buyZero, sellZero);
+        await db.SaveChangesAsync(ct);
+
+        var adapter = new RecordingAmendmentAdapter(102.2m);
+        var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
+            new ExecutionAccountOperationGate());
+
+        await lifecycle.ProcessFillsAsync("account_testnet",
+            [new NormalizedExecutionFill("fill-s0-partial", "7002", "entry-sell-0",
+                "SELL", 102.19m, .17m, .002605m, now)], ct);
+        var takeProfit = await db.Orders.SingleAsync(x => x.Kind == "TAKE_PROFIT", ct);
+
+        await lifecycle.ProcessFillsAsync("account_testnet",
+            [new NormalizedExecutionFill("fill-s0-tp", takeProfit.ExchangeOrderId, takeProfit.ClientOrderId,
+                "BUY", takeProfit.Price, .17m, .002555m, now.AddSeconds(10))], ct);
+        await db.SaveChangesAsync(ct);
+
+        Assert.Equal("CANCELLED", sellZero.Status);
+        Assert.Equal(.17m, sellZero.FilledQuantity);
+        Assert.Contains(sellZero.Id, adapter.CancelledOrderIds);
+        Assert.Equal("FILLED", takeProfit.Status);
+        var lot = await db.VirtualLots.SingleAsync(ct);
+        Assert.Equal("CLOSED", lot.Status);
+        Assert.Equal(0m, lot.RemainingQuantity);
+        Assert.Equal("RUNNING", cycle.State);
+
+        var entries = await db.Orders.Where(x => x.Kind == "ENTRY").ToListAsync(ct);
+        var nextSells = entries.Where(x => x.Side == "SELL" && x.Id != sellZero.Id &&
+            (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED")).ToList();
+        Assert.True(nextSells.Count == 1,
+            string.Join("; ", entries.Select(x => $"{x.Side}/{x.Status}/L{x.GridLevel}/{x.Quantity}")));
+        var nextSell = nextSells[0];
+        Assert.Equal(1, nextSell.GridLevel);
+        Assert.Equal(.23m, nextSell.Quantity);
+        Assert.Empty(await db.RiskAlerts.ToListAsync(ct));
+    }
+
+    [Fact]
     public async Task EntryMaintenanceMovesUnfilledOrderButLeavesPartialFillInPlace()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -521,6 +590,7 @@ public sealed class HyperliquidFillFlowTests
         public ExecutionEnvironmentDescriptor Environment { get; } = new(
             ExecutionEnvironmentIds.HyperliquidTestnet, "HYPERLIQUID", "TESTNET", "Test adapter");
         public List<(string OrderId, decimal Price, decimal Quantity)> Amendments { get; } = [];
+        public List<string> CancelledOrderIds { get; } = [];
 
         public Task PlaceOrdersAsync(ExecutionSelection selection, GridConfiguration config,
             IEnumerable<OrderEntity> orders, CancellationToken ct)
@@ -545,7 +615,11 @@ public sealed class HyperliquidFillFlowTests
 
         public Task CancelOrdersAsync(ExecutionSelection selection, IEnumerable<OrderEntity> orders, CancellationToken ct)
         {
-            foreach (var order in orders) order.Status = "CANCELLED";
+            foreach (var order in orders)
+            {
+                CancelledOrderIds.Add(order.Id);
+                order.Status = "CANCELLED";
+            }
             return Task.CompletedTask;
         }
 

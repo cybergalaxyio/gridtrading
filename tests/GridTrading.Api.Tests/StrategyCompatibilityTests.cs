@@ -32,6 +32,19 @@ public sealed class StrategyCompatibilityTests
     }
 
     [Fact]
+    public void MissingFaultExposureThresholdDefaultsToTenUsd()
+    {
+        var json = JsonNode.Parse(JsonSerializer.Serialize(StrategyRequest.Default, JsonSupport.Options))!.AsObject();
+        json.Remove("faultExposureThresholdUsdt");
+
+        var strategy = JsonSerializer.Deserialize<StrategyRequest>(json.ToJsonString(), JsonSupport.Options)!;
+        var configuration = strategy.ToConfiguration();
+
+        Assert.Equal(10m, strategy.FaultExposureThresholdUsdt);
+        Assert.Equal(10m, configuration.FaultExposureThresholdUsdt);
+    }
+
+    [Fact]
     public void NewStrategyIdsUseTheShortFormat()
     {
         var first = Ids.NewStrategy();

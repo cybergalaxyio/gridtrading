@@ -149,6 +149,65 @@ public sealed class HyperliquidOrderRejectionTests
         var alert = await db.RiskAlerts.SingleAsync(ct);
         Assert.Equal("PROTECTIVE_ORDER_REJECTED", alert.Code);
         Assert.Equal("CRITICAL", alert.Severity);
+        Assert.Contains(cycle.Id, alert.Message);
+        Assert.Contains("Test protective rejection", alert.Message);
+        Assert.Contains("进入 FAULT", alert.Message);
+        Assert.Contains("20.00 USD", alert.Message);
+        Assert.Contains("10.00 USD", alert.Message);
+    }
+
+    [Fact]
+    public async Task ProtectiveRejectionBelowUsdThresholdWarnsWithoutFaultOrEntryCancellation()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(ct);
+        var options = new DbContextOptionsBuilder<TradingDbContext>().UseSqlite(connection).Options;
+        await using var db = new TradingDbContext(options);
+        await db.Database.EnsureCreatedAsync(ct);
+
+        var now = DateTimeOffset.UtcNow;
+        var config = new GridConfiguration
+        {
+            Symbol = "SOLUSDT", TickSize = .1m, QuantityStep = .1m,
+            MinOrderQuantity = .1m, MinOrderNotional = 1m, TakeProfitPoints = 1m,
+            FaultExposureThresholdUsdt = 50m
+        };
+        var cycle = new CycleEntity
+        {
+            Id = "cycle_grid", StrategyId = "strategy_grid",
+            ExecutionEnvironmentId = ExecutionEnvironmentIds.HyperliquidTestnet,
+            ExecutionAccountId = "account_testnet", State = "PAUSED", StateVersion = 4,
+            FrozenConfigurationJson = JsonSerializer.Serialize(config, JsonSupport.Options),
+            FrozenPlanJson = "{}", ExitReason = "", StartedAt = now, LastReconciledAt = now
+        };
+        var filledEntry = Order("entry_filled", "entry-filled", "ENTRY", "BUY", 7);
+        filledEntry.ExchangeOrderId = "7001";
+        filledEntry.Status = "NEW";
+        var workingEntry = Order("entry_working", "entry-working", "ENTRY", "SELL", 6);
+        workingEntry.ExchangeOrderId = "7002";
+        workingEntry.Status = "NEW";
+        db.AddRange(cycle, filledEntry, workingEntry);
+        await db.SaveChangesAsync(ct);
+
+        var adapter = new ProtectiveRejectingAdapter();
+        var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
+            new ExecutionAccountOperationGate());
+
+        var processed = await lifecycle.ProcessFillsAsync("account_testnet",
+            [new NormalizedExecutionFill("fill-1", "7001", "entry-filled", "BUY", 99.9m, .2m, 0m, now)], ct);
+
+        Assert.Equal(1, processed);
+        Assert.Equal("PAUSED", cycle.State);
+        Assert.Equal(4, cycle.StateVersion);
+        Assert.Empty(adapter.CancelledOrderIds);
+        Assert.Equal("NEW", workingEntry.Status);
+        var alert = await db.RiskAlerts.SingleAsync(ct);
+        Assert.Equal("PROTECTIVE_ORDER_BELOW_FAULT_THRESHOLD", alert.Code);
+        Assert.Equal("WARNING", alert.Severity);
+        Assert.Contains("20.00 USD", alert.Message);
+        Assert.Contains("50.00 USD", alert.Message);
+        Assert.Contains("不因本次影响停止", alert.Message);
     }
 
     [Fact]

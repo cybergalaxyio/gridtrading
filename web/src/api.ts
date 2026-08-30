@@ -67,6 +67,7 @@ export const defaultConfig: StrategyConfig = {
   initialGapPoints: '0', gridSpacingPoints: '250', gridSpacingStepPoints: '10', takeProfitPoints: '180',
   baseLotSize: '0.5', lotSizeIncreasePercent: '5', maxTradeLot: '2', maxNetLot: '10',
   basketTakeProfitUsdt: '50', basketStopLossUsdt: '100', makerFeeRate: '0.0002', takerFeeRate: '0.00055',
+  faultExposureThresholdUsdt: '10',
   estimatedExitSlippagePct: '0.10', includeFunding: true, postOnlyEntries: true, postOnlyTakeProfits: true,
   reconcileIntervalSeconds: 10, marketDataStaleSeconds: 5, orderCommandTimeoutSeconds: 10, maxOrderFrequency: 5,
   partialFillCancelAfterMinutes: 10,
