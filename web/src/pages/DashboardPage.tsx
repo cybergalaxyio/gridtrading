@@ -55,6 +55,8 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
   const unprotectedExposure = +(snapshot?.risk.unprotectedExposureNotionalUsdt ?? 0)
   const faultExposureThreshold = +(snapshot?.risk.faultExposureThresholdUsdt ?? strategy?.configuration.faultExposureThresholdUsdt ?? 10)
   const exposureTone: MetricTone = unprotectedExposure > faultExposureThreshold ? 'negative' : unprotectedExposure > 0 ? 'warning-text' : 'positive'
+  const filledEntryCount = orders.filter(order => order.kind === 'ENTRY' && order.status === 'FILLED').length
+  const filledTakeProfitCount = orders.filter(order => order.kind === 'TAKE_PROFIT' && order.status === 'FILLED').length
   return <div className="dashboard-page">
     <section className="instrument-bar">
       <div><h1>SOL-USDC 永续 <span className="mono">{format(mid, 3)}</span> <em>+0.82%</em></h1>
@@ -73,16 +75,17 @@ export function DashboardPage({ strategies, reload, notify, reportError }: {
         <TradingChart candles={candles} entryOrders={entryOrderLines} />
       </section>
       <aside className="metric-stack">
-        <MetricCard title="策略摘要" rows={[
+        <MetricCard title="Overview" rows={[
           ['固定中心', snapshot ? format(snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${plannedLevelCount(strategy)} 层` : '—'],
-          ['Entry / TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'], ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
-        ]} />
-        <MetricCard title="账户与持仓" rows={[
+          ['Pending Entry/ TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'],
+          ['Filled Entry/TP', cycle ? `${filledEntryCount} / ${filledTakeProfitCount}` : '—'],
+          ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
+
           ['权益', strategy?.defaultExecutionAccountId === 'acct_paper_01' ? '13,420.50 USDC' : '见 Testnet 设置'], ['可用余额', strategy?.defaultExecutionAccountId === 'acct_paper_01' ? '8,420.00 USDC' : '以交易所为准'], ['净仓位', snapshot ? `${signed(snapshot.position.actualNetQuantity)} SOL` : '0 SOL'],
           ['MaxNetLot 使用', snapshot ? `${format(snapshot.position.absoluteMaxNetLotUsagePct, 1)}%` : '0%'], ['Sync', snapshot?.health.reconciliation ?? 'IN_SYNC'],
           ['未保护敞口 / 阈值', snapshot ? `$${format(unprotectedExposure)} / $${format(faultExposureThreshold)}` : '—', snapshot ? exposureTone : undefined],
         ]} />
-        <MetricCard title="Basket 清算盈亏" rows={[
+        <MetricCard title="PnL" rows={[
           ['浮动', snapshot ? signed(snapshot.basketPnl.unrealisedAtExecutablePrice) : '+0.00'], ['已实现', snapshot ? signed(snapshot.basketPnl.realisedCyclePnl) : '+0.00'],
           ['费用', snapshot ? `-${format(snapshot.basketPnl.paidFees, 3)}` : '-0.00'],
           ['资金费', snapshot ? signed(String(-Number(snapshot.basketPnl.accruedFunding))) : '+0.00'], ['净清算盈亏', snapshot ? signed(snapshot.basketPnl.liquidationPnl) : '+0.00'],

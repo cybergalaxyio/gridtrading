@@ -288,6 +288,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const unprotectedExposure = +(snapshot?.risk.unprotectedExposureNotionalUsdt ?? 0)
   const faultExposureThreshold = +(snapshot?.risk.faultExposureThresholdUsdt ?? strategy?.configuration.faultExposureThresholdUsdt ?? 10)
   const exposureTone: MetricTone = unprotectedExposure > faultExposureThreshold ? 'negative' : unprotectedExposure > 0 ? 'warning-text' : 'positive'
+  const filledEntryCount = orders.filter(order => order.kind === 'ENTRY' && order.status === 'FILLED').length
+  const filledTakeProfitCount = orders.filter(order => order.kind === 'TAKE_PROFIT' && order.status === 'FILLED').length
   const instrument = displaySymbol(marketSymbol, isTestnet)
   const quantitySymbol = coinFromSymbol(marketSymbol)
   const exchangePositions = clearinghouseState?.assetPositions.map(item => item.position) ?? null
@@ -330,18 +332,19 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         {marketLoading && <div className="chart-loading">正在加载 {instrument} · {timeframe}</div>}
       </section>
       <aside className="metric-stack">
-        <MetricCard title="策略摘要" rows={[
+        <MetricCard title="Overview" rows={[
           ['固定中心', snapshot ? format(snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${plannedLevelCount(strategy)} 层` : '—'],
-          ['Entry / TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'], ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
-        ]} />
-        <MetricCard title="账户与持仓" rows={[
+          ['Pending Entry/ TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'],
+          ['Filled Entry/TP', cycle ? `${filledEntryCount} / ${filledTakeProfitCount}` : '—'],
+          ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
+
           ['权益', isTestnet ? unifiedUsdc ? `${format(unifiedUsdc.total)} USDC` : '—' : '13,420.50 USDC'],
           ['可提余额', isTestnet ? unifiedAvailable !== null ? `${format(unifiedAvailable)} USDC` : '—' : '8,420.00 USDC'],
           ['净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['保证金使用', isTestnet ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
           ['未保护敞口 / 阈值', snapshot ? `$${format(unprotectedExposure)} / $${format(faultExposureThreshold)}` : '—', snapshot ? exposureTone : undefined],
         ]} />
-        <MetricCard title="Basket 清算盈亏" rows={[
+        <MetricCard title="PnL" rows={[
           ['浮动', signedUsd(unrealized)], ['已实现', signedUsd(realised)], ['费用', `-$${format(Math.abs(+fees), 3)}`],
           ['资金费', signedUsd(String(-Number(funding)))], ['估算净值', signedUsd(liquidation)],
         ]} accent />
