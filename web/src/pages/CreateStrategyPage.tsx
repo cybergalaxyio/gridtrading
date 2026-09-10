@@ -23,7 +23,6 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
   const [environments, setEnvironments] = useState<ExecutionEnvironment[]>([])
   const [accounts, setAccounts] = useState<ExecutionAccount[]>([])
   const [symbols, setSymbols] = useState<string[]>(initialStrategy ? [initialStrategy.symbol] : ['SOLUSDT'])
-  const identityLocked = false // Defaults may change; a running Cycle keeps its frozen selection.
   useEffect(() => { void api.executionEnvironments().then(setEnvironments).catch(() => setEnvironments([])) }, [])
   useEffect(() => {
     let active = true
@@ -99,9 +98,9 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
       <section className="form-panel panel">
         {step === 1 && <><SectionTitle title="基本信息" subtitle={initialStrategy?.activeCycle ? '当前 Cycle 继续使用冻结的环境、账户和参数；这里的修改只影响未来 Cycle。' : '选择环境、账户与 Symbol 后自动加载 Tick Size 和 Quantity Step。'} /><div className="form-grid">
           <Field label="策略名称"><input value={config.name} onChange={e => set('name', e.target.value)} /></Field>
-          <Field label="默认执行环境"><select value={environment} disabled={identityLocked} onChange={e => changeEnvironment(e.target.value)}>{environments.map(item => <option key={item.id} value={item.id}>{item.displayName} · {item.network}</option>)}</select></Field>
-          <Field label="默认执行账户"><select value={config.defaultExecutionAccountId} disabled={identityLocked} onChange={e => changeAccount(e.target.value)}>{accounts.map(account => <option key={account.id} value={account.id}>{account.displayName}</option>)}{accounts.length === 0 && <option value="">该环境尚未配置账户</option>}</select></Field>
-          <Field label="Symbol"><select value={config.symbol} disabled={identityLocked || symbols.length === 0} onChange={e => set('symbol', e.target.value)}>{!symbols.includes(config.symbol) && config.symbol && <option value={config.symbol}>{config.symbol}</option>}{symbols.map(symbol => <option key={symbol} value={symbol}>{displaySymbol(symbol, environment)}</option>)}</select></Field>
+          <Field label="默认执行环境"><select value={environment} onChange={e => changeEnvironment(e.target.value)}>{environments.map(item => <option key={item.id} value={item.id}>{item.displayName} · {item.network}</option>)}</select></Field>
+          <Field label="默认执行账户"><select value={config.defaultExecutionAccountId} onChange={e => changeAccount(e.target.value)}>{accounts.map(account => <option key={account.id} value={account.id}>{account.displayName}</option>)}{accounts.length === 0 && <option value="">该环境尚未配置账户</option>}</select></Field>
+          <Field label="Symbol"><select value={config.symbol} disabled={symbols.length === 0} onChange={e => set('symbol', e.target.value)}>{!symbols.includes(config.symbol) && config.symbol && <option value={config.symbol}>{config.symbol}</option>}{symbols.map(symbol => <option key={symbol} value={symbol}>{displaySymbol(symbol, environment)}</option>)}</select></Field>
           <Field label="网格模式"><select value={config.gridMode ?? 'TWO_WAY'} onChange={e => set('gridMode', e.target.value as StrategyConfig['gridMode'])}><option value="BUY_ONLY">Buy Only（只下半边买单）</option><option value="SELL_ONLY">Sell Only（只下上半边卖单）</option><option value="TWO_WAY">Two-Way（双向网格）</option></select></Field>
           <Field label="Tick Size" hint={instrument?.environment ?? ''}><input value={instrumentLoading ? '加载中…' : (instrument?.tickSize ?? instrumentError) || '—'} disabled /></Field>
           <Field label="Quantity Step" hint={instrument ? `szDecimals ${instrument.sizeDecimals}` : ''}><input value={instrumentLoading ? '加载中…' : (instrument?.quantityStep ?? instrumentError) || '—'} disabled /></Field>

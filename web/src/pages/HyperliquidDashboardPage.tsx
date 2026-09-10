@@ -4,6 +4,7 @@ import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { api } from '../api'
 import { TradingChart } from '../components/TradingChart'
 import { Icon } from '../components/Icon'
+import { Empty } from '../components/Empty'
 import { Modal } from '../components/Modal'
 import { StrategyParameters } from '../components/StrategyParameters'
 import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
@@ -516,7 +517,6 @@ type MetricRow = [string, string, MetricTone?]
 function MetricCard({ title, rows, accent }: { title: string; rows: MetricRow[]; accent?: boolean }) {
   return <section className="metric-card panel"><h3>{title}</h3><dl>{rows.map(([key, value, tone], index) => <div key={key} className={accent && index === rows.length - 1 ? 'total' : ''}><dt>{key}</dt><dd className={tone ?? (value.startsWith('+') ? 'positive' : value.startsWith('-') ? 'negative' : '')}>{value}</dd></div>)}</dl></section>
 }
-export function Empty({ text }: { text: string }) { return <div className="empty"><span>◇</span>{text}</div> }
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
 function signedUsd(value: string) { return +value >= 0 ? `+$${format(value)}` : `-$${format(Math.abs(+value))}` }

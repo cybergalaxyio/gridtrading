@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icon'
-import { Empty } from './DashboardPage'
+import { Empty } from '../components/Empty'
 import type { Order } from '../types'
 
 export function OrdersPage({ activeCycleId, reportError }: { activeCycleId?: string; reportError: (message: string) => void }) {
