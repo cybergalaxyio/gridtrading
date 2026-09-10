@@ -13,21 +13,21 @@ public sealed class HyperliquidExecutionAdapter(
     TradingDbContext db,
     HyperliquidTradingClient client,
     HyperliquidInfoClient instruments,
-    HyperliquidOrderOwnershipService ownership) : IExecutionAdapter, IOrderAmendmentAdapter
+    HyperliquidOrderOwnershipService ownership, string network = HyperliquidNetwork.Testnet) : IExecutionAdapter, IOrderAmendmentAdapter
 {
     public ExecutionEnvironmentDescriptor Environment { get; } =
-        new(ExecutionEnvironmentIds.HyperliquidTestnet, "HYPERLIQUID", "TESTNET", "Hyperliquid Testnet");
+        new(HyperliquidNetwork.EnvironmentId(network), "HYPERLIQUID", network, $"Hyperliquid {(network == HyperliquidNetwork.Mainnet ? "Mainnet · LIVE" : "Testnet")}");
 
     public async Task<IReadOnlyList<ExecutionAccountDescriptor>> GetAccountsAsync(CancellationToken ct) =>
         await db.HyperliquidAccounts.AsNoTracking()
-            .Where(x => x.Enabled && x.Environment == "TESTNET")
-            .Select(x => new ExecutionAccountDescriptor(x.Id, ExecutionEnvironmentIds.HyperliquidTestnet, x.Name, x.Enabled))
+            .Where(x => x.Enabled && x.Environment == network)
+            .Select(x => new ExecutionAccountDescriptor(x.Id, Environment.Id, x.Name, x.Enabled))
             .ToListAsync(ct);
 
     public async Task<ExecutionInstrument> GetInstrumentAsync(ExecutionSelection selection, string symbol, decimal? referencePrice, CancellationToken ct)
     {
         var account = await AccountAsync(selection, ct);
-        var metadata = await instruments.GetPerpetualInstrument(symbol, referencePrice, account.AccountAddress, ct);
+        var metadata = await instruments.GetPerpetualInstrument(symbol, referencePrice, account.AccountAddress, ct, network);
         return new ExecutionInstrument(metadata.Symbol, Environment.Id, metadata.AssetIndex, metadata.SizeDecimals,
             metadata.ReferencePrice, metadata.TickSize, metadata.QuantityStep, metadata.MinOrderQuantity,
             metadata.MinOrderNotional, metadata.MaxActiveOrders, metadata.MakerFeeRate, metadata.TakerFeeRate,
@@ -37,7 +37,7 @@ public sealed class HyperliquidExecutionAdapter(
     public async Task<ExecutionQuote> GetQuoteAsync(ExecutionSelection selection, string symbol, CancellationToken ct)
     {
         await AccountAsync(selection, ct);
-        var book = await client.GetBookAsync(symbol, ct);
+        var book = await client.GetBookAsync(symbol, ct, network);
         return new ExecutionQuote(book.Bid, book.Ask, book.Mid, book.AsOf);
     }
 
@@ -46,13 +46,22 @@ public sealed class HyperliquidExecutionAdapter(
         await AccountAsync(selection, ct);
         var check = await client.PreflightAsync(selection.AccountId, symbol, ct);
         if (!check.AgentApproved)
-            throw new TradingProblemException(412, "API_WALLET_NOT_APPROVED", "The configured API Wallet is not approved as an agent on Hyperliquid Testnet.");
+            throw new TradingProblemException(412, "API_WALLET_NOT_APPROVED", $"The configured API Wallet is not approved on Hyperliquid {network}.");
         if (check.TradingEquity <= 0m)
-            throw new TradingProblemException(412, "TESTNET_ACCOUNT_UNFUNDED", $"The Hyperliquid Testnet {check.AccountMode} account has no Trading Equity.");
+            throw new TradingProblemException(412, "TESTNET_ACCOUNT_UNFUNDED", $"The Hyperliquid {network} {check.AccountMode} account has no Trading Equity.");
         if (check.AvailableBalance <= 0m)
-            throw new TradingProblemException(412, "TESTNET_ACCOUNT_NO_AVAILABLE_BALANCE", "The Hyperliquid Testnet account has no available balance.");
+            throw new TradingProblemException(412, "TESTNET_ACCOUNT_NO_AVAILABLE_BALANCE", $"The Hyperliquid {network} account has no available balance.");
         if (check.NetPosition != 0m)
             throw new TradingProblemException(409, "TESTNET_POSITION_NOT_FLAT", $"Start is blocked because the actual {symbol} position is {check.NetPosition}.");
+        if (network == HyperliquidNetwork.Mainnet)
+        {
+            using var state = await client.GetClearinghouseStateAsync(selection.AccountId, ct);
+            if (state.RootElement.GetProperty("assetPositions").EnumerateArray().Any(x => ReadDecimal(x.GetProperty("position"), "szi") != 0m))
+                throw new TradingProblemException(409, "MAINNET_ACCOUNT_NOT_FLAT", "Use a dedicated, flat mainnet account for trading.");
+            using var allOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
+            if (allOrders.RootElement.GetArrayLength() != 0)
+                throw new TradingProblemException(409, "MAINNET_OPEN_ORDERS_EXIST", "Cancel all existing mainnet account orders before starting.");
+        }
         if (check.OpenOrderCount != 0)
         {
             using var openOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
@@ -176,13 +185,15 @@ public sealed class HyperliquidExecutionAdapter(
         using var openOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
         var remainingOrders = await ownership.CountTrackedOpenOrdersAsync(selection.AccountId, config.Symbol, cycle.Id,
             openOrders.RootElement, ct);
-        if (remainingOrders != 0)
+        if (remainingOrders != 0 || (network == HyperliquidNetwork.Mainnet && openOrders.RootElement.GetArrayLength() != 0))
             throw new TradingProblemException(503, "CANCEL_INCOMPLETE",
                 $"Close is blocked because {remainingOrders} tracked strategy order(s) remain open.");
 
-        // Hyperliquid accounts are netted and may contain exposure owned outside this Cycle.
-        // Flatten only the position reconstructed from fills belonging to this strategy.
-        var strategyPosition = cycle.ReconstructedNetQuantity;
+        // Mainnet requires a dedicated account and closes the observed venue position.
+        // Testnet retains its existing strategy-attribution semantics.
+        var strategyPosition = network == HyperliquidNetwork.Mainnet
+            ? await client.GetPositionAsync(selection.AccountId, config.Symbol, ct)
+            : cycle.ReconstructedNetQuantity;
         if (strategyPosition == 0m) return 0m;
 
         var quote = await GetQuoteAsync(selection, config.Symbol, ct);
@@ -198,10 +209,10 @@ public sealed class HyperliquidExecutionAdapter(
         db.Orders.Add(order);
         await db.SaveChangesAsync(ct);
 
-        // Deliberately not Reduce-only: an external position on the same netted account
-        // must not prevent closing this strategy's independently attributed exposure.
+        // Mainnet exits are reduce-only so a stale snapshot cannot reverse the account.
+        // Testnet preserves ordinary IOC closing of independently attributed strategy exposure.
         var result = await client.PlaceLimitAsync(selection.AccountId, config.Symbol, isBuy, price, order.Quantity,
-            false, order.ClientOrderId, ct, immediateOrCancel: true);
+            false, order.ClientOrderId, ct, immediateOrCancel: true, reduceOnly: network == HyperliquidNetwork.Mainnet);
         order.ExchangeOrderId = result.ExchangeOrderId ?? result.Cloid;
         if (result.Status == "REJECTED")
         {
@@ -219,6 +230,8 @@ public sealed class HyperliquidExecutionAdapter(
         order.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
 
+        if (network == HyperliquidNetwork.Mainnet)
+            return await client.GetPositionAsync(selection.AccountId, config.Symbol, ct);
         return isBuy ? strategyPosition + filled : strategyPosition - filled;
     }
 
@@ -369,8 +382,8 @@ public sealed class HyperliquidExecutionAdapter(
         if (selection.EnvironmentId != Environment.Id)
             throw new TradingProblemException(422, "EXECUTION_SELECTION_MISMATCH", "The Hyperliquid adapter received a mismatched environment.");
         return await db.HyperliquidAccounts.SingleOrDefaultAsync(x =>
-                x.Id == selection.AccountId && x.Enabled && x.Environment == "TESTNET", ct)
-            ?? throw new TradingProblemException(404, "EXECUTION_ACCOUNT_NOT_FOUND", "Hyperliquid Testnet account was not found or disabled.");
+                x.Id == selection.AccountId && x.Enabled && x.Environment == network, ct)
+            ?? throw new TradingProblemException(404, "EXECUTION_ACCOUNT_NOT_FOUND", "Hyperliquid account was not found in the selected network or is disabled.");
     }
 
     private static string MapStatus(string exchangeStatus, decimal filledQuantity)

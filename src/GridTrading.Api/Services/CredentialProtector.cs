@@ -5,6 +5,8 @@ namespace GridTrading.Api.Services;
 
 public sealed class CredentialProtector
 {
+    // The original AAD is a storage-format identifier; retain it for existing ciphertext on both networks.
+    // Network isolation is enforced by account selection and signing, not this legacy label.
     private readonly byte[]? _key;
 
     public CredentialProtector(IConfiguration configuration)

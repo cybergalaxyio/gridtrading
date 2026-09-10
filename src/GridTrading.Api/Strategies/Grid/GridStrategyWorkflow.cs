@@ -18,7 +18,7 @@ public sealed class GridStrategyWorkflow(
     PreviewStore previews,
     ExecutionEnvironmentRegistry environments,
     GridOrderLifecycle lifecycle,
-    IHubContext<TradingHub> hub)
+    IHubContext<TradingHub> hub, ExecutionAccountOperationGate? startGate = null)
 {
     public async Task<StrategyEntity> CreateStrategyAsync(StrategyRequest request, CancellationToken ct)
     {
@@ -127,6 +127,18 @@ public sealed class GridStrategyWorkflow(
     public async Task<(OperationEntity Operation, CycleEntity Cycle)> StartCycleAsync(
         string strategyId, StartCycleRequest request, string key, CancellationToken ct)
     {
+        if (!previews.Items.TryGetValue(request.PreviewId, out var preview))
+            throw Problem(422, "PREVIEW_EXPIRED", "Create a fresh preview before starting.");
+        if (startGate is null) return await StartCoreAsync(strategyId, request, key, ct);
+        (OperationEntity Operation, CycleEntity Cycle) result = default;
+        await startGate.RunAsync(preview.ExecutionAccountId, async () =>
+            { result = await StartCoreAsync(strategyId, request, key, ct); }, ct);
+        return result;
+    }
+
+    private async Task<(OperationEntity Operation, CycleEntity Cycle)> StartCoreAsync(
+        string strategyId, StartCycleRequest request, string key, CancellationToken ct)
+    {
         if (!previews.Items.TryGetValue(request.PreviewId, out var preview) || preview.ExpiresAt <= DateTimeOffset.UtcNow)
             throw Problem(422, "PREVIEW_EXPIRED", "Create a fresh grid preview before starting.");
         if (preview.StrategyId != strategyId || preview.Plan.CenterPrice != request.ConfirmedCenterPrice)
@@ -142,6 +154,11 @@ public sealed class GridStrategyWorkflow(
 
         var selection = await environments.ResolveAsync(preview.ExecutionEnvironmentId, preview.ExecutionAccountId, ct);
         var adapter = environments.Adapter(selection.EnvironmentId);
+        if (selection.EnvironmentId == ExecutionEnvironmentIds.HyperliquidMainnet)
+        {
+            if (await db.Cycles.AnyAsync(x => x.ExecutionAccountId == selection.AccountId && !x.IsTerminal, ct))
+                throw Problem(409, "MAINNET_ACCOUNT_BUSY", "Only one active cycle is allowed on a mainnet account.");
+        }
         var confirmation = request.OperatorConfirmation;
         var environmentConfirmed = confirmation.EnvironmentConfirmed.Equals(selection.EnvironmentId, StringComparison.OrdinalIgnoreCase) ||
             confirmation.EnvironmentConfirmed.Equals(adapter.Environment.Network, StringComparison.OrdinalIgnoreCase) ||
@@ -193,15 +210,15 @@ public sealed class GridStrategyWorkflow(
             catch { }
             var errorCode = ex is TradingProblemException problem ? problem.Code : "EXECUTION_ERROR";
             cycle.State = "FAULT";
-            cycle.IsTerminal = true;
-            cycle.EndedAt = DateTimeOffset.UtcNow;
+            cycle.IsTerminal = selection.EnvironmentId != ExecutionEnvironmentIds.HyperliquidMainnet;
+            cycle.EndedAt = cycle.IsTerminal ? DateTimeOffset.UtcNow : null;
             cycle.ExitReason = "START_FAILED";
             operation.Status = "FAILED";
             operation.ErrorCode = errorCode;
             operation.CompletedAt = DateTimeOffset.UtcNow;
             db.RiskAlerts.Add(FaultAlert(cycle, "START_FAILED",
                 $"Cycle {cycle.Id} 进入 FAULT：启动阶段初始 Entry 挂单失败。原因 [{errorCode}]：{ex.Message}。" +
-                "系统已尽力撤销初始挂单，并将 Cycle 标记为终态。"));
+                "系统已尽力撤销初始挂单；Mainnet Cycle 保持可对账及可关闭状态，请检查实际仓位。"));
             await db.SaveChangesAsync(ct);
             throw;
         }
@@ -255,6 +272,8 @@ public sealed class GridStrategyWorkflow(
                     throw Problem(503, "FLATTEN_INCOMPLETE", $"Strategy exposure still has {residual} unfilled; the cycle remains non-terminal.");
                 }
                 await lifecycle.ReconcileAsync(cycle, ct);
+                if (selection.EnvironmentId == ExecutionEnvironmentIds.HyperliquidMainnet && cycle.ActualNetQuantity != 0m)
+                    throw Problem(503, "FLATTEN_INCOMPLETE", "Mainnet position is not flat after reconciliation; close remains pending.");
                 cycle.State = "WAITING_FOR_OPERATOR";
                 cycle.OperatorPaused = false;
                 cycle.RiskPaused = false;
@@ -419,10 +438,8 @@ public sealed class GridStrategyWorkflow(
 
     private static void EnsureSafeSelection(ExecutionSelection selection)
     {
-        if (selection.EnvironmentId.Contains("mainnet", StringComparison.OrdinalIgnoreCase) ||
-            selection.AccountId.Contains("live", StringComparison.OrdinalIgnoreCase) ||
-            selection.AccountId.Contains("mainnet", StringComparison.OrdinalIgnoreCase))
-            throw Problem(403, "FUNDED_LIVE_FORBIDDEN", "V1 rejects funded live and mainnet execution selections.");
+        if (selection.EnvironmentId is not (ExecutionEnvironmentIds.PaperLocal or ExecutionEnvironmentIds.HyperliquidTestnet or ExecutionEnvironmentIds.HyperliquidMainnet))
+            throw Problem(403, "EXECUTION_ENVIRONMENT_UNSUPPORTED", "Unsupported execution environment.");
     }
 
     private static AuditEntity Audit(string id, string action, string detail) => new()

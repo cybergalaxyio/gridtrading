@@ -24,11 +24,9 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
 {
     public const decimal MinimumOrderNotional = 10m;
 
-    public async Task<object> GetPerpetualMetadata(CancellationToken ct)
+    public async Task<object> GetPerpetualMetadata(CancellationToken ct, string network = HyperliquidNetwork.Testnet)
     {
-        var configured = configuration["Hyperliquid:InfoUrl"] ?? "https://api.hyperliquid-testnet.xyz/info";
-        if (!Uri.TryCreate(configured, UriKind.Absolute, out var endpoint) || endpoint.Host != "api.hyperliquid-testnet.xyz")
-            throw new TradingProblemException(403, "TESTNET_ONLY", "The read-only client only accepts the official Hyperliquid Testnet info endpoint.");
+        var endpoint = Endpoint(network);
         using var response = await httpClient.PostAsJsonAsync(endpoint, new { type = "metaAndAssetCtxs" }, ct);
         response.EnsureSuccessStatusCode();
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
@@ -50,12 +48,12 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
                 fundingRate = OptionalDecimal(context, "funding")
             };
         }).ToArray();
-        return new { exchange = "HYPERLIQUID", environment = "TESTNET", tradingEnabled = false, asOf = DateTimeOffset.UtcNow, universe };
+        return new { exchange = "HYPERLIQUID", environment = network, tradingEnabled = true, asOf = DateTimeOffset.UtcNow, universe };
     }
 
-    public async Task<ExchangeInstrumentMetadata> GetPerpetualInstrument(string symbol, decimal? referencePrice, string? userAddress, CancellationToken ct)
+    public async Task<ExchangeInstrumentMetadata> GetPerpetualInstrument(string symbol, decimal? referencePrice, string? userAddress, CancellationToken ct, string network = HyperliquidNetwork.Testnet)
     {
-        var endpoint = Endpoint();
+        var endpoint = Endpoint(network);
         using var response = await httpClient.PostAsJsonAsync(endpoint, new { type = "metaAndAssetCtxs" }, ct);
         response.EnsureSuccessStatusCode();
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
@@ -70,25 +68,25 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
             index++;
         }
         if (asset is null)
-            throw new TradingProblemException(404, "INSTRUMENT_NOT_FOUND", $"{coin} is not listed in Hyperliquid Testnet metadata.");
+            throw new TradingProblemException(404, "INSTRUMENT_NOT_FOUND", $"{coin} is not listed in Hyperliquid metadata.");
         var context = root[1][index];
         var price = referencePrice is > 0m ? referencePrice.Value
             : Decimal(context.TryGetProperty("midPx", out var mid) && mid.ValueKind != JsonValueKind.Null ? mid : context.GetProperty("markPx"));
         var sizeDecimals = asset.Value.GetProperty("szDecimals").GetInt32();
         var quantityStep = PowerOfTen(-sizeDecimals);
-        var (makerFeeRate, takerFeeRate, feeSource) = await GetUserFeeRates(userAddress, ct);
-        return new ExchangeInstrumentMetadata(coin, "TESTNET", index, sizeDecimals, price,
+        var (makerFeeRate, takerFeeRate, feeSource) = await GetUserFeeRates(userAddress, ct, network);
+        return new ExchangeInstrumentMetadata(coin, network, index, sizeDecimals, price,
             HyperliquidWireCodec.TickSize(price, sizeDecimals), quantityStep, quantityStep, MinimumOrderNotional, 500,
             makerFeeRate, takerFeeRate, feeSource, DateTimeOffset.UtcNow);
     }
 
-    private async Task<(decimal Maker, decimal Taker, string Source)> GetUserFeeRates(string? userAddress, CancellationToken ct)
+    private async Task<(decimal Maker, decimal Taker, string Source)> GetUserFeeRates(string? userAddress, CancellationToken ct, string network = HyperliquidNetwork.Testnet)
     {
         const decimal defaultMaker = .00015m, defaultTaker = .00045m;
         if (string.IsNullOrWhiteSpace(userAddress)) return (defaultMaker, defaultTaker, "HYPERLIQUID_DEFAULT");
         try
         {
-            using var response = await httpClient.PostAsJsonAsync(Endpoint(), new { type = "userFees", user = userAddress }, ct);
+            using var response = await httpClient.PostAsJsonAsync(Endpoint(network), new { type = "userFees", user = userAddress }, ct);
             if (!response.IsSuccessStatusCode) return (defaultMaker, defaultTaker, "HYPERLIQUID_DEFAULT");
             using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
             var root = document.RootElement;
@@ -100,14 +98,7 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
         catch (JsonException) { return (defaultMaker, defaultTaker, "HYPERLIQUID_DEFAULT"); }
     }
 
-    private Uri Endpoint()
-    {
-        var configured = configuration["Hyperliquid:InfoUrl"] ?? "https://api.hyperliquid-testnet.xyz/info";
-        if (!Uri.TryCreate(configured, UriKind.Absolute, out var endpoint) || endpoint.Scheme != "https" ||
-            endpoint.Host != "api.hyperliquid-testnet.xyz" || endpoint.AbsolutePath != "/info")
-            throw new TradingProblemException(403, "TESTNET_ONLY", "The read-only client only accepts the official Hyperliquid Testnet info endpoint.");
-        return endpoint;
-    }
+    private Uri Endpoint(string network) => HyperliquidNetwork.Endpoint(configuration, network, "Info");
 
     private static decimal? OptionalDecimal(JsonElement context, string property) =>
         context.ValueKind == JsonValueKind.Object && context.TryGetProperty(property, out var value) &&

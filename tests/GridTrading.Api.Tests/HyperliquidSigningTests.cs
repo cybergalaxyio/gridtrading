@@ -20,6 +20,19 @@ public sealed class HyperliquidSigningTests
     }
 
     [Fact]
+    public void MainnetL1SignatureMatchesOfficialPythonSdkVector()
+    {
+        // Independently generated with hyperliquid.utils.signing.sign_l1_action(..., is_mainnet=True).
+        var action = HyperliquidL1Signer.PackDummyAction(100_000_000_000L);
+        var signer = new HyperliquidL1Signer();
+        var signature = signer.Sign(action, PrivateKey, 0, true);
+        Assert.Equal("0x053749d5b30552aeb2fca34b530185976545bb22d0b3ce6f62e31be961a59298", signature.R);
+        Assert.Equal("0x755c40ba9bf05223521753995abb2f73ab3229be8ec921f350cb447e384d8ed8", signature.S);
+        Assert.Equal(27, signature.V);
+        Assert.NotEqual(signer.SignTestnet(action, PrivateKey, 0), signature);
+    }
+
+    [Fact]
     public void DerivesExpectedAgentAddress() =>
         Assert.Equal("0x14791697260e4c9a71f18484c9f997b308e59325", HyperliquidL1Signer.DeriveAddress(PrivateKey));
 

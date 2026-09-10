@@ -8,7 +8,7 @@ import { Empty } from '../components/Empty'
 import { Modal } from '../components/Modal'
 import { StrategyParameters } from '../components/StrategyParameters'
 import { SymbolPicker } from '../components/SymbolPicker'
-import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidInstrument, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
+import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidInstrument, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, Order, Snapshot, Strategy } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
@@ -35,15 +35,17 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const [runEnvironmentId, setRunEnvironmentId] = useState('')
   const [runAccounts, setRunAccounts] = useState<ExecutionAccount[]>([])
   const [runAccountId, setRunAccountId] = useState('')
-  const isTestnet = !!strategy && (cycle?.executionEnvironmentId ?? (runEnvironmentId || strategy.defaultExecutionEnvironmentId)) === 'hyperliquid-testnet'
+  const selectedEnvironment = cycle?.executionEnvironmentId ?? (runEnvironmentId || strategy?.defaultExecutionEnvironmentId || 'paper-local')
+  const isMainnet = selectedEnvironment === 'hyperliquid-mainnet'
+  const network = isMainnet ? 'MAINNET' : 'TESTNET'
+  const isHyperliquid = selectedEnvironment === 'hyperliquid-testnet' || isMainnet
   const selectedExecutionAccountId = cycle?.executionAccountId ?? (runAccountId || strategy?.defaultExecutionAccountId || '')
   const [candles, setCandles] = useState<Candle[]>([])
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
-  const [testnetMid, setTestnetMid] = useState<string | null>(null)
+  const [exchangeMid, setExchangeMid] = useState<string | null>(null)
   const [accountState, setAccountState] = useState<HyperliquidAccountState | null>(null)
   const [clearinghouseState, setClearinghouseState] = useState<HyperliquidClearinghouseState | null>(null)
-  const [spotClearinghouseState, setSpotClearinghouseState] = useState<HyperliquidSpotClearinghouseState | null>(null)
   const [exchangeOpenOrders, setExchangeOpenOrders] = useState<HyperliquidOpenOrder[] | null>(null)
   const [exchangeOrderHistory, setExchangeOrderHistory] = useState<HyperliquidHistoricalOrder[] | null>(null)
   const [historyRefreshing, setHistoryRefreshing] = useState(false)
@@ -63,7 +65,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const refreshSequence = useRef(0)
   const historyRefreshSequence = useRef(0)
   const lastMarketTickAt = useRef(0)
-  const marketSymbol = symbol || strategy?.symbol || (isTestnet ? 'SOL' : 'SOLUSDT')
+  const marketSymbol = symbol || strategy?.symbol || (isHyperliquid ? 'SOL' : 'SOLUSDT')
   const strategyMatchesMarket = sameCoin(strategy?.symbol, marketSymbol)
 
   useEffect(() => {
@@ -90,12 +92,19 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     return () => { active = false }
   }, [runEnvironmentId, cycle?.executionAccountId])
 
+  useEffect(() => {
+    ++refreshSequence.current; ++historyRefreshSequence.current
+    lastMarketTickAt.current = 0
+    setExchangeMid(null); setCandles([]); setAccountState(null); setSnapshot(null); setOrders([])
+    setClearinghouseState(null); setExchangeOpenOrders(null); setExchangeOrderHistory(null)
+  }, [selectedEnvironment, selectedExecutionAccountId])
+
   const refreshOrderHistory = useCallback(async (showLoading = true) => {
-    if (!isTestnet || !strategy) return
+    if (!isHyperliquid || !strategy) return
     const sequence = ++historyRefreshSequence.current
     if (showLoading) setHistoryRefreshing(true)
     try {
-      const history = await api.testnetOrderHistory(selectedExecutionAccountId)
+      const history = await api.hyperliquidOrderHistory(selectedExecutionAccountId, selectedEnvironment)
       if (sequence === historyRefreshSequence.current) setExchangeOrderHistory(history)
     } catch (e) {
       if (sequence === historyRefreshSequence.current)
@@ -103,7 +112,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     } finally {
       if (showLoading && sequence === historyRefreshSequence.current) setHistoryRefreshing(false)
     }
-  }, [isTestnet, strategy ? selectedExecutionAccountId : undefined, reportError])
+  }, [selectedEnvironment, isHyperliquid, strategy ? selectedExecutionAccountId : undefined, reportError])
 
   useEffect(() => {
     if (strategy?.symbol) setSymbol(strategy.symbol)
@@ -120,7 +129,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   useEffect(() => {
     lastMarketTickAt.current = 0
     setMarketStreamConnected(false)
-    if (!isTestnet) return
+    if (!isHyperliquid) return
 
     let disposed = false
     let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -131,7 +140,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       .build()
 
     const subscribe = async () => {
-      await connection.invoke('SubscribeHyperliquidSymbol', marketSymbol)
+      await connection.invoke('SubscribeHyperliquidSymbol', marketSymbol, network)
       if (!disposed) setMarketStreamConnected(true)
     }
     const scheduleStart = () => {
@@ -156,9 +165,9 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     }
 
     connection.on('HyperliquidMidPriceUpdated', (tick: HyperliquidMidPriceTick) => {
-      if (disposed || !sameCoin(tick.symbol, marketSymbol) || !Number.isFinite(+tick.mid)) return
+      if (disposed || tick.environment !== network || !sameCoin(tick.symbol, marketSymbol) || !Number.isFinite(+tick.mid)) return
       lastMarketTickAt.current = Date.now()
-      setTestnetMid(tick.mid)
+      setExchangeMid(tick.mid)
     })
     connection.onreconnecting(() => setMarketStreamConnected(false))
     connection.onreconnected(() => {
@@ -177,20 +186,20 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       disposed = true
       if (retryTimer) clearTimeout(retryTimer)
       setMarketStreamConnected(false)
-      void connection.invoke('UnsubscribeHyperliquidSymbol', marketSymbol)
+      void connection.invoke('UnsubscribeHyperliquidSymbol', marketSymbol, network)
         .catch(() => undefined)
         .finally(() => connection.stop())
     }
-  }, [isTestnet, marketSymbol])
+  }, [selectedEnvironment, isHyperliquid, marketSymbol])
 
   useEffect(() => {
     setMarketContexts([])
-    if (!isTestnet) { setInstruments(strategy?.symbol ? [strategy.symbol] : ['SOLUSDT']); return }
+    if (!isHyperliquid) { setInstruments(strategy?.symbol ? [strategy.symbol] : ['SOLUSDT']); return }
     let active = true
     let timer: ReturnType<typeof setTimeout> | undefined
     async function refreshInstruments() {
       try {
-        const result = await api.testnetInstruments()
+        const result = await api.hyperliquidInstruments(selectedEnvironment)
         if (!active) return
         const listed = result.universe.filter(item => !item.isDelisted && item.symbol)
         setInstruments(listed.map(item => item.symbol))
@@ -206,7 +215,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     }
     void refreshInstruments()
     return () => { active = false; if (timer) clearTimeout(timer) }
-  }, [isTestnet, strategy?.symbol])
+  }, [selectedEnvironment, isHyperliquid, strategy?.symbol])
 
   useEffect(() => {
     if (!strategy) { setInstrumentRules(null); return }
@@ -221,18 +230,18 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   }, [strategy ? selectedExecutionAccountId : undefined, marketSymbol])
 
   useEffect(() => {
-    if (!isTestnet || !strategy) {
-      setClearinghouseState(null); setSpotClearinghouseState(null); setExchangeOpenOrders(null); setExchangeOrderHistory(null); return
+    if (!isHyperliquid || !strategy) {
+      setClearinghouseState(null); setExchangeOpenOrders(null); setExchangeOrderHistory(null); return
     }
     let active = true
     const accountId = selectedExecutionAccountId
     async function refreshLiveAccount() {
       try {
-        const [state, spotState, openOrders] = await Promise.all([
-          api.testnetClearinghouseState(accountId), api.testnetSpotClearinghouseState(accountId), api.testnetOpenOrders(accountId),
+        const [state, openOrders] = await Promise.all([
+          api.hyperliquidClearinghouseState(accountId, selectedEnvironment), api.hyperliquidOpenOrders(accountId, selectedEnvironment),
         ])
         if (!active) return
-        setClearinghouseState(state); setSpotClearinghouseState(spotState); setExchangeOpenOrders(openOrders)
+        setClearinghouseState(state); setExchangeOpenOrders(openOrders)
       } catch (e) {
         if (active) reportError(e instanceof Error ? e.message : 'Hyperliquid 账户数据加载失败')
       }
@@ -240,16 +249,16 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     void refreshLiveAccount(); void refreshOrderHistory(false)
     const timer = setInterval(() => void refreshLiveAccount(), 10_000)
     return () => { active = false; clearInterval(timer) }
-  }, [isTestnet, strategy ? selectedExecutionAccountId : undefined, refreshOrderHistory])
+  }, [selectedEnvironment, isHyperliquid, strategy ? selectedExecutionAccountId : undefined, refreshOrderHistory])
 
   async function refresh() {
     const sequence = ++refreshSequence.current
     setMarketLoading(true)
     try {
-      const chartRequest = isTestnet ? api.testnetCandles(marketSymbol, timeframe) : api.candles()
-      const bookRequest = isTestnet ? api.testnetBook(marketSymbol) : Promise.resolve(null)
-      const accountRequest = isTestnet && strategy
-        ? api.testnetAccountState(selectedExecutionAccountId, marketSymbol) : Promise.resolve(null)
+      const chartRequest = isHyperliquid ? api.hyperliquidCandles(marketSymbol, timeframe, 180, selectedEnvironment) : api.candles()
+      const bookRequest = isHyperliquid ? api.hyperliquidBook(marketSymbol, selectedEnvironment) : Promise.resolve(null)
+      const accountRequest = isHyperliquid && strategy
+        ? api.hyperliquidAccountState(selectedExecutionAccountId, marketSymbol, selectedEnvironment) : Promise.resolve(null)
       const [chart, snap, orderRows, book, actualAccount] = await Promise.all([
         chartRequest,
         cycle ? api.snapshot(cycle.cycleId) : Promise.resolve(null),
@@ -258,8 +267,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         accountRequest,
       ])
       if (sequence !== refreshSequence.current) return
-      setCandles(isTestnet ? chart : aggregateCandles(chart, timeframe)); setSnapshot(snap); setOrders(orderRows)
-      if (!isTestnet || Date.now() - lastMarketTickAt.current > 3_000) setTestnetMid(book?.mid ?? null)
+      setCandles(isHyperliquid ? chart : aggregateCandles(chart, timeframe)); setSnapshot(snap); setOrders(orderRows)
+      if (!isHyperliquid || Date.now() - lastMarketTickAt.current > 3_000) setExchangeMid(book?.mid ?? null)
       setAccountState(actualAccount)
     } catch (e) {
       if (sequence === refreshSequence.current) reportError(e instanceof Error ? e.message : '控制台数据加载失败')
@@ -269,9 +278,9 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   }
 
   useEffect(() => {
-    void refresh(); const timer = setInterval(() => void refresh(), isTestnet ? 10_000 : 5_000)
+    void refresh(); const timer = setInterval(() => void refresh(), isHyperliquid ? 10_000 : 5_000)
     return () => clearInterval(timer)
-  }, [cycle?.cycleId, strategy?.strategyId, strategy ? selectedExecutionAccountId : undefined, marketSymbol, timeframe, isTestnet])
+  }, [cycle?.cycleId, strategy?.strategyId, strategy ? selectedExecutionAccountId : undefined, marketSymbol, timeframe, isHyperliquid, selectedEnvironment])
 
   const entryOrderLines = useMemo(() => strategyMatchesMarket
     ? orders
@@ -283,7 +292,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     if (!strategy) return
     setBusy(true)
     try {
-      const quote = isTestnet ? await api.testnetBook(strategy.symbol)
+      const quote = isHyperliquid ? await api.hyperliquidBook(strategy.symbol, selectedEnvironment)
         : await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/snapshot').then(r => r.json()) as { mid: string }
       const preview = await api.preview(strategy.strategyId, strategy.version, quote.mid, runEnvironmentId, runAccountId)
       await api.start(strategy.strategyId, preview.previewId, quote.mid, preview.executionEnvironmentId)
@@ -298,16 +307,16 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     catch (e) { reportError(e instanceof Error ? e.message : '命令执行失败') } finally { setBusy(false) }
   }
 
-  const latest = Number(testnetMid ?? (strategyMatchesMarket ? snapshot?.market.mid : null) ?? candles.at(-1)?.close ?? NaN)
-  const marketContext = isTestnet ? marketContexts.find(item => sameCoin(item.symbol, marketSymbol)) : undefined
+  const latest = Number(exchangeMid ?? (strategyMatchesMarket ? snapshot?.market.mid : null) ?? candles.at(-1)?.close ?? NaN)
+  const marketContext = isHyperliquid ? marketContexts.find(item => sameCoin(item.symbol, marketSymbol)) : undefined
   const markPrice = marketNumber(marketContext?.markPrice)
   const previousDayPrice = marketNumber(marketContext?.previousDayPrice)
   const change24h = markPrice !== null && previousDayPrice !== null && previousDayPrice > 0
     ? markPrice - previousDayPrice : null
   const change24hPercent = change24h !== null && previousDayPrice !== null ? change24h / previousDayPrice * 100 : null
   const fundingRate = marketNumber(marketContext?.fundingRate)
-  const netPosition = isTestnet ? accountState?.netPosition ?? '0' : strategyMatchesMarket ? snapshot?.position.actualNetQuantity ?? '0' : '0'
-  const unrealized = isTestnet ? accountState?.unrealizedPnl ?? '0' : strategyMatchesMarket ? snapshot?.basketPnl.unrealisedAtExecutablePrice ?? '0' : '0'
+  const netPosition = isHyperliquid ? accountState?.netPosition ?? '0' : strategyMatchesMarket ? snapshot?.position.actualNetQuantity ?? '0' : '0'
+  const unrealized = isHyperliquid ? accountState?.unrealizedPnl ?? '0' : strategyMatchesMarket ? snapshot?.basketPnl.unrealisedAtExecutablePrice ?? '0' : '0'
   const realised = snapshot?.basketPnl.realisedCyclePnl ?? '0'
   const fees = snapshot?.basketPnl.paidFees ?? '0'
   const funding = snapshot?.basketPnl.accruedFunding ?? '0'
@@ -323,14 +332,10 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const operatorPaused = currentCycle?.operatorPaused ?? (currentCycle?.state === 'PAUSED' && !riskPaused)
   const filledEntryCount = orders.filter(order => order.kind === 'ENTRY' && order.status === 'FILLED').length
   const filledTakeProfitCount = orders.filter(order => order.kind === 'TAKE_PROFIT' && order.status === 'FILLED').length
-  const instrument = displaySymbol(marketSymbol, isTestnet)
+  const instrument = displaySymbol(marketSymbol, isHyperliquid)
   const quantitySymbol = coinFromSymbol(marketSymbol)
   const exchangePositions = clearinghouseState?.assetPositions.map(item => item.position) ?? null
   const exchangePnl = String(exchangePositions?.reduce((total, position) => total + +position.unrealizedPnl, 0) ?? 0)
-  const unifiedUsdc = spotClearinghouseState?.balances.find(balance => balance.coin === 'USDC')
-  const unifiedAvailable = unifiedUsdc && clearinghouseState
-    ? availableBalance(unifiedUsdc.total, unifiedUsdc.hold)
-    : null
 
   return <div className="dashboard-page">
     {strategy && <TopbarExecutionSelectors environments={runEnvironments} accounts={runAccounts}
@@ -338,10 +343,11 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       onEnvironmentChange={value => { setRunEnvironmentId(value); setRunAccountId(''); onExecutionEnvironmentChange(value) }}
       onAccountChange={setRunAccountId}
     />}
+    {isMainnet && <div className="mainnet-banner"><b>MAINNET · REAL FUNDS</b><span>Orders use your strategy settings and real funds.</span></div>}
     <section className="instrument-bar">
       <div className="instrument-summary"><div className="instrument-heading"><h1><SymbolPicker value={marketSymbol} options={instruments}
-        formatLabel={item => displaySymbol(item, isTestnet)}
-        onChange={value => { setSymbol(value); setTestnetMid(null); setAccountState(null); setCandles([]) }}
+        formatLabel={item => displaySymbol(item, isHyperliquid)}
+        onChange={value => { setSymbol(value); setExchangeMid(null); setAccountState(null); setCandles([]) }}
       /></h1>
           <dl className="instrument-market-stats" aria-label="Market statistics">
             <div><dt title="Exchange mark price">Mark</dt><dd className="mono">{markPrice !== null ? marketPrice(markPrice) : '—'}</dd></div>
@@ -362,7 +368,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
           <span className={`cycle-state-display ${currentCycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {riskPaused ? (operatorPaused ? '风险暂停 + 人工暂停' : '风险暂停开仓') : currentCycle?.state ?? 'IDLE'}</span>
           <span className="instrument-timing" title="Local time">Start: {dateTime(cycle?.startedAt)}</span>
           <span className="instrument-timing" title="Days, hours, minutes">Runs: {runningTime(cycle?.startedAt, cycle?.endedAt, now)}</span>
-          <span className="instrument-timing" title="Local time">Last Update: {dateTime(isTestnet ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</span>
+          <span className="instrument-timing" title="Local time">Last Update: {dateTime(isHyperliquid ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</span>
         </div>
       </div>
       {riskPaused && <span className="warning-text">继续维护 TP；连续两次对账确认风险解除后恢复开仓{operatorPaused ? '（人工暂停仍保留）' : ''}</span>}
@@ -377,9 +383,9 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     </section>
     <div className="dashboard-grid">
       <section className="chart-panel panel">
-        <div className="chart-tools"><div className="timeframe-picker" role="group" aria-label="K 线周期">{TIMEFRAMES.map(item => <button key={item} type="button" className={timeframe === item ? 'active' : ''} aria-pressed={timeframe === item} onClick={() => { setTimeframe(item); setCandles([]) }}>{item === '1d' ? 'D' : item}</button>)}</div><i /><span>{isTestnet ? 'Hyperliquid candleSnapshot' : 'Paper candles'}</span><Icon name="settings" size={16} /></div>
+        <div className="chart-tools"><div className="timeframe-picker" role="group" aria-label="K 线周期">{TIMEFRAMES.map(item => <button key={item} type="button" className={timeframe === item ? 'active' : ''} aria-pressed={timeframe === item} onClick={() => { setTimeframe(item); setCandles([]) }}>{item === '1d' ? 'D' : item}</button>)}</div><i /><span>{isHyperliquid ? 'Hyperliquid candleSnapshot' : 'Paper candles'}</span><Icon name="settings" size={16} /></div>
         <TradingChart candles={candles} entryOrders={entryOrderLines}
-          livePrice={isTestnet && Number.isFinite(latest) ? latest : undefined} />
+          livePrice={isHyperliquid && Number.isFinite(latest) ? latest : undefined} />
         {marketLoading && <div className="chart-loading">正在加载 {instrument} · {timeframe}</div>}
       </section>
       <aside className="metric-stack">
@@ -389,9 +395,9 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
           ['Filled Entry/TP', cycle ? `${filledEntryCount} / ${filledTakeProfitCount}` : '—'],
           ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],
 
-          ['权益', isTestnet ? unifiedUsdc ? `${format(unifiedUsdc.total)} USDC` : '—' : '13,420.50 USDC'],
-          ['可提余额', isTestnet ? unifiedAvailable !== null ? `${format(unifiedAvailable)} USDC` : '—' : '8,420.00 USDC'],
-          ['净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['保证金使用', isTestnet ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
+          ['权益', isHyperliquid ? accountState ? `${format(accountState.tradingEquity)} USDC` : '—' : '13,420.50 USDC'],
+          ['可用余额', isHyperliquid ? accountState ? `${format(accountState.availableBalance)} USDC` : '—' : '8,420.00 USDC'],
+          ['净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['保证金使用', isHyperliquid ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
           ['未保护敞口 / 阈值', snapshot ? `$${format(unprotectedExposure)} / $${format(faultExposureThreshold)}` : '—', snapshot ? exposureTone : undefined],
         ]} />
@@ -402,14 +408,14 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       </aside>
       <section className="orders-panel panel">
         <div className="tabs" role="tablist" aria-label="账户与交易明细">
-          <button type="button" className={accountPanelTab === 'balances' ? 'active' : ''} onClick={() => setAccountPanelTab('balances')}>Balances <i>{unifiedUsdc ? 1 : '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'balances' ? 'active' : ''} onClick={() => setAccountPanelTab('balances')}>Balances <i>{accountState ? 1 : '—'}</i></button>
           <button type="button" className={accountPanelTab === 'positions' ? 'active' : ''} onClick={() => setAccountPanelTab('positions')}>Positions <i>{exchangePositions?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'orders' ? 'active' : ''} onClick={() => setAccountPanelTab('orders')}>Open Orders <i>{exchangeOpenOrders?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'history' ? 'active' : ''} onClick={() => setAccountPanelTab('history')}>Order History <i>{exchangeOrderHistory?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'events' ? 'active' : ''} onClick={() => setAccountPanelTab('events')}>Events</button>
           <button type="button" className={accountPanelTab === 'alerts' ? 'active' : ''} onClick={() => setAccountPanelTab('alerts')}>Alerts</button>
         </div>
-        {accountPanelTab === 'balances' && <BalanceTable state={clearinghouseState} spotState={spotClearinghouseState} pnl={exchangePnl} />}
+        {accountPanelTab === 'balances' && <BalanceTable state={accountState} pnl={exchangePnl} />}
         {accountPanelTab === 'positions' && <PositionTable positions={exchangePositions} />}
         {accountPanelTab === 'orders' && <OpenOrdersTable rows={exchangeOpenOrders} />}
         {accountPanelTab === 'history' && <OrderHistoryTable rows={exchangeOrderHistory} currentSymbol={marketSymbol} currentCycleId={cycle?.cycleId ?? null}
@@ -458,14 +464,10 @@ function TopbarExecutionSelectors({ environments, accounts, environmentId, accou
   )
 }
 
-function BalanceTable({ state, spotState, pnl }: { state: HyperliquidClearinghouseState | null; spotState: HyperliquidSpotClearinghouseState | null; pnl: string }) {
-  if (!state || !spotState) return <Empty text="正在加载 Hyperliquid unified account balance…" />
-  const summary = state.marginSummary
-  const usdc = spotState.balances.find(balance => balance.coin === 'USDC')
-  if (!usdc) return <Empty text="Hyperliquid 统一账户中没有 USDC 余额" />
-  const available = availableBalance(usdc.total, usdc.hold)
-  return <div className="table-wrap account-detail-table"><table><thead><tr><th>资产</th><th>总余额</th><th>可用余额</th><th>USDC 价值</th><th>PNL</th><th>保证金占用</th></tr></thead>
-    <tbody><tr><td><strong>USDC</strong></td><td>{format(usdc.total, 4)} USDC</td><td>{format(available, 4)} USDC</td><td>${format(usdc.total)}</td><td className={+pnl < 0 ? 'negative' : 'positive'}>{signed(pnl)} USDC</td><td>{format(summary.totalMarginUsed)} USDC</td></tr></tbody></table></div>
+function BalanceTable({ state, pnl }: { state: HyperliquidAccountState | null; pnl: string }) {
+  if (!state) return <Empty text="正在加载 Hyperliquid account balance…" />
+  return <div className="table-wrap account-detail-table"><table><thead><tr><th>资产</th><th>Trading Equity</th><th>可用余额</th><th>账户模式</th><th>PNL</th><th>保证金占用</th></tr></thead>
+    <tbody><tr><td><strong>USDC</strong></td><td>{format(state.tradingEquity, 4)} USDC</td><td>{format(state.availableBalance, 4)} USDC</td><td>{state.accountMode}</td><td className={+pnl < 0 ? 'negative' : 'positive'}>{signed(pnl)} USDC</td><td>{format(state.totalMarginUsed)} USDC</td></tr></tbody></table></div>
 }
 
 function PositionTable({ positions }: { positions: HyperliquidPosition[] | null }) {
@@ -571,7 +573,6 @@ function format(value: string | number, digits = 2) { const n = +value; return N
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
 function signedUsd(value: string) { return +value >= 0 ? `+$${format(value)}` : `-$${format(Math.abs(+value))}` }
 function plannedLevelCount(strategy: Strategy) { const config = strategy.activeCycle?.frozenConfiguration ?? strategy.configuration; return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }
-function availableBalance(total: string, hold: string) { return String(Math.max(0, +total - +hold)) }
 function time(value?: string) { return value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—' }
 function dateTime(value?: string) {
   if (!value) return '—'
@@ -602,7 +603,7 @@ function fundingCountdown(now: number) {
 }
 function coinFromSymbol(symbol?: string) { return (symbol ?? '').toUpperCase().replace(/[-_/]?(USDC|USDT)$/, '') }
 function sameCoin(left?: string, right?: string) { return !!left && !!right && coinFromSymbol(left) === coinFromSymbol(right) }
-function displaySymbol(symbol: string, isTestnet: boolean) { const coin = coinFromSymbol(symbol); return isTestnet ? `${coin}-USDC` : symbol.toUpperCase() }
+function displaySymbol(symbol: string, isHyperliquid: boolean) { const coin = coinFromSymbol(symbol); return isHyperliquid ? `${coin}-USDC` : symbol.toUpperCase() }
 function aggregateCandles(candles: Candle[], timeframe: Timeframe) {
   const minutes: Record<Timeframe, number> = { '1m': 1, '5m': 5, '15m': 15, '1h': 60, '4h': 240, '1d': 1440 }
   const bucketSeconds = minutes[timeframe] * 60

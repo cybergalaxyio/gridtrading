@@ -20,12 +20,12 @@ builder.Services.AddSingleton<MarketState>();
 builder.Services.AddSingleton<PreviewStore>();
 builder.Services.AddSingleton<ReplayStore>();
 builder.Services.AddSingleton<ReplayService>();
-builder.Services.AddHttpClient<HyperliquidInfoClient>();
+builder.Services.AddHttpClient<HyperliquidInfoClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<CredentialProtector>();
 builder.Services.AddSingleton<GridTrading.Api.Exchange.HyperliquidL1Signer>();
 builder.Services.AddScoped<HyperliquidNonceManager>();
-builder.Services.AddHttpClient<HyperliquidTradingClient>();
-builder.Services.AddHttpClient<HyperliquidMarketDataClient>();
+builder.Services.AddHttpClient<HyperliquidTradingClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<HyperliquidMarketDataClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<HyperliquidAccountStatusService>();
 builder.Services.AddScoped<HyperliquidOrderOwnershipService>();
 builder.Services.AddSingleton<ExecutionAccountOperationGate>();
@@ -33,11 +33,13 @@ builder.Services.AddScoped<PaperExecutionAdapter>();
 builder.Services.AddScoped<HyperliquidExecutionAdapter>();
 builder.Services.AddScoped<IExecutionAdapter>(sp => sp.GetRequiredService<PaperExecutionAdapter>());
 builder.Services.AddScoped<IExecutionAdapter>(sp => sp.GetRequiredService<HyperliquidExecutionAdapter>());
+builder.Services.AddScoped<IExecutionAdapter>(sp => new HyperliquidExecutionAdapter(
+    sp.GetRequiredService<TradingDbContext>(), sp.GetRequiredService<HyperliquidTradingClient>(),
+    sp.GetRequiredService<HyperliquidInfoClient>(), sp.GetRequiredService<HyperliquidOrderOwnershipService>(), HyperliquidNetwork.Mainnet));
 builder.Services.AddScoped<ExecutionEnvironmentRegistry>();
 builder.Services.AddScoped<GridOrderLifecycle>();
 builder.Services.AddScoped<GridStrategyWorkflow>();
 builder.Services.AddHostedService<HyperliquidAccountBootstrap>();
-builder.Services.AddHostedService<HyperliquidStrategyBootstrap>();
 builder.Services.AddHostedService<HyperliquidFillWebSocketService>();
 builder.Services.AddHostedService<GridReconciliationService>();
 builder.Services.AddScoped<TradingService>();
@@ -97,14 +99,14 @@ var api = app.MapGroup("/api/v1");
 
 api.MapGet("/system/status", async (TradingDbContext db, CancellationToken ct) => new
 {
-    status = "HEALTHY", version = "1.0.0", environment = "PAPER", liveTradingEnabled = false,
+    status = "HEALTHY", version = "1.0.0", environment = "MULTI", liveTradingEnabled = true,
     database = await db.Database.CanConnectAsync(ct) ? "HEALTHY" : "UNAVAILABLE",
     signalR = "HEALTHY", backgroundTasks = "RUNNING", serverTime = DateTimeOffset.UtcNow, clockOffsetMs = 0
 });
 api.MapGet("/system/capabilities", () => new
 {
-    gridModes = new[] { "BUY_ONLY", "SELL_ONLY", "TWO_WAY" }, executionEnvironments = new[] { "REPLAY", "PAPER", "TESTNET" },
-    liveTradingEnabled = false, autoRestartSupported = false, takeProfitModes = new[] { "POINTS" },
+    gridModes = new[] { "BUY_ONLY", "SELL_ONLY", "TWO_WAY" }, executionEnvironments = new[] { "REPLAY", "PAPER", "TESTNET", "MAINNET" },
+    liveTradingEnabled = true, autoRestartSupported = false, takeProfitModes = new[] { "POINTS" },
     automaticRegimeGateSupported = false
 });
 api.MapGet("/execution-environments", (ExecutionEnvironmentRegistry registry) => registry.Environments);
@@ -325,18 +327,7 @@ static async Task InitializeDatabase(IServiceProvider services, string connectio
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
     await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys=ON;");
     await db.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=5000;");
-    if (!await db.Strategies.AnyAsync())
-    {
-        var now = DateTimeOffset.UtcNow; var request = StrategyRequest.Default;
-        db.Strategies.Add(new StrategyEntity { Id = "strategy_weekend_sol", Name = request.Name, StrategyType = "GRID",
-            DefaultExecutionEnvironmentId = "paper-local", DefaultExecutionAccountId = "acct_paper_01",
-            Symbol = request.Symbol, ConfigurationJson = JsonSerializer.Serialize(request, JsonSupport.Options), CreatedAt = now, UpdatedAt = now });
-        db.RiskAlerts.AddRange(
-            new RiskAlertEntity { Id = "alert_001", Severity = "CRITICAL", Code = "MARKET_DATA_STALE", Message = "行情曾短暂超过新鲜度阈值，已阻止创建新敞口。", CreatedAt = now.AddMinutes(-42) },
-            new RiskAlertEntity { Id = "alert_002", Severity = "WARNING", Code = "VOLATILITY_ELEVATED", Message = "近期波动率升高，建议复核网格间距。", CreatedAt = now.AddMinutes(-18) },
-            new RiskAlertEntity { Id = "alert_003", Severity = "INFO", Code = "RECONCILIATION_OK", Message = "Paper 账户订单与仓位 Sync 完成。", CreatedAt = now.AddMinutes(-2) });
-        await db.SaveChangesAsync();
-    }
+
 }
 
 public partial class Program;

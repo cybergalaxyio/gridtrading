@@ -67,21 +67,19 @@ public static class HyperliquidAccountFunds
 public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration configuration, TradingDbContext db,
     CredentialProtector protector, HyperliquidNonceManager nonces, HyperliquidL1Signer signer)
 {
-    private Uri InfoEndpoint => LockedEndpoint("Hyperliquid:InfoUrl", "https://api.hyperliquid-testnet.xyz/info", "/info");
-    private Uri ExchangeEndpoint => LockedEndpoint("Hyperliquid:ExchangeUrl", "https://api.hyperliquid-testnet.xyz/exchange", "/exchange");
 
     public async Task<HyperliquidPreflight> PreflightAsync(string accountId, string? symbol, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        using var role = await PostInfo(new { type = "userRole", user = account.AgentAddress }, ct);
+        using var role = await PostInfo(new { type = "userRole", user = account.AgentAddress }, ct, account.Environment);
         var roleName = role.RootElement.TryGetProperty("role", out var roleValue) ? roleValue.GetString() ?? "missing" : "missing";
         var approved = roleName.Equals("agent", StringComparison.OrdinalIgnoreCase) &&
             role.RootElement.TryGetProperty("data", out var roleData) && roleData.TryGetProperty("user", out var approvedUser) &&
             string.Equals(approvedUser.GetString(), account.AccountAddress, StringComparison.OrdinalIgnoreCase);
-        using var state = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct);
-        using var spotState = await PostInfo(new { type = "spotClearinghouseState", user = account.AccountAddress }, ct);
-        using var abstraction = await PostInfo(new { type = "userAbstraction", user = account.AccountAddress }, ct);
-        using var orders = await PostInfo(new { type = "openOrders", user = account.AccountAddress }, ct);
+        using var state = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct, account.Environment);
+        using var spotState = await PostInfo(new { type = "spotClearinghouseState", user = account.AccountAddress }, ct, account.Environment);
+        using var abstraction = await PostInfo(new { type = "userAbstraction", user = account.AccountAddress }, ct, account.Environment);
+        using var orders = await PostInfo(new { type = "openOrders", user = account.AccountAddress }, ct, account.Environment);
         var net = 0m;
         if (state.RootElement.TryGetProperty("assetPositions", out var positions))
         {
@@ -100,13 +98,13 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
     }
 
     public async Task<HyperliquidOrderResult> PlaceLimitAsync(string accountId, string symbol, bool isBuy, decimal price,
-        decimal size, bool postOnly, string stableClientOrderId, CancellationToken ct, bool immediateOrCancel = false)
+        decimal size, bool postOnly, string stableClientOrderId, CancellationToken ct, bool immediateOrCancel = false, bool reduceOnly = false)
     {
         var account = await Account(accountId, ct);
-        var (asset, sizeDecimals) = await ResolveAsset(symbol, ct);
+        var (asset, sizeDecimals) = await ResolveAsset(symbol, ct, account.Environment);
         var cloid = HyperliquidWireCodec.CreateCloid(stableClientOrderId);
         var order = new HyperliquidLimitOrder(asset, isBuy, HyperliquidWireCodec.PriceToWire(price, sizeDecimals),
-            HyperliquidWireCodec.SizeToWire(size, sizeDecimals), false, immediateOrCancel ? "Ioc" : postOnly ? "Alo" : "Gtc", cloid);
+            HyperliquidWireCodec.SizeToWire(size, sizeDecimals), reduceOnly, immediateOrCancel ? "Ioc" : postOnly ? "Alo" : "Gtc", cloid);
         var actionBytes = HyperliquidWireCodec.PackOrderAction([order]);
         var action = new Dictionary<string, object>
         {
@@ -122,7 +120,7 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         decimal size, bool postOnly, string stableClientOrderId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        var (asset, sizeDecimals) = await ResolveAsset(symbol, ct);
+        var (asset, sizeDecimals) = await ResolveAsset(symbol, ct, account.Environment);
         var cloid = HyperliquidWireCodec.CreateCloid(stableClientOrderId);
         var order = new HyperliquidLimitOrder(asset, isBuy, HyperliquidWireCodec.PriceToWire(price, sizeDecimals),
             HyperliquidWireCodec.SizeToWire(size, sizeDecimals), false, postOnly ? "Alo" : "Gtc", cloid);
@@ -144,43 +142,49 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
 
     public async Task CancelByCloidAsync(string accountId, string symbol, string stableClientOrderId, CancellationToken ct)
     {
-        var account = await Account(accountId, ct); var (asset, _) = await ResolveAsset(symbol, ct);
+        var account = await Account(accountId, ct); var (asset, _) = await ResolveAsset(symbol, ct, account.Environment);
         var cloid = HyperliquidWireCodec.CreateCloid(stableClientOrderId);
         var actionBytes = HyperliquidWireCodec.PackCancelByCloidAction(asset, cloid);
         var action = new Dictionary<string, object> { ["type"] = "cancelByCloid",
             ["cancels"] = new[] { new Dictionary<string, object> { ["asset"] = asset, ["cloid"] = cloid } } };
-        var result = await Send(account, action, actionBytes, ct);
+        using var result = await Send(account, action, actionBytes, ct);
         EnsureOk(result.RootElement, "cancel");
+        if (account.Environment == HyperliquidNetwork.Mainnet &&
+            (!result.RootElement.TryGetProperty("response", out var response) ||
+             !response.TryGetProperty("data", out var data) || !data.TryGetProperty("statuses", out var statuses) ||
+             statuses.ValueKind != JsonValueKind.Array || statuses.GetArrayLength() != 1 ||
+             statuses[0].ValueKind != JsonValueKind.String || statuses[0].GetString() != "success"))
+            throw new TradingProblemException(503, "CANCEL_UNCONFIRMED", "Mainnet cancellation was not confirmed; reconcile before retrying.");
     }
 
     public async Task<JsonDocument> GetOpenOrdersAsync(string accountId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        return await PostInfo(new { type = "openOrders", user = account.AccountAddress }, ct);
+        return await PostInfo(new { type = "openOrders", user = account.AccountAddress }, ct, account.Environment);
     }
 
     public async Task<JsonDocument> GetClearinghouseStateAsync(string accountId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        return await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct);
+        return await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct, account.Environment);
     }
 
     public async Task<JsonDocument> GetSpotClearinghouseStateAsync(string accountId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        return await PostInfo(new { type = "spotClearinghouseState", user = account.AccountAddress }, ct);
+        return await PostInfo(new { type = "spotClearinghouseState", user = account.AccountAddress }, ct, account.Environment);
     }
 
     public async Task<JsonDocument> GetFrontendOpenOrdersAsync(string accountId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        return await PostInfo(new { type = "frontendOpenOrders", user = account.AccountAddress }, ct);
+        return await PostInfo(new { type = "frontendOpenOrders", user = account.AccountAddress }, ct, account.Environment);
     }
 
     public async Task<JsonDocument> GetHistoricalOrdersAsync(string accountId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        return await PostInfo(new { type = "historicalOrders", user = account.AccountAddress }, ct);
+        return await PostInfo(new { type = "historicalOrders", user = account.AccountAddress }, ct, account.Environment);
     }
 
     public async Task<JsonDocument> GetUserFillsAsync(string accountId, long startTime, CancellationToken ct)
@@ -189,7 +193,7 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         var collected = new Dictionary<string, JsonElement>();
         while (true)
         {
-            using var page = await PostInfo(new { type = "userFillsByTime", user = account.AccountAddress, startTime, aggregateByTime = false }, ct);
+            using var page = await PostInfo(new { type = "userFillsByTime", user = account.AccountAddress, startTime, aggregateByTime = false }, ct, account.Environment);
             if (page.RootElement.ValueKind != JsonValueKind.Array)
                 throw new TradingProblemException(503, "INVALID_FILL_SNAPSHOT", "Expected an exchange fill array.");
             var before = collected.Count;
@@ -212,7 +216,7 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
     public async Task<JsonDocument> GetUserFundingAsync(string accountId, long startTime, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        return await PostInfo(new { type = "userFunding", user = account.AccountAddress, startTime }, ct);
+        return await PostInfo(new { type = "userFunding", user = account.AccountAddress, startTime }, ct, account.Environment);
     }
 
     public async Task<int> GetOpenOrderCountAsync(string accountId, string symbol, CancellationToken ct)
@@ -229,8 +233,13 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
     public async Task<HyperliquidPositionSnapshot> GetPositionSnapshotAsync(string accountId, string symbol, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        using var state = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct);
-        if (!state.RootElement.TryGetProperty("assetPositions", out var positions)) return new(0m, 0m, 0m);
+        using var state = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct, account.Environment);
+        if (!state.RootElement.TryGetProperty("assetPositions", out var positions))
+        {
+            if (account.Environment == HyperliquidNetwork.Mainnet)
+                throw new TradingProblemException(503, "INVALID_POSITION_SNAPSHOT", "Mainnet position snapshot is incomplete; flatness cannot be confirmed.");
+            return new(0m, 0m, 0m);
+        }
         foreach (var item in positions.EnumerateArray())
         {
             var position = item.GetProperty("position");
@@ -241,12 +250,18 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         return new(0m, 0m, 0m);
     }
 
-    public async Task<HyperliquidBook> GetBookAsync(string symbol, CancellationToken ct)
+    public async Task<HyperliquidBook> GetBookAsync(string symbol, CancellationToken ct, string network = HyperliquidNetwork.Testnet)
     {
-        using var book = await PostInfo(new { type = "l2Book", coin = ToCoin(symbol), nSigFigs = 5 }, ct);
+        using var book = await PostInfo(new { type = "l2Book", coin = ToCoin(symbol), nSigFigs = 5 }, ct, network);
+        if (network == HyperliquidNetwork.Mainnet &&
+            (!book.RootElement.TryGetProperty("time", out var time) || !time.TryGetInt64(out var milliseconds) ||
+             Math.Abs(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - milliseconds) > 5000))
+            throw new TradingProblemException(503, "MARKET_DATA_STALE", "Mainnet order book is missing a fresh exchange timestamp.");
         var levels = book.RootElement.GetProperty("levels");
         var bid = ParseDecimal(levels[0][0].GetProperty("px"));
         var ask = ParseDecimal(levels[1][0].GetProperty("px"));
+        if (bid <= 0m || ask < bid)
+            throw new TradingProblemException(503, "INVALID_ORDER_BOOK", "Hyperliquid returned an invalid order book.");
         return new HyperliquidBook(bid, ask, (bid + ask) / 2m, DateTimeOffset.UtcNow);
     }
 
@@ -286,26 +301,27 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
 
     private async Task<JsonDocument> Send(HyperliquidAccountEntity account, object action, byte[] actionBytes, CancellationToken ct)
     {
-        if (!account.Environment.Equals("TESTNET", StringComparison.Ordinal)) throw new TradingProblemException(403, "TESTNET_ONLY", "Only Hyperliquid Testnet is supported.");
+        HyperliquidNetwork.Validate(account.Environment);
+        var endpoint = HyperliquidNetwork.Endpoint(configuration, account.Environment, "Exchange");
         var nonce = await nonces.NextAsync(account.Id, ct);
-        var signature = signer.SignTestnet(actionBytes, protector.Unprotect(account.EncryptedAgentPrivateKey), nonce, account.VaultAddress);
-        using var response = await http.PostAsJsonAsync(ExchangeEndpoint, new { action, nonce, signature = new { r = signature.R, s = signature.S, v = signature.V }, vaultAddress = account.VaultAddress }, ct);
+        var signature = signer.Sign(actionBytes, protector.Unprotect(account.EncryptedAgentPrivateKey), nonce, account.Environment == HyperliquidNetwork.Mainnet, account.VaultAddress);
+        using var response = await http.PostAsJsonAsync(endpoint, new { action, nonce, signature = new { r = signature.R, s = signature.S, v = signature.V }, vaultAddress = account.VaultAddress }, ct);
         var stream = await response.Content.ReadAsStreamAsync(ct);
         var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
         if (!response.IsSuccessStatusCode) { document.Dispose(); throw new TradingProblemException(503, "EXCHANGE_HTTP_ERROR", $"Hyperliquid returned HTTP {(int)response.StatusCode}."); }
         return document;
     }
 
-    private async Task<JsonDocument> PostInfo(object request, CancellationToken ct)
+    private async Task<JsonDocument> PostInfo(object request, CancellationToken ct, string network)
     {
-        using var response = await http.PostAsJsonAsync(InfoEndpoint, request, ct);
+        using var response = await http.PostAsJsonAsync(HyperliquidNetwork.Endpoint(configuration, network, "Info"), request, ct);
         if (!response.IsSuccessStatusCode) throw new TradingProblemException(503, "EXCHANGE_INFO_UNAVAILABLE", $"Hyperliquid Info returned HTTP {(int)response.StatusCode}.");
         return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
     }
 
-    private async Task<(int Asset, int SizeDecimals)> ResolveAsset(string symbol, CancellationToken ct)
+    private async Task<(int Asset, int SizeDecimals)> ResolveAsset(string symbol, CancellationToken ct, string network)
     {
-        using var meta = await PostInfo(new { type = "meta" }, ct);
+        using var meta = await PostInfo(new { type = "meta" }, ct, network);
         var coin = ToCoin(symbol); var index = 0;
         foreach (var item in meta.RootElement.GetProperty("universe").EnumerateArray())
         {
@@ -313,20 +329,12 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
                 return (index, item.GetProperty("szDecimals").GetInt32());
             index++;
         }
-        throw new TradingProblemException(422, "INSTRUMENT_NOT_FOUND", $"{coin} is not listed in Hyperliquid Testnet metadata.");
+        throw new TradingProblemException(422, "INSTRUMENT_NOT_FOUND", $"{coin} is not listed in Hyperliquid metadata.");
     }
 
     private async Task<HyperliquidAccountEntity> Account(string id, CancellationToken ct) =>
         await db.HyperliquidAccounts.SingleOrDefaultAsync(x => x.Id == id && x.Enabled, ct)
-        ?? throw new TradingProblemException(404, "TESTNET_ACCOUNT_NOT_FOUND", "Hyperliquid Testnet account was not found or disabled.");
-
-    private Uri LockedEndpoint(string key, string fallback, string requiredPath)
-    {
-        var configured = configuration[key] ?? fallback;
-        if (!Uri.TryCreate(configured, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.Host != "api.hyperliquid-testnet.xyz" || uri.AbsolutePath != requiredPath)
-            throw new TradingProblemException(403, "TESTNET_ONLY", "Hyperliquid endpoints are locked to the official HTTPS Testnet API.");
-        return uri;
-    }
+        ?? throw new TradingProblemException(404, "EXECUTION_ACCOUNT_NOT_FOUND", "Hyperliquid account was not found or disabled.");
 
     private static void EnsureOk(JsonElement root, string operation)
     {
@@ -334,5 +342,9 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
             throw new TradingProblemException(503, "EXCHANGE_ACTION_REJECTED", $"Hyperliquid rejected the {operation} action: {root}.");
     }
     private static decimal ParseDecimal(JsonElement value) => decimal.Parse(value.GetString() ?? value.ToString(), System.Globalization.CultureInfo.InvariantCulture);
-    private static string ToCoin(string symbol) => symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase) ? symbol[..^4] : symbol;
+    public static string ToCoin(string symbol)
+    {
+        var value = symbol.Trim().ToUpperInvariant();
+        return value.EndsWith("USDT") || value.EndsWith("USDC") ? value[..^4].TrimEnd('-', '_', '/') : value;
+    }
 }

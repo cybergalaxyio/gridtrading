@@ -10,14 +10,19 @@ public sealed class HyperliquidNonceManager(TradingDbContext db)
 
     public async Task<long> NextAsync(string accountId, CancellationToken ct)
     {
-        var gate = Locks.GetOrAdd(accountId, _ => new SemaphoreSlim(1, 1));
+        var identity = await db.HyperliquidAccounts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == accountId && x.Enabled, ct)
+            ?? throw new TradingProblemException(404, "EXECUTION_ACCOUNT_NOT_FOUND", "Hyperliquid account was not found or is disabled.");
+        var gate = Locks.GetOrAdd($"{identity.Environment}:{identity.AgentAddress.ToLowerInvariant()}", _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try
         {
             var account = await db.HyperliquidAccounts.SingleOrDefaultAsync(x => x.Id == accountId && x.Enabled, ct)
-                ?? throw new TradingProblemException(404, "TESTNET_ACCOUNT_NOT_FOUND", "Hyperliquid Testnet account was not found or is disabled.");
+                ?? throw new TradingProblemException(404, "EXECUTION_ACCOUNT_NOT_FOUND", "Hyperliquid account was not found or is disabled.");
+            var reserved = await db.HyperliquidAccounts.AsNoTracking()
+                .Where(x => x.Environment == identity.Environment && x.AgentAddress == identity.AgentAddress)
+                .MaxAsync(x => x.LastNonce, ct);
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            account.LastNonce = Math.Max(now, checked(account.LastNonce + 1));
+            account.LastNonce = Math.Max(now, checked(reserved + 1));
             account.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct); // Reserve durably before signing/sending.
             return account.LastNonce;

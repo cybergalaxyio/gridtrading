@@ -32,10 +32,11 @@ export default function App() {
     ?? strategies.find(x => x.activeCycle)
     ?? strategies.find(x => x.defaultExecutionEnvironmentId === 'hyperliquid-testnet')
     ?? strategies[0], [strategies, loadedStrategyId])
-  const activeStrategy = strategies.find(x => x.activeCycle) ?? null
+  const activeStrategy = preferredStrategy?.activeCycle ? preferredStrategy : null
   const active = activeStrategy?.activeCycle ?? null
-  const environment = (preferredStrategy?.activeCycle?.executionEnvironmentId ?? (dashboardEnvironmentId || preferredStrategy?.defaultExecutionEnvironmentId)) === 'hyperliquid-testnet' ? 'TESTNET' : 'PAPER'
-  const emergencyEnvironment = active?.executionEnvironmentId === 'hyperliquid-testnet' ? 'TESTNET' : 'PAPER'
+  const selectedEnvironment = (preferredStrategy?.activeCycle?.executionEnvironmentId ?? (dashboardEnvironmentId || preferredStrategy?.defaultExecutionEnvironmentId))
+  const environment = selectedEnvironment === 'hyperliquid-mainnet' ? 'MAINNET' : selectedEnvironment === 'hyperliquid-testnet' ? 'TESTNET' : 'PAPER'
+  const emergencyEnvironment = active?.executionEnvironmentId === 'hyperliquid-mainnet' ? 'MAINNET' : active?.executionEnvironmentId === 'hyperliquid-testnet' ? 'TESTNET' : 'PAPER'
 
   function openEmergency() {
     if (emergencyBusy) return
@@ -74,8 +75,8 @@ export default function App() {
     {route === 'settings' && <SettingsPage />}
     {route === 'create' && <CreateStrategyPage initialStrategy={editingStrategy} onCancel={() => { setEditingStrategy(null); setRoute('strategies') }} onSaved={async editing => { await reload(); setEditingStrategy(null); setRoute('strategies'); setToast(editing ? '策略已更新；运行中的 Cycle 继续使用冻结参数' : '策略已创建，可预览并人工启动 Cycle') }} reportError={setError} />}
     {emergency && <Modal title="紧急停止确认" icon="alert" onClose={() => setEmergency(false)}>
-      <div className="emergency-copy"><p>此操作将立即禁止新单，撤销本 Cycle 的策略挂单，Sync 后使用 Taker IOC 对冲本策略净敞口；不会要求账户总仓位归零。</p>
-        <dl><div><dt>当前运行策略</dt><dd>{activeStrategy?.name ?? '0'}</dd></div><div><dt>受影响交易对</dt><dd>{activeStrategy?.symbol ?? '—'}</dd></div><div><dt>执行环境</dt><dd>{active ? emergencyEnvironment : '—'}</dd></div></dl>
+      <div className="emergency-copy"><p>{emergencyEnvironment === 'MAINNET' ? 'Mainnet：撤销本 Cycle 的策略挂单，检查账户挂单后，用 reduce-only IOC 关闭所选市场的实际仓位。请确认下方账户与策略。' : '此操作将立即禁止新单，撤销本 Cycle 的策略挂单，Sync 后使用 Taker IOC 对冲本策略净敞口。'}</p>
+        <dl><div><dt>账户</dt><dd>{active?.executionAccountId ?? '—'}</dd></div><div><dt>当前运行策略</dt><dd>{activeStrategy?.name ?? '0'}</dd></div><div><dt>受影响交易对</dt><dd>{activeStrategy?.symbol ?? '—'}</dd></div><div><dt>执行环境</dt><dd>{active ? emergencyEnvironment : '—'}</dd></div></dl>
         <label className="confirm-line"><input type="checkbox" checked={emergencyAcknowledged} onChange={event => setEmergencyAcknowledged(event.target.checked)} /> 我理解紧急平仓可能产生滑点与 Taker 手续费</label>
         <div className="modal-actions"><button className="secondary" onClick={() => setEmergency(false)}>取消</button><button className="danger" disabled={!emergencyAcknowledged} onClick={() => void emergencyFlatten()}>撤单并清零仓位</button></div>
       </div>

@@ -1,10 +1,18 @@
 # GridTrading Agent Handoff
 
+## 2026-09-10 Mainnet implementation (current)
+
+Mainnet support is implemented following the operator’s explicit request. See `docs/MAINNET_TRADING.md` for current behavior. `run-mainnet.sh` uses its own `.env.mainnet`, database and port 5051. Mainnet signing, account routing, market streams and reduce-only actual-position closing are implemented. At the operator’s subsequent request, all trial presets, strategy seeding, SOL-only restrictions, trial notional/level/size-growth/basket caps, 1× leverage preflight, backend live-enable flag and extra live confirmation modal were removed. Users supply strategy parameters and click Start. Existing saved strategies are preserved. Exchange validation, credential security, configured strategy controls and account/cycle consistency remain. No live orders were placed during development. The operator has configured their own credentials locally; do not print or replace them.
+
+Basket thresholds already automatically close cycles in the current code; the older monitor-only descriptions below are historical and superseded. Mainnet closing also supersedes the older Testnet strategy-attribution description.
+
+## Historical handoff (2026-08-25)
+
 Last updated: 2026-08-25 (UTC)
 
 ## Current outcome
 
-The repository implements the V1 semi-automatic grid-trading terminal described under `v1/`. It supports deterministic Replay, local Paper execution, and real Hyperliquid **Testnet** trading through an API Wallet. Mainnet is intentionally unavailable.
+The repository implements the V1 semi-automatic grid-trading terminal described under `v1/`. It supports deterministic Replay, local Paper execution, and real Hyperliquid **Testnet** trading through an API Wallet. Mainnet was unavailable at the time of this historical section; the current section above supersedes that restriction.
 
 The most recent change replaced the dashboard's fake SOL price/K-line data with Hyperliquid Testnet data whenever a Testnet strategy is selected. A live check on 2026-08-25 returned a SOL bid/ask of `103.56 / 103.69`, midpoint `103.625`, and 1-minute candles around `103–104`, matching the Hyperliquid Testnet UI at that time. These numbers are only a historical verification observation, not fixtures or expected future values.
 

@@ -8,8 +8,9 @@ public sealed class DecimalStringJsonConverter : JsonConverter<decimal>
 {
     public override decimal Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => reader.TokenType switch
     {
-        JsonTokenType.String => decimal.Parse(reader.GetString()!, CultureInfo.InvariantCulture),
-        JsonTokenType.Number => reader.GetDecimal(),
+        JsonTokenType.String when decimal.TryParse(reader.GetString(), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out var value) => value,
+        JsonTokenType.Number when reader.TryGetDecimal(out var value) => value,
         _ => throw new JsonException("Expected a decimal string or number.")
     };
 

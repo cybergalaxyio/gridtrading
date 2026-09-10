@@ -7,10 +7,11 @@ public static class ExecutionEnvironmentIds
 {
     public const string PaperLocal = "paper-local";
     public const string HyperliquidTestnet = "hyperliquid-testnet";
+    public const string HyperliquidMainnet = "hyperliquid-mainnet";
     public const string PaperAccount = "acct_paper_01";
 
     public static string ForAccount(string accountId) =>
-        accountId == PaperAccount ? PaperLocal : HyperliquidTestnet;
+        accountId == PaperAccount ? PaperLocal : accountId == "hl_mainnet_default" ? HyperliquidMainnet : HyperliquidTestnet;
 }
 
 public sealed record ExecutionEnvironmentDescriptor(string Id, string VenueType, string Network, string DisplayName);
@@ -79,6 +80,13 @@ public sealed class ExecutionEnvironmentRegistry(IEnumerable<IExecutionAdapter> 
 
     public async Task<ExecutionSelection> ResolveAsync(string? environmentId, string? accountId, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(environmentId) && !string.IsNullOrWhiteSpace(accountId))
+        {
+            var matches = new List<ExecutionAccountDescriptor>();
+            foreach (var candidate in _adapters.Values)
+                matches.AddRange((await candidate.GetAccountsAsync(ct)).Where(x => x.Id == accountId && x.Enabled));
+            if (matches.Count == 1) environmentId = matches[0].EnvironmentId;
+        }
         var resolvedEnvironment = string.IsNullOrWhiteSpace(environmentId)
             ? ExecutionEnvironmentIds.ForAccount(accountId ?? ExecutionEnvironmentIds.PaperAccount)
             : environmentId;

@@ -14,6 +14,10 @@ public sealed class HyperliquidL1Signer
 {
     public HyperliquidSignature SignTestnet(byte[] actionMessagePack, string privateKey, long nonce,
         string? vaultAddress = null, long? expiresAfter = null)
+        => Sign(actionMessagePack, privateKey, nonce, false, vaultAddress, expiresAfter);
+
+    public HyperliquidSignature Sign(byte[] actionMessagePack, string privateKey, long nonce, bool isMainnet,
+        string? vaultAddress = null, long? expiresAfter = null)
     {
         var actionHash = CalculateActionHash(actionMessagePack, nonce, vaultAddress, expiresAfter);
         var typedData = JsonSerializer.Serialize(new
@@ -29,7 +33,7 @@ public sealed class HyperliquidL1Signer
                 }
             },
             primaryType = "Agent",
-            message = new { source = "b", connectionId = "0x" + Convert.ToHexString(actionHash).ToLowerInvariant() }
+            message = new { source = isMainnet ? "a" : "b", connectionId = "0x" + Convert.ToHexString(actionHash).ToLowerInvariant() }
         });
         var normalizedKey = privateKey.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? privateKey[2..] : privateKey;
         var signature = Eip712TypedDataSigner.Current.SignTypedDataV4(typedData, new EthECKey(normalizedKey));

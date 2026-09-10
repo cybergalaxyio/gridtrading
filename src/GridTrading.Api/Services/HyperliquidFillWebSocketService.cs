@@ -118,15 +118,18 @@ public sealed class HyperliquidFillWebSocketService(
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     private const int MaximumMessageBytes = 4 * 1024 * 1024;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.WhenAll(
+        RunNetwork(HyperliquidNetwork.Testnet, stoppingToken), RunNetwork(HyperliquidNetwork.Mainnet, stoppingToken));
+
+    private async Task RunNetwork(string network, CancellationToken stoppingToken)
     {
         var retrySeconds = 1;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var accounts = await LoadAccounts(stoppingToken);
-                await RunConnections(accounts, stoppingToken);
+                var accounts = await LoadAccounts(network, stoppingToken);
+                await RunConnections(accounts, network, stoppingToken);
                 retrySeconds = 1;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
@@ -139,21 +142,21 @@ public sealed class HyperliquidFillWebSocketService(
         }
     }
 
-    private async Task<IReadOnlyList<SubscriptionAccount>> LoadAccounts(CancellationToken ct)
+    private async Task<IReadOnlyList<SubscriptionAccount>> LoadAccounts(string network, CancellationToken ct)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
         return await db.HyperliquidAccounts
-            .Where(x => x.Enabled && x.Environment == "TESTNET")
+            .Where(x => x.Enabled && x.Environment == network)
             .Select(x => new SubscriptionAccount(x.Id, x.AccountAddress))
             .ToListAsync(ct);
     }
 
-    private async Task RunConnections(IReadOnlyList<SubscriptionAccount> accounts, CancellationToken ct)
+    private async Task RunConnections(IReadOnlyList<SubscriptionAccount> accounts, string network, CancellationToken ct)
     {
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var connections = new List<Task> { RunConnection(null, connectionCts.Token) };
-        connections.AddRange(accounts.Select(account => RunConnection(account, connectionCts.Token)));
+        var connections = new List<Task> { RunConnection(null, network, connectionCts.Token) };
+        connections.AddRange(accounts.Select(account => RunConnection(account, network, connectionCts.Token)));
 
         var completed = await Task.WhenAny(connections);
         connectionCts.Cancel();
@@ -163,10 +166,10 @@ public sealed class HyperliquidFillWebSocketService(
         await completed;
     }
 
-    private async Task RunConnection(SubscriptionAccount? account, CancellationToken ct)
+    private async Task RunConnection(SubscriptionAccount? account, string network, CancellationToken ct)
     {
         using var socket = new ClientWebSocket();
-        await socket.ConnectAsync(WebSocketEndpoint(), ct);
+        await socket.ConnectAsync(HyperliquidNetwork.Endpoint(configuration, network, "WebSocket"), ct);
 
         if (account is null)
             await Send(socket, HyperliquidWebSocketProtocol.SubscribeAllMids(), ct);
@@ -181,7 +184,7 @@ public sealed class HyperliquidFillWebSocketService(
             account is null ? "market" : "userFills/userFundings/orderUpdates",
             account is null ? "" : $" for account {account.AccountId}");
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var receiveTask = ReceiveLoop(socket, account, connectionCts.Token);
+        var receiveTask = ReceiveLoop(socket, account, network, connectionCts.Token);
         var heartbeatTask = HeartbeatLoop(socket, connectionCts.Token);
         var completed = await Task.WhenAny(receiveTask, heartbeatTask);
         connectionCts.Cancel();
@@ -195,7 +198,7 @@ public sealed class HyperliquidFillWebSocketService(
             throw new WebSocketException("Hyperliquid WebSocket closed.");
     }
 
-    private async Task ReceiveLoop(ClientWebSocket socket, SubscriptionAccount? account, CancellationToken ct)
+    private async Task ReceiveLoop(ClientWebSocket socket, SubscriptionAccount? account, string network, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -224,7 +227,7 @@ public sealed class HyperliquidFillWebSocketService(
                 else if (account is null && HyperliquidWebSocketProtocol.TryReadAllMids(
                     document.RootElement, out var mids) && mids is not null)
                 {
-                    await BroadcastSelectedMids(mids, ct);
+                    await BroadcastSelectedMids(mids, network, ct);
                 }
             }
             catch (JsonException ex)
@@ -234,14 +237,14 @@ public sealed class HyperliquidFillWebSocketService(
         }
     }
 
-    private async Task BroadcastSelectedMids(HyperliquidMidPricesMessage update, CancellationToken ct)
+    private async Task BroadcastSelectedMids(HyperliquidMidPricesMessage update, string network, CancellationToken ct)
     {
         var asOf = DateTimeOffset.UtcNow;
-        foreach (var symbol in marketSubscriptions.ActiveSymbols())
+        foreach (var symbol in marketSubscriptions.ActiveSymbols(network))
         {
             if (!update.Mids.TryGetValue(symbol, out var mid)) continue;
-            await hub.Clients.Group(HyperliquidMarketGroups.Group(symbol))
-                .SendAsync("HyperliquidMidPriceUpdated", new { symbol, mid, asOf }, ct);
+            await hub.Clients.Group(HyperliquidMarketGroups.Group(symbol, network))
+                .SendAsync("HyperliquidMidPriceUpdated", new { symbol, mid, asOf, environment = network }, ct);
         }
     }
 
@@ -313,16 +316,6 @@ public sealed class HyperliquidFillWebSocketService(
 
     private static Task Send(ClientWebSocket socket, byte[] payload, CancellationToken ct) =>
         socket.SendAsync(payload, WebSocketMessageType.Text, true, ct);
-
-    private Uri WebSocketEndpoint()
-    {
-        var configured = configuration["Hyperliquid:WebSocketUrl"] ?? "wss://api.hyperliquid-testnet.xyz/ws";
-        if (!Uri.TryCreate(configured, UriKind.Absolute, out var endpoint) || endpoint.Scheme != "wss" ||
-            endpoint.Host != "api.hyperliquid-testnet.xyz" || endpoint.AbsolutePath != "/ws" ||
-            !string.IsNullOrEmpty(endpoint.Query) || !string.IsNullOrEmpty(endpoint.UserInfo))
-            throw new InvalidOperationException("Hyperliquid WebSocket is locked to the official Testnet wss endpoint.");
-        return endpoint;
-    }
 
     private sealed record SubscriptionAccount(string AccountId, string User);
 }

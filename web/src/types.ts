@@ -55,15 +55,15 @@ export type Snapshot = {
 export type ExecutionEnvironment = { id: string; venueType: 'PAPER' | 'HYPERLIQUID'; network: string; displayName: string }
 export type ExecutionAccount = { id: string; environmentId: string; displayName: string; enabled: boolean }
 
-export type HyperliquidAccount = { accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
+export type HyperliquidAccount = { accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET" | "MAINNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
 export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountMode: string; tradingEquity: string; availableBalance: string; perpAccountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }
 export type HyperliquidBook = { bid: string; ask: string; mid: string; asOf: string }
-export type HyperliquidMidPriceTick = { symbol: string; mid: string; asOf: string }
-export type HyperliquidAccountState = { accountId: string; symbol: string; accountValue: string; withdrawable: string; totalMarginUsed: string; netPosition: string; unrealizedPnl: string; entryPrice?: string | null; asOf: string }
+export type HyperliquidMidPriceTick = { environment: "TESTNET" | "MAINNET"; symbol: string; mid: string; asOf: string }
+export type HyperliquidAccountState = { accountMode: string; tradingEquity: string; availableBalance: string; accountId: string; symbol: string; accountValue: string; withdrawable: string; totalMarginUsed: string; netPosition: string; unrealizedPnl: string; entryPrice?: string | null; asOf: string }
 export type HyperliquidInstrument = { assetIndex: number; symbol: string; sizeDecimals: number; isDelisted: boolean; markPrice?: string | null; previousDayPrice?: string | null; fundingRate?: string | null }
-export type HyperliquidInstruments = { exchange: "HYPERLIQUID"; environment: "TESTNET"; tradingEnabled: boolean; asOf: string; universe: HyperliquidInstrument[] }
+export type HyperliquidInstruments = { exchange: "HYPERLIQUID"; environment: "TESTNET" | "MAINNET"; tradingEnabled: boolean; asOf: string; universe: HyperliquidInstrument[] }
 export type ExchangeInstrumentRules = {
-  symbol: string; environment: 'PAPER' | 'TESTNET'; assetIndex: number; sizeDecimals: number;
+  symbol: string; environment: 'PAPER' | 'TESTNET' | 'MAINNET'; assetIndex: number; sizeDecimals: number;
   referencePrice: string; tickSize: string; quantityStep: string; minOrderQuantity: string;
   minOrderNotional: string; maxActiveOrders: number; makerFeeRate: string; takerFeeRate: string;
   feeSource: string; asOf: string;

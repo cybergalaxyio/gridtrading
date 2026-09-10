@@ -15,7 +15,7 @@ public sealed record HyperliquidAccountState(
     decimal NetPosition,
     decimal UnrealizedPnl,
     decimal? EntryPrice,
-    DateTimeOffset AsOf);
+    DateTimeOffset AsOf, string AccountMode, decimal TradingEquity, decimal AvailableBalance);
 
 public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration configuration, TradingDbContext db)
 {
@@ -28,7 +28,7 @@ public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration 
         ["1w"] = TimeSpan.FromDays(7)
     };
 
-    public async Task<IReadOnlyList<CandleDto>> GetCandlesAsync(string symbol, string interval, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<CandleDto>> GetCandlesAsync(string symbol, string interval, int limit, CancellationToken ct, string network = HyperliquidNetwork.Testnet)
     {
         if (!Intervals.TryGetValue(interval, out var duration))
             throw new TradingProblemException(422, "INVALID_CANDLE_INTERVAL", "Unsupported Hyperliquid candle interval.");
@@ -39,7 +39,7 @@ public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration 
         {
             type = "candleSnapshot",
             req = new { coin = ToCoin(symbol), interval, startTime = start.ToUnixTimeMilliseconds(), endTime = end.ToUnixTimeMilliseconds() }
-        }, ct);
+        }, ct, network);
         if (document.RootElement.ValueKind != JsonValueKind.Array) return [];
         return document.RootElement.EnumerateArray().TakeLast(limit).Select(item => new CandleDto(
             item.GetProperty("t").GetInt64() / 1000,
@@ -50,8 +50,11 @@ public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration 
     public async Task<HyperliquidAccountState> GetAccountStateAsync(string accountId, string symbol, CancellationToken ct)
     {
         var account = await db.HyperliquidAccounts.SingleOrDefaultAsync(x => x.Id == accountId && x.Enabled, ct)
-            ?? throw new TradingProblemException(404, "TESTNET_ACCOUNT_NOT_FOUND", "Hyperliquid Testnet account was not found or disabled.");
-        using var document = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct);
+            ?? throw new TradingProblemException(404, "EXECUTION_ACCOUNT_NOT_FOUND", "Hyperliquid account was not found or disabled.");
+        using var document = await PostInfo(new { type = "clearinghouseState", user = account.AccountAddress }, ct, account.Environment);
+        using var spot = await PostInfo(new { type = "spotClearinghouseState", user = account.AccountAddress }, ct, account.Environment);
+        using var abstraction = await PostInfo(new { type = "userAbstraction", user = account.AccountAddress }, ct, account.Environment);
+        var funds = HyperliquidAccountFunds.Resolve(abstraction.RootElement, document.RootElement, spot.RootElement);
         var root = document.RootElement;
         var summary = root.GetProperty("marginSummary");
         var accountValue = Decimal(summary.GetProperty("accountValue"));
@@ -72,27 +75,17 @@ public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration 
             }
         }
         return new HyperliquidAccountState(account.Id, symbol.ToUpperInvariant(), accountValue, withdrawable, marginUsed,
-            net, unrealized, entryPrice, DateTimeOffset.UtcNow);
+            net, unrealized, entryPrice, DateTimeOffset.UtcNow, funds.AccountMode, funds.TradingEquity, funds.AvailableBalance);
     }
 
-    private async Task<JsonDocument> PostInfo(object request, CancellationToken ct)
+    private async Task<JsonDocument> PostInfo(object request, CancellationToken ct, string network)
     {
-        using var response = await http.PostAsJsonAsync(InfoEndpoint(), request, ct);
+        using var response = await http.PostAsJsonAsync(HyperliquidNetwork.Endpoint(configuration, network, "Info"), request, ct);
         if (!response.IsSuccessStatusCode)
             throw new TradingProblemException(503, "EXCHANGE_INFO_UNAVAILABLE", $"Hyperliquid Info returned HTTP {(int)response.StatusCode}.");
         return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
     }
 
-    private Uri InfoEndpoint()
-    {
-        var configured = configuration["Hyperliquid:InfoUrl"] ?? "https://api.hyperliquid-testnet.xyz/info";
-        if (!Uri.TryCreate(configured, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
-            uri.Host != "api.hyperliquid-testnet.xyz" || uri.AbsolutePath != "/info")
-            throw new TradingProblemException(403, "TESTNET_ONLY", "Hyperliquid market data is locked to the official HTTPS Testnet API.");
-        return uri;
-    }
-
     private static decimal Decimal(JsonElement value) => decimal.Parse(value.GetString() ?? value.ToString(), CultureInfo.InvariantCulture);
-    private static string ToCoin(string symbol) => symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase) || symbol.EndsWith("USDC", StringComparison.OrdinalIgnoreCase)
-        ? symbol[..^4] : symbol;
+    private static string ToCoin(string symbol) => HyperliquidTradingClient.ToCoin(symbol);
 }

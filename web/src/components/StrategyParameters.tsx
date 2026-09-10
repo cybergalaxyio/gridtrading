@@ -15,7 +15,7 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
   const groups: { title: string; rows: [string, string][] }[] = [
     { title: '基础信息', rows: [
       ['Strategy ID', strategy.strategyId], ['版本', `v${strategy.version}`], ['交易账户', strategy.activeCycle?.executionAccountId ?? strategy.defaultExecutionAccountId],
-      ['环境', (strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'PAPER' : 'TESTNET'], ['交易对', `${coin(strategy.symbol)}-USDC`],
+      ['环境', (strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'PAPER' : (strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'hyperliquid-mainnet' ? 'MAINNET · LIVE' : 'TESTNET'], ['交易对', `${coin(strategy.symbol)}-USDC`],
       ['Cycle 状态', strategy.activeCycle?.state ?? '未运行'], ['网格模式', gridModeLabel(config.gridMode)], ['中心模式', config.centerSuggestionMode],
       ['Tick Size', effectiveTick ?? '等待市场规则'], ['Quantity Step', effectiveQuantityStep ?? '等待市场规则'],
     ] },
@@ -43,7 +43,7 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
     ] },
   ]
   return <div className="strategy-parameters">
-    <div className="parameter-summary"><div><b>{strategy.name}</b><span>{coin(strategy.symbol)}-USDC · {(strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'Paper Simulator' : 'Hyperliquid Testnet'}</span></div>
+    <div className="parameter-summary"><div><b>{strategy.name}</b><span>{coin(strategy.symbol)}-USDC · {(strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'Paper Simulator' : (strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'hyperliquid-mainnet' ? 'Hyperliquid Mainnet · LIVE' : 'Hyperliquid Testnet'}</span></div>
       <span className={`parameter-source ${frozen ? 'frozen' : ''}`}>{frozen ? 'FROZEN CYCLE' : 'STRATEGY'}</span></div>
     <p className="parameter-note">{frozen ? '当前展示运行中 Cycle 的冻结参数；策略修改只影响未来 Cycle。' : '当前展示策略实例参数；启动 Cycle 时会冻结一份独立副本。'}</p>
     <div className="parameter-tabs" role="tablist" aria-label="策略参数视图">

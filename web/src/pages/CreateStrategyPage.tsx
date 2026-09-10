@@ -14,7 +14,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     symbol: initialStrategy.symbol, workingEntriesPerSide: 1,
   } : { ...defaultConfig })
   const [environment, setEnvironment] = useState(() => initialStrategy?.defaultExecutionEnvironmentId ?? defaultConfig.defaultExecutionEnvironmentId)
-  const [center, setCenter] = useState(initialStrategy?.activeCycle?.fixedCenterPrice ?? '145.250')
+  const [center, setCenter] = useState(initialStrategy?.activeCycle?.fixedCenterPrice ?? '')
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState(false)
   const [instrument, setInstrument] = useState<ExchangeInstrumentRules | null>(null)
@@ -41,7 +41,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
   useEffect(() => {
     if (environment === 'paper-local') { setSymbols(['SOLUSDT']); return }
     let active = true
-    void api.testnetInstruments().then(result => {
+    void api.hyperliquidInstruments(environment).then(result => {
       if (!active) return
       const available = result.universe.filter(item => !item.isDelisted && item.symbol).map(item => item.symbol)
       setSymbols(available)
@@ -80,14 +80,41 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     setConfig(current => ({ ...current, defaultExecutionAccountId: value, exchangeAccountId: value })); setPreview(null)
   }
   async function suggestCenter() {
-    try { const value = environment === 'paper-local' ? (await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/center-suggestion?mode=CURRENT_MID').then(r => r.json()) as { suggestedCenterPrice: string }).suggestedCenterPrice : (await api.testnetBook(config.symbol)).mid; setCenter(value) }
+    try { const value = environment === 'paper-local' ? (await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/center-suggestion?mode=CURRENT_MID').then(r => r.json()) as { suggestedCenterPrice: string }).suggestedCenterPrice : (await api.hyperliquidBook(config.symbol, environment)).mid; setCenter(value) }
     catch { reportError('无法获取最新中心建议') }
   }
+  function validateForm(requireCenter: boolean) {
+    if (!config.name.trim()) { setStep(1); reportError('请填写策略名称'); return false }
+    if (!config.defaultExecutionAccountId) { setStep(1); reportError('请选择执行账户'); return false }
+    if (requireCenter && (!center.trim() || !Number.isFinite(Number(center)) || Number(center) <= 0)) {
+      setStep(2); reportError('请填写大于 0 的确认中心价格，或点击“获取建议”'); return false
+    }
+    const numericFields: [keyof StrategyConfig, string, number][] = [
+      ['maxLevelsPerSide', '单侧最大层数', 2], ['initialGapPoints', 'Initial Gap', 2],
+      ['gridSpacingPoints', 'Grid Spacing', 2], ['gridSpacingStepPoints', 'Spacing Step', 2],
+      ['takeProfitPoints', 'Take Profit', 2], ['baseLotSize', 'Base Lot Size', 3],
+      ['lotSizeIncreasePercent', '每层几何增长', 3], ['maxTradeLot', '单笔上限', 3],
+      ['maxNetLot', 'MaxNetLot', 3], ['basketTakeProfitUsdt', 'Basket 止盈', 3],
+      ['basketStopLossUsdt', 'Basket 止损', 3], ['faultExposureThresholdUsdt', '风险暂停敞口阈值', 3],
+      ['estimatedExitSlippagePct', '退出滑点储备', 3], ['marketDataStaleSeconds', '行情过期阈值', 3],
+      ['reconcileIntervalSeconds', 'Sync 周期', 3], ['orderCommandTimeoutSeconds', '命令超时', 3],
+      ['maxOrderFrequency', '最大下单频率', 3], ['partialFillCancelAfterMinutes', '部分成交撤单等待', 3],
+    ]
+    for (const [key, label, fieldStep] of numericFields) {
+      if (!String(config[key]).trim() || !Number.isFinite(Number(config[key]))) {
+        setStep(fieldStep); reportError(`请填写有效数字：${label}（如不启用可选项，请明确填写 0）`); return false
+      }
+    }
+    reportError('')
+    return true
+  }
   async function generatePreview() {
+    if (!validateForm(true)) return
     setBusy(true); try { setPreview(await api.previewCandidate(config, center)); setStep(4) }
     catch (e) { reportError(e instanceof Error ? e.message : '预览失败') } finally { setBusy(false) }
   }
   async function save() {
+    if (!validateForm(false)) return
     setBusy(true); try { initialStrategy ? await api.updateStrategy(initialStrategy.strategyId, config) : await api.createStrategy(config); await onSaved(!!initialStrategy) }
     catch (e) { reportError(e instanceof Error ? e.message : '保存失败') } finally { setBusy(false) }
   }
@@ -121,7 +148,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <NumberField label="Base Lot Size" value={config.baseLotSize} onChange={v => set('baseLotSize', v)} suffix={coin(config.symbol)} hint={quantityHint(config.baseLotSize, instrument)} />
           <NumberField label="每层几何增长" value={config.lotSizeIncreasePercent} onChange={v => set('lotSizeIncreasePercent', v)} suffix="%" hint={lastLevelQuantityHint(config, instrument)} />
           <NumberField label="单笔上限" value={config.maxTradeLot} onChange={v => set('maxTradeLot', v)} suffix={coin(config.symbol)} hint="0 = 不启用" />
-          <NumberField label="MaxNetLot 硬上限" value={config.maxNetLot} onChange={v => set('maxNetLot', v)} suffix="SOL" />
+          <NumberField label="MaxNetLot 硬上限" value={config.maxNetLot} onChange={v => set('maxNetLot', v)} suffix={coin(config.symbol)} />
           <NumberField label="Basket 止盈" value={config.basketTakeProfitUsdt} onChange={v => set('basketTakeProfitUsdt', v)} suffix="USDC" />
           <NumberField label="Basket 止损" value={config.basketStopLossUsdt} onChange={v => set('basketStopLossUsdt', v)} suffix="USDC" hint="0 = 不启用" />
           <NumberField label={<HelpLabel label="风险暂停敞口阈值" text="按未保护数量 × TP 参考价计算敞口；超过阈值时暂停开仓并撤销 Entry 未成交余量，继续维护 TP。连续两次对账低于阈值后解除风险暂停，人工暂停仍保留。设为 0 时需敞口归零才恢复。" />} value={config.faultExposureThresholdUsdt} onChange={v => set('faultExposureThresholdUsdt', v)} suffix="USD" />

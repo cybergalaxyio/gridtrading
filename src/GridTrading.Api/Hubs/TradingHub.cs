@@ -1,3 +1,4 @@
+using GridTrading.Api.Services;
 using Microsoft.AspNetCore.SignalR;
 
 namespace GridTrading.Api.Hubs;
@@ -11,18 +12,18 @@ public sealed class TradingHub(HyperliquidMarketSubscriptionRegistry marketSubsc
     public Task SubscribeAccount(string accountId) => Groups.AddToGroupAsync(Context.ConnectionId, $"account:{accountId}");
     public Task SubscribeSymbol(string accountId, string symbol) => Groups.AddToGroupAsync(Context.ConnectionId, $"symbol:{accountId}:{symbol}");
 
-    public async Task SubscribeHyperliquidSymbol(string symbol)
+    public async Task SubscribeHyperliquidSymbol(string symbol, string network)
     {
         var coin = HyperliquidMarketGroups.Coin(symbol);
-        marketSubscriptions.Subscribe(Context.ConnectionId, coin);
-        await Groups.AddToGroupAsync(Context.ConnectionId, HyperliquidMarketGroups.Group(coin));
+        marketSubscriptions.Subscribe(Context.ConnectionId, coin, HyperliquidNetwork.Validate(network));
+        await Groups.AddToGroupAsync(Context.ConnectionId, HyperliquidMarketGroups.Group(coin, network));
     }
 
-    public async Task UnsubscribeHyperliquidSymbol(string symbol)
+    public async Task UnsubscribeHyperliquidSymbol(string symbol, string network)
     {
         var coin = HyperliquidMarketGroups.Coin(symbol);
-        marketSubscriptions.Unsubscribe(Context.ConnectionId, coin);
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, HyperliquidMarketGroups.Group(coin));
+        marketSubscriptions.Unsubscribe(Context.ConnectionId, coin, HyperliquidNetwork.Validate(network));
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, HyperliquidMarketGroups.Group(coin, network));
     }
 
     public override Task OnDisconnectedAsync(Exception? exception)

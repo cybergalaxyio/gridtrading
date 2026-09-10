@@ -12,10 +12,10 @@ const nav: { route: Route; label: string; icon: string }[] = [
 ]
 
 export function Layout({ route, environment, emergencyBusy, onRoute, onEmergency, children }: {
-  route: Route; environment: 'PAPER' | 'TESTNET'; emergencyBusy: boolean;
+  route: Route; environment: 'PAPER' | 'TESTNET' | 'MAINNET'; emergencyBusy: boolean;
   onRoute: (route: Route) => void; onEmergency: () => void; children: ReactNode
 }) {
-  const isTestnet = environment === 'TESTNET'
+  const isHyperliquid = environment !== 'PAPER'
   const [clock, setClock] = useState(new Date())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('grid.sidebarCollapsed') === 'true')
   useEffect(() => { const timer = setInterval(() => setClock(new Date()), 1000); return () => clearInterval(timer) }, [])
@@ -30,12 +30,12 @@ export function Layout({ route, environment, emergencyBusy, onRoute, onEmergency
       <nav>{nav.map(item => <button key={item.route} className={route === item.route || (route === 'create' && item.route === 'strategies') ? 'active' : ''} onClick={() => onRoute(item.route)}>
         <Icon name={item.icon} size={22} /><span>{item.label}</span>
       </button>)}</nav>
-      <div className="sidebar-safety"><Icon name="shield" /><div><b>实盘硬锁已启用</b><span>仅 Replay / Paper / Testnet</span></div></div>
+      <div className="sidebar-safety"><Icon name="shield" /><div><b>执行环境隔离</b><span>Mainnet 使用真实资金</span></div></div>
     </aside>
     <div className="workspace">
       <header className="topbar">
         <div className="brand">GRID TRADING</div><div id="execution-context-slot" className="execution-context-slot">{route !== 'dashboard' && <span className="env">{environment}</span>}</div>
-        <span className="connection"><i />{isTestnet ? 'Hyperliquid Testnet · 已连接' : '本地模拟 · 已连接'}</span><span className="latency">{isTestnet ? '官方行情 · 10s 刷新' : '行情延迟 < 10ms'}</span>
+        <span className="connection"><i />{isHyperliquid ? `Hyperliquid ${environment}` : '本地模拟 · 已连接'}</span><span className="latency">{isHyperliquid ? '官方行情 · 10s 刷新' : '行情延迟 < 10ms'}</span>
         <time>UTC {clock.toISOString().slice(11, 19)}</time>
         <button className="danger-outline" disabled={emergencyBusy} aria-busy={emergencyBusy} onClick={onEmergency}>{emergencyBusy ? 'Stopping…' : 'Shutdown'}</button>
       </header>

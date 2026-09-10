@@ -158,3 +158,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .grid-center-row { position: sticky; top: 0; bottom: 0; z-index: 2; min-height: 29px; border-top: 1px solid #7459a5; border-bottom: 1px solid #7459a5; background: #16172a; color: #b99cff; font: 8px Consolas, monospace; }
 .grid-level-preview > footer { padding: 7px 8px; color: #657787; font-size: 8px; text-align: center; }
 .empty-grid { min-height: 150px; display: grid; place-items: center; color: #657787; font-size: 9px; }
+
+.mainnet-banner { display:flex; align-items:center; gap:16px; padding:12px 18px; color:#ffc2aa; background:#462a20; border:1px solid #9b5135; flex-wrap:wrap; }
+.mainnet-banner b { white-space:nowrap; }
