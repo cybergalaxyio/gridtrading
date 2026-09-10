@@ -67,6 +67,15 @@ public sealed class CycleEntity
     public long StateVersion { get; set; }
     public bool IsTerminal { get; set; }
     public bool OperatorResetRequired { get; set; }
+    public bool OperatorPaused { get; set; }
+    public bool RiskPaused { get; set; }
+    public int RiskRecoveryChecks { get; set; }
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public bool IsOperatorPaused => OperatorPaused || (State == "PAUSED" && !RiskPaused);
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public string[] EntryPauseReasons =>
+        (IsOperatorPaused ? new[] { "OPERATOR" } : Array.Empty<string>())
+        .Concat(RiskPaused ? new[] { "UNPROTECTED_EXPOSURE" } : Array.Empty<string>()).ToArray();
     public decimal FixedCenterPrice { get; set; }
     public decimal ActualNetQuantity { get; set; }
     public decimal ReconstructedNetQuantity { get; set; }

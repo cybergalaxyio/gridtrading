@@ -271,7 +271,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   async function command(route: string, label: string) {
     if (!cycle) return
     setBusy(true)
-    try { await api.command(cycle.cycleId, route, cycle.stateVersion); notify(label); await reload(); await refresh() }
+    try { await api.command(cycle.cycleId, route, currentCycle?.stateVersion ?? cycle.stateVersion); notify(label); await reload(); await refresh() }
     catch (e) { reportError(e instanceof Error ? e.message : '命令执行失败') } finally { setBusy(false) }
   }
 
@@ -289,6 +289,10 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const unprotectedExposure = +(snapshot?.risk.unprotectedExposureNotionalUsdt ?? 0)
   const faultExposureThreshold = +(snapshot?.risk.faultExposureThresholdUsdt ?? strategy?.configuration.faultExposureThresholdUsdt ?? 10)
   const exposureTone: MetricTone = unprotectedExposure > faultExposureThreshold ? 'negative' : unprotectedExposure > 0 ? 'warning-text' : 'positive'
+  const currentCycle = snapshot && cycle && snapshot.cycle.cycleId === cycle.cycleId && snapshot.cycle.stateVersion >= cycle.stateVersion
+    ? snapshot.cycle : cycle
+  const riskPaused = currentCycle?.state === 'PAUSED' && !!currentCycle.riskPaused
+  const operatorPaused = currentCycle?.operatorPaused ?? (currentCycle?.state === 'PAUSED' && !riskPaused)
   const filledEntryCount = orders.filter(order => order.kind === 'ENTRY' && order.status === 'FILLED').length
   const filledTakeProfitCount = orders.filter(order => order.kind === 'TAKE_PROFIT' && order.status === 'FILLED').length
   const instrument = displaySymbol(marketSymbol, isTestnet)
@@ -312,15 +316,16 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         {instruments.map(item => <option key={item} value={item}>{displaySymbol(item, isTestnet)}</option>)}
       </select></label> 永续 <span className="mono">{format(mid, 3)}</span> <em className={change < 0 ? 'negative' : ''}>{change >= 0 ? '+' : ''}{change.toFixed(2)}%</em></h1>
         <div className="instrument-meta">
-          <span className={`cycle-state-display ${cycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {cycle?.state ?? 'IDLE'}</span>
+          <span className={`cycle-state-display ${currentCycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {riskPaused ? (operatorPaused ? '风险暂停 + 人工暂停' : '风险暂停开仓') : currentCycle?.state ?? 'IDLE'}</span>
           <span className="instrument-last-update">Last Update: {time(isTestnet ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</span>
         </div>
       </div>
+      {riskPaused && <span className="warning-text">继续维护 TP；连续两次对账确认风险解除后恢复开仓{operatorPaused ? '（人工暂停仍保留）' : ''}</span>}
       <div className="control-buttons">
         {strategy && <button className="secondary" onClick={() => setParametersOpen(true)}>View</button>}
         {!cycle && <button className="primary" disabled={!strategy || !runAccountId || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : 'Start'}</button>}
-        {cycle?.state === 'RUNNING' && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>Pause Entry</button>}
-        {cycle?.state === 'PAUSED' && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', '已按固定中心恢复 Entry')}>Resume Entry</button>}
+        {(currentCycle?.state === 'RUNNING' || (riskPaused && !operatorPaused)) && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>Pause Entry</button>}
+        {currentCycle?.state === 'PAUSED' && operatorPaused && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', riskPaused ? '人工暂停已解除；风险暂停仍生效' : '已按固定中心恢复 Entry')}>{riskPaused ? '解除人工暂停' : 'Resume Entry'}</button>}
         {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
         {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>Exit</button>}
       </div>

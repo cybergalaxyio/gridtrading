@@ -41,6 +41,7 @@ public sealed class DatabaseCompatibilityTests
         await using (var command = connection.CreateCommand())
         {
             command.CommandText = """
+                UPDATE "Cycles" SET "OperatorPaused" = 1, "RiskPaused" = 1, "RiskRecoveryChecks" = 1 WHERE "Id" = 'hl-cycle';
                 UPDATE "VirtualLots" SET "ProtectionPending" = 1 WHERE "Id" = 'pending-lot';
                 UPDATE "Cycles" SET "ExecutionEnvironmentId" = 'frozen-env',
                     "ExecutionAccountId" = 'frozen-account' WHERE "Id" = 'hl-cycle';
@@ -53,6 +54,8 @@ public sealed class DatabaseCompatibilityTests
         await using var pendingCommand = connection.CreateCommand();
         pendingCommand.CommandText = "SELECT ProtectionPending FROM VirtualLots WHERE Id = 'pending-lot'";
         Assert.Equal(1L, await pendingCommand.ExecuteScalarAsync(ct));
+        pendingCommand.CommandText = "SELECT OperatorPaused + RiskPaused + RiskRecoveryChecks FROM Cycles WHERE Id = 'hl-cycle'";
+        Assert.Equal(3L, await pendingCommand.ExecuteScalarAsync(ct));
     }
 
     private static async Task<(string Type, string Environment)> StrategyBindingAsync(

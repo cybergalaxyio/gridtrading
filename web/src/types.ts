@@ -16,6 +16,7 @@ export type StrategyConfig = {
 
 export type Cycle = {
   cycleId: string; strategyId: string; state: string; stateVersion: number; isTerminal: boolean;
+  riskPaused?: boolean; operatorPaused?: boolean; entryPauseReasons?: string[]; riskRecoveryChecks?: number;
   operatorResetRequired: boolean; fixedCenterPrice: string; startedAt: string; endedAt?: string;
   executionEnvironmentId: string; executionAccountId: string;
   frozenConfiguration?: StrategyConfig | null;

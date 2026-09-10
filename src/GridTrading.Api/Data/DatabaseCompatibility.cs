@@ -52,6 +52,11 @@ public static class DatabaseCompatibility
         await AddColumnIfMissingAsync(db, "VirtualLots", "ProtectionPending", "INTEGER NOT NULL DEFAULT 0");
         await AddColumnIfMissingAsync(db, "Executions", "ExchangeOrderId", "TEXT NOT NULL DEFAULT ''");
 
+        // Legacy PAUSED cycles are treated as operator pauses by CycleEntity.
+        await AddColumnIfMissingAsync(db, "Cycles", "OperatorPaused", "INTEGER NOT NULL DEFAULT 0");
+        await AddColumnIfMissingAsync(db, "Cycles", "RiskPaused", "INTEGER NOT NULL DEFAULT 0");
+        await AddColumnIfMissingAsync(db, "Cycles", "RiskRecoveryChecks", "INTEGER NOT NULL DEFAULT 0");
+
         var strategyTypeAdded = await AddColumnIfMissingAsync(db, "Strategies", "StrategyType", "TEXT NOT NULL DEFAULT 'GRID'");
         var strategyEnvironmentAdded = await AddColumnIfMissingAsync(db, "Strategies", "DefaultExecutionEnvironmentId", "TEXT NOT NULL DEFAULT 'paper-local'");
         var cycleEnvironmentAdded = await AddColumnIfMissingAsync(db, "Cycles", "ExecutionEnvironmentId", "TEXT NOT NULL DEFAULT 'paper-local'");

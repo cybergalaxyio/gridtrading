@@ -45,8 +45,8 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
             if (fills.Length > 0)
                 await lifecycle.ProcessFillsAsync(cycle.ExecutionAccountId, fills, ct);
 
-            cycle.LastReconciledAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
+            // Matching is not reconciliation. Keep its timestamp untouched so scheduled
+            // reconciliation can repair protection and advance risk-pause recovery.
             var liquidationPnl = cycle.RealisedCyclePnl - cycle.PaidFees - cycle.AccruedFunding;
             var takeProfitTriggered = config.BasketTakeProfitUsdt > 0m && liquidationPnl >= config.BasketTakeProfitUsdt;
             var stopLossTriggered = GridMath.BasketStopLossTriggered(liquidationPnl, config.BasketStopLossUsdt);

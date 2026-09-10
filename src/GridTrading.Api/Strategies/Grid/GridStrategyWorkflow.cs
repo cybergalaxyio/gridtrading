@@ -234,23 +234,14 @@ public sealed class GridStrategyWorkflow(
         switch (command)
         {
             case "PAUSE_ENTRIES":
-                EnsureState(cycle, "RUNNING", command);
-                await adapter.CancelOrdersAsync(selection, await ActiveOrdersAsync(cycle.Id, "ENTRY", ct), ct);
-                cycle.State = "PAUSED";
-                break;
             case "RESUME_ENTRIES":
-                EnsureState(cycle, "PAUSED", command);
-                cycle.State = "RUNNING";
-                await db.SaveChangesAsync(ct);
-                await lifecycle.MaintainEntryOrdersAsync(cycle, config, null, ct);
+                await lifecycle.SetOperatorPauseAsync(cycle, command == "PAUSE_ENTRIES", expectedVersion, ct);
                 break;
             case "CLOSE":
             case "EMERGENCY_FLATTEN":
                 if (command == "EMERGENCY_FLATTEN" && !emergencyConfirmed)
                     throw Problem(422, "EMERGENCY_CONFIRMATION_REQUIRED", "All emergency confirmations are required.");
-                if (cycle.IsTerminal) throw InvalidState(cycle, command);
-                cycle.State = "CLOSING";
-                await db.SaveChangesAsync(ct);
+                await lifecycle.BeginClosingAsync(cycle, expectedVersion, ct);
                 await lifecycle.ReconcileAsync(cycle, ct);
                 var residual = await adapter.FlattenAsync(selection, cycle, config, ct);
                 if (residual != 0m)
@@ -265,6 +256,9 @@ public sealed class GridStrategyWorkflow(
                 }
                 await lifecycle.ReconcileAsync(cycle, ct);
                 cycle.State = "WAITING_FOR_OPERATOR";
+                cycle.OperatorPaused = false;
+                cycle.RiskPaused = false;
+                cycle.RiskRecoveryChecks = 0;
                 cycle.IsTerminal = true;
                 cycle.EndedAt = DateTimeOffset.UtcNow;
                 cycle.OperatorResetRequired = command == "EMERGENCY_FLATTEN";
@@ -279,7 +273,7 @@ public sealed class GridStrategyWorkflow(
                 throw Problem(404, "COMMAND_NOT_FOUND", "Unknown cycle command.");
         }
 
-        cycle.StateVersion++;
+        if (command is not ("PAUSE_ENTRIES" or "RESUME_ENTRIES")) cycle.StateVersion++;
         operation.Status = "COMPLETED";
         operation.CompletedAt = DateTimeOffset.UtcNow;
         db.AuditLogs.Add(Audit(cycleId, command, string.IsNullOrWhiteSpace(reason) ? "Operator command." : reason));
@@ -312,6 +306,7 @@ public sealed class GridStrategyWorkflow(
             {
                 cycleId = cycle.Id, cycle.StrategyId, cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId,
                 state = cycle.State, cycle.StateVersion, cycle.IsTerminal, cycle.OperatorResetRequired,
+                cycle.RiskPaused, operatorPaused = cycle.IsOperatorPaused, cycle.EntryPauseReasons, cycle.RiskRecoveryChecks,
                 cycle.StartedAt, fixedCenterPrice = cycle.FixedCenterPrice
             },
             market = quote,
@@ -351,8 +346,9 @@ public sealed class GridStrategyWorkflow(
                 reconciliation = cycle.ActualNetQuantity == cycle.ReconstructedNetQuantity ? "IN_SYNC" : "MISMATCH",
                 lastReconciledAt = cycle.LastReconciledAt
             },
-            allowedCommands = CycleStateMachine.AllowedCommands(ParseState(cycle.State),
-                active.Length > 0 || cycle.ActualNetQuantity != 0m)
+            allowedCommands = cycle.State == "PAUSED"
+                ? new[] { cycle.IsOperatorPaused ? "RESUME_ENTRIES" : "PAUSE_ENTRIES", "CLOSE", "EMERGENCY_FLATTEN", "RECONCILE" }
+                : CycleStateMachine.AllowedCommands(ParseState(cycle.State), active.Length > 0 || cycle.ActualNetQuantity != 0m)
         };
     }
 
@@ -412,7 +408,7 @@ public sealed class GridStrategyWorkflow(
             throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires autoRestart=false and includeFunding=true.");
         _ = GridMath.BuildPlan(request.ToConfiguration(145.25m), TradingService.SolRules);
         if (request.FaultExposureThresholdUsdt < 0m)
-            throw Problem(422, "FAULT_THRESHOLD_INVALID", "FAULT exposure threshold must be zero or greater.");
+            throw Problem(422, "FAULT_THRESHOLD_INVALID", "Entry risk pause exposure threshold must be zero or greater.");
     }
 
     private static void EnsureGrid(StrategyEntity strategy)

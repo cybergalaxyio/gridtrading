@@ -12,14 +12,15 @@ public sealed partial class GridOrderLifecycle
 {
     public async Task MaintainEntryOrdersAsync(CycleEntity cycle, GridConfiguration config, ExecutionQuote? quote, CancellationToken ct)
     {
-        if (cycle.State != "RUNNING") return;
+        if (cycle.State != "RUNNING" || cycle.RiskPaused || cycle.OperatorPaused) return;
+        await UpdateRiskPauseAsync(cycle, ct);
+        if (cycle.RiskPaused) return;
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
         quote ??= await adapter.GetQuoteAsync(selection, config.Symbol, ct);
         var plan = JsonSerializer.Deserialize<GridPlan>(cycle.FrozenPlanJson, JsonSupport.Options)!;
         var active = await ActiveOrdersAsync(cycle.Id, ct);
         var openLots = await db.VirtualLots.Where(x => x.CycleId == cycle.Id && x.Status != "CLOSED").ToListAsync(ct);
-        if (openLots.Any(x => x.ProtectionPending && x.TakeProfitOrderId != null)) return;
         var created = new List<OrderEntity>();
 
         foreach (var side in new[] { OrderSide.Buy, OrderSide.Sell })
@@ -155,7 +156,7 @@ public sealed partial class GridOrderLifecycle
         }
         catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
         {
-            await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct);
+            await HandleProtectiveOrderRejectionAsync(cycle, ex, ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested && (ex is HttpRequestException or TaskCanceledException ||
             ex is TradingProblemException problem && problem.Code is "EXCHANGE_HTTP_ERROR" or "EXCHANGE_ACTION_REJECTED"))
@@ -176,8 +177,6 @@ public sealed partial class GridOrderLifecycle
     private async Task HandleUnprotectableRemainderAsync(CycleEntity cycle, OrderEntity entry,
         VirtualLotEntity lot, CancellationToken ct)
     {
-        var selection = Selection(cycle);
-        var adapter = environments.Adapter(selection.EnvironmentId);
         if (await db.VirtualLots.AnyAsync(x => x.CycleId == cycle.Id && x.Id != lot.Id &&
             x.ProtectionPending && x.TakeProfitOrderId != null && x.RemainingQuantity > 0m, ct))
         {
@@ -194,56 +193,28 @@ public sealed partial class GridOrderLifecycle
         var exception = new TradingProblemException(422, "PROTECTIVE_ORDER_REJECTED",
             $"Filled Entry {entry.Side[0]}{entry.GridLevel} leaves {lot.RemainingQuantity} unprotected because its " +
             $"take-profit value is below the venue minimum.");
-        await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, exception, ct);
+        await HandleProtectiveOrderRejectionAsync(cycle, exception, ct);
     }
 
-    private async Task<bool> HandleProtectiveOrderRejectionAsync(CycleEntity cycle, ExecutionSelection selection,
-        IExecutionAdapter adapter, TradingProblemException exception, CancellationToken ct)
+    private async Task HandleProtectiveOrderRejectionAsync(CycleEntity cycle, TradingProblemException exception, CancellationToken ct)
     {
-        var affectedNotionalUsdt = await AffectedUnprotectedNotionalAsync(cycle.Id, ct);
+        var affected = await AffectedUnprotectedNotionalAsync(cycle.Id, ct);
         var threshold = Math.Max(0m, DeserializeConfig(cycle).FaultExposureThresholdUsdt);
-        var exceedsThreshold = affectedNotionalUsdt > threshold;
-
-        if (!exceedsThreshold && cycle.State != "FAULT")
+        if (affected > threshold || cycle.RiskPaused)
         {
-            db.RiskAlerts.Add(new RiskAlertEntity
-            {
-                Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "WARNING",
-                Code = "PROTECTIVE_ORDER_BELOW_FAULT_THRESHOLD",
-                Message = $"Cycle {cycle.Id} 的止盈保护未能建立，但受影响未保护仓位约为 " +
-                    $"{affectedNotionalUsdt:F2} USD，未超过 FAULT 阈值 {threshold:F2} USD。" +
-                    $"原因 [PROTECTIVE_ORDER_REJECTED]：{exception.Message}。Cycle 保持 {cycle.State}，策略不因本次影响停止。",
-                CreatedAt = DateTimeOffset.UtcNow
-            });
-            await db.SaveChangesAsync(ct);
-            return false;
+            await UpdateRiskPauseAsync(cycle, ct, rejection: exception.Message);
+            return;
         }
-
-        if (cycle.State != "FAULT")
+        db.RiskAlerts.Add(new RiskAlertEntity
         {
-            cycle.State = "FAULT";
-            cycle.StateVersion++;
-            db.RiskAlerts.Add(new RiskAlertEntity
-            {
-                Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "CRITICAL",
-                Code = "PROTECTIVE_ORDER_REJECTED",
-                Message = $"Cycle {cycle.Id} 进入 FAULT：无法建立止盈保护。" +
-                    $"受影响未保护仓位约为 {affectedNotionalUsdt:F2} USD，已超过 FAULT 阈值 {threshold:F2} USD。" +
-                    $"原因 [PROTECTIVE_ORDER_REJECTED]：{exception.Message}。" +
-                    "系统正在撤销活动 Entry；请核对实际仓位和保护单。",
-                CreatedAt = DateTimeOffset.UtcNow
-            });
-            await db.SaveChangesAsync(ct);
-        }
-
-        // This cleanup is caused by the rejected protective order, not by the FAULT state.
-        // Changing a cycle to FAULT elsewhere must remain side-effect free.
-        var activeEntries = (await ActiveOrdersAsync(cycle.Id, ct))
-            .Where(x => x.Kind == "ENTRY")
-            .ToArray();
-        if (activeEntries.Length > 0)
-            await adapter.CancelOrdersAsync(selection, activeEntries, ct);
-        return true;
+            Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "WARNING",
+            Code = "PROTECTIVE_ORDER_BELOW_FAULT_THRESHOLD",
+            Message = $"Cycle {cycle.Id} 的止盈保护未能建立，未保护仓位约为 {affected:F2} USD，" +
+                $"未超过风险暂停阈值 {threshold:F2} USD。原因：{exception.Message}。" +
+                "策略不因本次影响停止，继续维护 TP。",
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync(ct);
     }
 
     private async Task<decimal> AffectedUnprotectedNotionalAsync(string cycleId, CancellationToken ct)
@@ -265,16 +236,13 @@ public sealed partial class GridOrderLifecycle
         {
             var protectedQuantity = lot.TakeProfitOrderId is not null &&
                 takeProfits.TryGetValue(lot.TakeProfitOrderId, out var tp) &&
-                tp.Status is "PENDING_EXCHANGE" or "NEW" or "PARTIALLY_FILLED" or "UNKNOWN"
+                tp.Status is "NEW" or "PARTIALLY_FILLED"
                     ? Math.Max(0m, tp.Quantity - tp.FilledQuantity)
                     : 0m;
             var unprotectedQuantity = Math.Max(0m, lot.RemainingQuantity - protectedQuantity);
             return Math.Abs(lot.TakeProfitPrice * unprotectedQuantity);
         });
-        if (affectedFromLots > 0m) return affectedFromLots;
-
-        return takeProfits.Values.Where(x => x.Status == "REJECTED")
-            .Sum(x => Math.Abs(x.Price * (x.Quantity - x.FilledQuantity)));
+        return affectedFromLots;
     }
 
 
@@ -304,7 +272,8 @@ public sealed partial class GridOrderLifecycle
         // working level is selected.
         await db.SaveChangesAsync(ct);
         var selection = Selection(cycle);
-        await environments.Adapter(selection.EnvironmentId).CancelOrdersAsync(selection, [entry], ct);
+        if (cycle.State == "PAUSED") await TryCancelPausedEntriesAsync(cycle, ct);
+        else await environments.Adapter(selection.EnvironmentId).CancelOrdersAsync(selection, [entry], ct);
     }
 
     private async Task CancelExpiredPartialEntriesAsync(CycleEntity cycle, GridConfiguration config,

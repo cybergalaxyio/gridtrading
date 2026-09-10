@@ -295,6 +295,7 @@ static object OperationDto(OperationEntity x) => new { operationId = x.Id, x.Com
 static object CycleDto(CycleEntity x) => new
 {
     cycleId = x.Id, x.StrategyId, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired,
+    x.RiskPaused, operatorPaused = x.IsOperatorPaused, x.EntryPauseReasons, x.RiskRecoveryChecks,
     x.ExecutionEnvironmentId, x.ExecutionAccountId, x.FixedCenterPrice,
     frozenConfiguration = JsonSerializer.Deserialize<GridConfiguration>(x.FrozenConfigurationJson, JsonSupport.Options),
     x.StartedAt, x.EndedAt, x.ExitReason

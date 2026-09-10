@@ -29,8 +29,12 @@ public sealed partial class GridOrderLifecycle(
             affected[cycle.Id] = (cycle, config);
         }
 
-        foreach (var item in affected.Values.Where(x => x.Cycle.State == "RUNNING"))
-            await MaintainEntryOrdersAsync(item.Cycle, item.Config, quote: null, ct);
+        foreach (var item in affected.Values)
+        {
+            await UpdateRiskPauseAsync(item.Cycle, ct);
+            if (item.Cycle.State == "RUNNING")
+                await MaintainEntryOrdersAsync(item.Cycle, item.Config, quote: null, ct);
+        }
         return processed;
     }
 
@@ -90,17 +94,47 @@ public sealed partial class GridOrderLifecycle(
             order.LastExchangeUpdateAt = update.OccurredAt;
             order.UpdatedAt = DateTimeOffset.UtcNow;
             processed++;
-            if (update.Status == "CANCELLED" && update.FilledQuantity <= order.FilledQuantity && cycle.State == "RUNNING")
+            if (order.Kind == "TAKE_PROFIT" ||
+                (update.Status == "CANCELLED" && update.FilledQuantity <= order.FilledQuantity && cycle.State == "RUNNING"))
                 affected[cycle.Id] = (cycle, DeserializeConfig(cycle));
         }
         await db.SaveChangesAsync(ct);
         foreach (var item in affected.Values)
+        {
+            await UpdateRiskPauseAsync(item.Cycle, ct);
             await MaintainEntryOrdersAsync(item.Cycle, item.Config, quote: null, ct);
+        }
         return processed;
     }
 
+    public Task BeginClosingAsync(CycleEntity cycle, long? expectedVersion, CancellationToken ct) =>
+        accountGate.RunAsync(cycle.ExecutionAccountId, async () =>
+        {
+            // Recovery and operator commands must not overwrite each other's state transitions.
+            await db.Entry(cycle).ReloadAsync(ct);
+            if (expectedVersion.HasValue && cycle.StateVersion != expectedVersion)
+                throw new TradingProblemException(412, "STATE_VERSION_STALE", "Cycle state changed; refresh the snapshot.");
+            if (cycle.IsTerminal)
+                throw new TradingProblemException(409, "INVALID_CYCLE_STATE", "A terminal cycle cannot be closed again.");
+            cycle.State = "CLOSING";
+            cycle.StateVersion++;
+            await db.SaveChangesAsync(ct);
+        }, ct);
+
     public Task<decimal> ReconcileAsync(CycleEntity cycle, CancellationToken ct) =>
-        accountGate.RunAsync(cycle.ExecutionAccountId, () => ReconcileCoreAsync(cycle, ct), ct);
+        accountGate.RunAsync(cycle.ExecutionAccountId, async () =>
+        {
+            try { return await ReconcileCoreAsync(cycle, ct); }
+            catch
+            {
+                if (cycle.RiskPaused && cycle.RiskRecoveryChecks != 0)
+                {
+                    cycle.RiskRecoveryChecks = 0;
+                    await db.SaveChangesAsync(ct);
+                }
+                throw;
+            }
+        }, ct);
 
     private async Task<decimal> ReconcileCoreAsync(CycleEntity cycle, CancellationToken ct)
     {
@@ -126,20 +160,31 @@ public sealed partial class GridOrderLifecycle(
         // partial-entry cancellation, or entry maintenance is allowed here.
         if (cycle.State is "RUNNING" or "PAUSED")
         {
-            var pending = await db.Orders.Where(x => x.CycleId == cycle.Id && x.Status == "PENDING_EXCHANGE").ToListAsync(ct);
+            // Pauses block even previously persisted, unsent Entry intents.
+            if (cycle.State == "PAUSED") await TryCancelPausedEntriesAsync(cycle, ct);
+            var pending = await db.Orders.Where(x => x.CycleId == cycle.Id &&
+                x.Status == "PENDING_EXCHANGE" && x.Kind == "TAKE_PROFIT").ToListAsync(ct);
             try { await adapter.PlaceOrdersAsync(selection, config, pending, ct); }
             catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
             {
-                if (await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct)) throw;
+                await HandleProtectiveOrderRejectionAsync(cycle, ex, ct);
             }
             if (cycle.State is "RUNNING" or "PAUSED")
             {
                 await RecoverLotProtectionAsync(cycle, config, ct);
-                if (cycle.State is "RUNNING" or "PAUSED")
+                // Paused cycles already retry all Entry tails through the tolerant path above.
+                if (cycle.State == "RUNNING")
                     await CancelExpiredPartialEntriesAsync(cycle, config, snapshot.OpenOrdersByClientId.Keys.ToHashSet(), ct);
             }
         }
-        if (cycle.State == "RUNNING") await MaintainEntryOrdersAsync(cycle, config, quote: null, ct);
+        await UpdateRiskPauseAsync(cycle, ct, confirmedReconciliation: true);
+        if (cycle.State == "RUNNING")
+        {
+            var pendingEntries = await db.Orders.Where(x => x.CycleId == cycle.Id &&
+                x.Status == "PENDING_EXCHANGE" && x.Kind == "ENTRY").ToListAsync(ct);
+            await adapter.PlaceOrdersAsync(selection, config, pendingEntries, ct);
+            await MaintainEntryOrdersAsync(cycle, config, quote: null, ct);
+        }
         var finalFee = Math.Abs(snapshot.Position.PositionValue) * config.TakerFeeRate;
         var slippage = Math.Abs(snapshot.Position.PositionValue) * config.EstimatedExitSlippagePct / 100m;
         return GridMath.CalculateBasketPnl(new BasketPnlInput(cycle.RealisedCyclePnl, snapshot.Position.UnrealizedPnl,

@@ -141,17 +141,18 @@ public sealed class HyperliquidOrderRejectionTests
             [new NormalizedExecutionFill("fill-1", "7001", "entry-filled", "BUY", 99.9m, .2m, 0m, now)], ct);
 
         Assert.Equal(1, processed);
-        Assert.Equal("FAULT", cycle.State);
+        Assert.Equal("PAUSED", cycle.State);
+        Assert.True(cycle.RiskPaused);
         Assert.Equal(1, cycle.StateVersion);
         Assert.Equal(["entry_working"], adapter.CancelledOrderIds);
         Assert.Equal("CANCELLED", workingEntry.Status);
         Assert.Equal("REJECTED", (await db.Orders.SingleAsync(x => x.Kind == "TAKE_PROFIT", ct)).Status);
         var alert = await db.RiskAlerts.SingleAsync(ct);
-        Assert.Equal("PROTECTIVE_ORDER_REJECTED", alert.Code);
+        Assert.Equal("ENTRY_RISK_PAUSED", alert.Code);
         Assert.Equal("CRITICAL", alert.Severity);
         Assert.Contains(cycle.Id, alert.Message);
         Assert.Contains("Test protective rejection", alert.Message);
-        Assert.Contains("进入 FAULT", alert.Message);
+        Assert.Contains("风险暂停开仓", alert.Message);
         Assert.Contains("20.00 USD", alert.Message);
         Assert.Contains("10.00 USD", alert.Message);
     }
@@ -238,21 +239,30 @@ public sealed class HyperliquidOrderRejectionTests
         var workingEntry = Order("entry_working", "entry-working", "ENTRY", "SELL", 6);
         workingEntry.ExchangeOrderId = "7002";
         workingEntry.Status = "NEW";
-        db.AddRange(cycle, pendingTp, workingEntry);
+        var filledEntry = Order("entry_filled", "entry-filled", "ENTRY", "BUY", 7);
+        filledEntry.Status = "FILLED";
+        filledEntry.FilledQuantity = filledEntry.Quantity;
+        var lot = new VirtualLotEntity
+        {
+            Id = "lot", CycleId = cycle.Id, EntryOrderId = filledEntry.Id, TakeProfitOrderId = pendingTp.Id,
+            Side = "BUY", Status = "TP_PENDING", GridLevel = 7, EntryFillPrice = 99m,
+            TakeProfitPrice = pendingTp.Price, FilledQuantity = .2m, RemainingQuantity = .2m
+        };
+        db.AddRange(cycle, pendingTp, workingEntry, filledEntry, lot);
         await db.SaveChangesAsync(ct);
 
         var adapter = new ProtectiveRejectingAdapter();
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
 
-        var problem = await Assert.ThrowsAsync<TradingProblemException>(() => lifecycle.ReconcileAsync(cycle, ct));
+        await lifecycle.ReconcileAsync(cycle, ct);
 
-        Assert.Equal("PROTECTIVE_ORDER_REJECTED", problem.Code);
-        Assert.Equal("FAULT", cycle.State);
+        Assert.Equal("PAUSED", cycle.State);
+        Assert.True(cycle.RiskPaused);
         Assert.Equal(["entry_working"], adapter.CancelledOrderIds);
         Assert.Equal("CANCELLED", workingEntry.Status);
         Assert.Equal("REJECTED", pendingTp.Status);
-        Assert.Equal(1, await db.RiskAlerts.CountAsync(x => x.Code == "PROTECTIVE_ORDER_REJECTED", ct));
+        Assert.Equal(1, await db.RiskAlerts.CountAsync(x => x.Code == "ENTRY_RISK_PAUSED", ct));
     }
 
     private static OrderEntity Order(string id, string clientOrderId, string kind, string side, int level) => new()

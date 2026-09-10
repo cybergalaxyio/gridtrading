@@ -22,6 +22,10 @@ export function AlertsPage({ notify, reportError }: { notify: (message: string) 
 }
 function Health({ title, value, detail, tone }: { title: string; value: string; detail: string; tone: string }) { return <section className="health-card panel"><span className={`health-dot ${tone}`} /><div><small>{title}</small><b>{value}</b><em>{detail}</em></div></section> }
 function action(code: string) {
+  if (code === 'ENTRY_RISK_PAUSED') return '风险暂停开仓；撤销 Entry 余量，继续维护 TP，风险解除后自动恢复'
+  if (code === 'ENTRY_RISK_RECOVERED') return '已解除风险暂停；如有人工暂停则继续保留'
+  if (code === 'OPERATOR_ENTRY_CANCEL_PENDING') return '人工暂停保持生效；继续重试撤销 Entry，同时维护 TP'
+  if (code === 'RISK_ENTRY_CANCEL_PENDING') return '继续重试撤销 Entry，同时维护 TP'
   if (code === 'START_FAILED') return '已尽力撤销初始挂单；Cycle 已终止'
   if (code === 'PROTECTIVE_ORDER_BELOW_FAULT_THRESHOLD') return '影响低于 USD 阈值；仅告警，策略继续运行'
   if (code === 'PROTECTIVE_ORDER_REJECTED') return '已停止新 Entry 并撤销活动 Entry；请核对仓位与 TP'

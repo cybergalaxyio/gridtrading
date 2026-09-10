@@ -81,7 +81,10 @@ public sealed partial class GridOrderLifecycle
             // A TP fill seen during REST recovery must also cancel the entry tail.
             if (lot.FilledQuantity > lot.RemainingQuantity && entry.FilledQuantity < entry.Quantity &&
                 entry.Status is "NEW" or "PARTIALLY_FILLED")
-                await environments.Adapter(cycle.ExecutionEnvironmentId).CancelOrdersAsync(Selection(cycle), [entry], ct);
+            {
+                if (cycle.State == "PAUSED") await TryCancelPausedEntriesAsync(cycle, ct);
+                else await environments.Adapter(cycle.ExecutionEnvironmentId).CancelOrdersAsync(Selection(cycle), [entry], ct);
+            }
             if (!lot.ProtectionPending || !MeetsProtectiveMinimum(cycle, TradingService.RulesFor(config),
                 lot.TakeProfitPrice, lot.RemainingQuantity)) continue;
             await EnsureLotProtectionAsync(cycle, config, entry, lot, ct);

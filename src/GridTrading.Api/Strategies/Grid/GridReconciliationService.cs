@@ -49,7 +49,7 @@ public sealed class GridReconciliationService(
             }
             catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
             {
-                logger.LogError(ex, "GRID cycle {CycleId} entered FAULT after a protective order rejection.", cycle.Id);
+                logger.LogError(ex, "GRID cycle {CycleId} encountered a protective order rejection.", cycle.Id);
             }
         }
     }

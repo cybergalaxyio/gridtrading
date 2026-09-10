@@ -58,7 +58,16 @@ public sealed class HyperliquidAmendmentRecoveryTests
         Assert.Equal("8002", finalTp.ExchangeOrderId);
         Assert.Equal(1, fixture.Handler.Placements);
         Assert.Equal(mode == "timeout-before" ? 2 : 1, fixture.Handler.Modifications);
-        Assert.Empty(await verified.RiskAlerts.ToListAsync(ct));
+        if (mode == "confirmed") Assert.Empty(await verified.RiskAlerts.ToListAsync(ct));
+        else
+        {
+            Assert.Equal("ENTRY_RISK_PAUSED", (await verified.RiskAlerts.SingleAsync(ct)).Code);
+            Assert.True(cycle.RiskPaused);
+            await lifecycle.ReconcileAsync(cycle, ct);
+            Assert.False(cycle.RiskPaused);
+            Assert.True(cycle.OperatorPaused);
+            Assert.Equal("PAUSED", cycle.State);
+        }
         // A late cancel from the old generation must not cancel or roll back the amended order.
         Assert.Equal(0, await lifecycle.ProcessOrderUpdatesAsync("repro-account",
             [new NormalizedOrderUpdate("8001", finalTp.ClientOrderId, "CANCELLED", 0m, DateTimeOffset.UtcNow.AddMinutes(1))], ct));
@@ -96,8 +105,9 @@ public sealed class HyperliquidAmendmentRecoveryTests
         await using var verified = f.NewContext();
         Assert.Equal(.11m, (await verified.Orders.SingleAsync(x => x.Kind == "TAKE_PROFIT", ct)).Quantity);
         Assert.True((await verified.VirtualLots.SingleAsync(ct)).ProtectionPending);
-        Assert.Equal("FAULT", (await verified.Cycles.SingleAsync(ct)).State);
-        Assert.Equal("PROTECTIVE_ORDER_REJECTED", (await verified.RiskAlerts.SingleAsync(ct)).Code);
+        Assert.Equal("PAUSED", (await verified.Cycles.SingleAsync(ct)).State);
+        Assert.True((await verified.Cycles.SingleAsync(ct)).RiskPaused);
+        Assert.Equal("ENTRY_RISK_PAUSED", (await verified.RiskAlerts.SingleAsync(ct)).Code);
     }
 
     [Fact]
