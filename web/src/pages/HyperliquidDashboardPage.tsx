@@ -7,7 +7,8 @@ import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import { Modal } from '../components/Modal'
 import { StrategyParameters } from '../components/StrategyParameters'
-import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
+import { SymbolPicker } from '../components/SymbolPicker'
+import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidInstrument, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, HyperliquidSpotClearinghouseState, Order, Snapshot, Strategy } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
@@ -22,6 +23,14 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     ?? strategies.find(x => x.defaultExecutionEnvironmentId === 'hyperliquid-testnet')
     ?? strategies[0]
   const cycle = strategy?.activeCycle
+  const [now, setNow] = useState(Date.now)
+
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const [runEnvironments, setRunEnvironments] = useState<ExecutionEnvironment[]>([])
   const [runEnvironmentId, setRunEnvironmentId] = useState('')
   const [runAccounts, setRunAccounts] = useState<ExecutionAccount[]>([])
@@ -43,6 +52,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const [accountPanelTab, setAccountPanelTab] = useState<AccountPanelTab>('balances')
   const [marketLoading, setMarketLoading] = useState(false)
   const [instruments, setInstruments] = useState<string[]>([])
+  const [marketContexts, setMarketContexts] = useState<HyperliquidInstrument[]>([])
   const [instrumentRules, setInstrumentRules] = useState<ExchangeInstrumentRules | null>(null)
   const [, setMarketStreamConnected] = useState(false)
   const [symbol, setSymbol] = useState(() => localStorage.getItem('grid.dashboardSymbol') ?? '')
@@ -174,15 +184,28 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   }, [isTestnet, marketSymbol])
 
   useEffect(() => {
+    setMarketContexts([])
     if (!isTestnet) { setInstruments(strategy?.symbol ? [strategy.symbol] : ['SOLUSDT']); return }
     let active = true
-    void api.testnetInstruments().then(result => {
-      if (!active) return
-      setInstruments(result.universe.filter(item => !item.isDelisted && item.symbol).map(item => item.symbol))
-    }).catch(() => {
-      if (active) setInstruments(strategy?.symbol ? [strategy.symbol] : ['SOL'])
-    })
-    return () => { active = false }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    async function refreshInstruments() {
+      try {
+        const result = await api.testnetInstruments()
+        if (!active) return
+        const listed = result.universe.filter(item => !item.isDelisted && item.symbol)
+        setInstruments(listed.map(item => item.symbol))
+        setMarketContexts(listed)
+      } catch {
+        if (active) {
+          setMarketContexts([])
+          setInstruments(current => current.length ? current : [strategy?.symbol ?? 'SOL'])
+        }
+      } finally {
+        if (active) timer = setTimeout(() => void refreshInstruments(), 10_000)
+      }
+    }
+    void refreshInstruments()
+    return () => { active = false; if (timer) clearTimeout(timer) }
   }, [isTestnet, strategy?.symbol])
 
   useEffect(() => {
@@ -275,9 +298,14 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     catch (e) { reportError(e instanceof Error ? e.message : '命令执行失败') } finally { setBusy(false) }
   }
 
-  const mid = testnetMid ?? (strategyMatchesMarket ? snapshot?.market.mid : null) ?? candles.at(-1)?.close ?? '—'
-  const first = +(candles[0]?.open ?? 0); const latest = +mid
-  const change = first > 0 && Number.isFinite(latest) ? (latest - first) / first * 100 : 0
+  const latest = Number(testnetMid ?? (strategyMatchesMarket ? snapshot?.market.mid : null) ?? candles.at(-1)?.close ?? NaN)
+  const marketContext = isTestnet ? marketContexts.find(item => sameCoin(item.symbol, marketSymbol)) : undefined
+  const markPrice = marketNumber(marketContext?.markPrice)
+  const previousDayPrice = marketNumber(marketContext?.previousDayPrice)
+  const change24h = markPrice !== null && previousDayPrice !== null && previousDayPrice > 0
+    ? markPrice - previousDayPrice : null
+  const change24hPercent = change24h !== null && previousDayPrice !== null ? change24h / previousDayPrice * 100 : null
+  const fundingRate = marketNumber(marketContext?.fundingRate)
   const netPosition = isTestnet ? accountState?.netPosition ?? '0' : strategyMatchesMarket ? snapshot?.position.actualNetQuantity ?? '0' : '0'
   const unrealized = isTestnet ? accountState?.unrealizedPnl ?? '0' : strategyMatchesMarket ? snapshot?.basketPnl.unrealisedAtExecutablePrice ?? '0' : '0'
   const realised = snapshot?.basketPnl.realisedCyclePnl ?? '0'
@@ -311,13 +339,30 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       onAccountChange={setRunAccountId}
     />}
     <section className="instrument-bar">
-      <div className="instrument-summary"><h1><label className="symbol-picker" title="切换行情交易对"><span className="sr-only">交易对</span><select value={marketSymbol} onChange={event => { setSymbol(event.target.value); setTestnetMid(null); setAccountState(null); setCandles([]) }} aria-label="选择交易对">
-        {!instruments.includes(marketSymbol) && <option value={marketSymbol}>{instrument}</option>}
-        {instruments.map(item => <option key={item} value={item}>{displaySymbol(item, isTestnet)}</option>)}
-      </select></label> 永续 <span className="mono">{format(mid, 3)}</span> <em className={change < 0 ? 'negative' : ''}>{change >= 0 ? '+' : ''}{change.toFixed(2)}%</em></h1>
+      <div className="instrument-summary"><div className="instrument-heading"><h1><SymbolPicker value={marketSymbol} options={instruments}
+        formatLabel={item => displaySymbol(item, isTestnet)}
+        onChange={value => { setSymbol(value); setTestnetMid(null); setAccountState(null); setCandles([]) }}
+      /></h1>
+          <dl className="instrument-market-stats" aria-label="Market statistics">
+            <div><dt title="Exchange mark price">Mark</dt><dd className="mono">{markPrice !== null ? marketPrice(markPrice) : '—'}</dd></div>
+            <div><dt title="Mark price change over the past 24 hours">24h Change</dt>
+              <dd className={`mono ${change24h === null || change24h === 0 ? '' : change24h < 0 ? 'negative' : 'positive'}`}>
+                {change24h !== null && change24hPercent !== null
+                  ? `${change24h > 0 ? '+' : ''}${marketPrice(change24h)} / ${change24hPercent > 0 ? '+' : ''}${change24hPercent.toFixed(2)}%` : '—'}
+              </dd>
+            </div>
+            <div><dt title="Current hourly funding rate and time until the next funding payment">Funding / Countdown</dt>
+              <dd className="mono instrument-funding"><span className={fundingRate !== null ? 'funding-rate' : ''}>
+                {fundingRate !== null ? `${(fundingRate * 100).toFixed(4)}%` : '—'}
+              </span><span>{fundingRate !== null ? fundingCountdown(now) : '—'}</span></dd>
+            </div>
+          </dl>
+        </div>
         <div className="instrument-meta">
           <span className={`cycle-state-display ${currentCycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {riskPaused ? (operatorPaused ? '风险暂停 + 人工暂停' : '风险暂停开仓') : currentCycle?.state ?? 'IDLE'}</span>
-          <span className="instrument-last-update">Last Update: {time(isTestnet ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</span>
+          <span className="instrument-timing" title="Local time">Start: {dateTime(cycle?.startedAt)}</span>
+          <span className="instrument-timing" title="Days, hours, minutes">Runs: {runningTime(cycle?.startedAt, cycle?.endedAt, now)}</span>
+          <span className="instrument-timing" title="Local time">Last Update: {dateTime(isTestnet ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</span>
         </div>
       </div>
       {riskPaused && <span className="warning-text">继续维护 TP；连续两次对账确认风险解除后恢复开仓{operatorPaused ? '（人工暂停仍保留）' : ''}</span>}
@@ -528,8 +573,33 @@ function signedUsd(value: string) { return +value >= 0 ? `+$${format(value)}` : 
 function plannedLevelCount(strategy: Strategy) { const config = strategy.activeCycle?.frozenConfiguration ?? strategy.configuration; return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }
 function availableBalance(total: string, hold: string) { return String(Math.max(0, +total - +hold)) }
 function time(value?: string) { return value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—' }
+function dateTime(value?: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return '—'
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+function runningTime(startedAt: string | undefined, endedAt: string | undefined, now: number) {
+  if (!startedAt) return '—'
+  const elapsed = (endedAt ? Date.parse(endedAt) : now) - Date.parse(startedAt)
+  if (!Number.isFinite(elapsed)) return '—'
+  const minutes = Math.floor(Math.max(0, elapsed) / 60_000)
+  return `${Math.floor(minutes / 1440)} d ${Math.floor(minutes / 60) % 24} hr ${minutes % 60} m`
+}
 function exchangeTime(value: number) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
 function shortId(value: string) { return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value }
+function marketNumber(value: string | null | undefined) {
+  return value != null && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : null
+}
+function marketPrice(value: number) {
+  return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
+}
+function fundingCountdown(now: number) {
+  const seconds = Math.ceil((3_600_000 - now % 3_600_000) / 1_000)
+  return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
+    .map(value => String(value).padStart(2, '0')).join(':')
+}
 function coinFromSymbol(symbol?: string) { return (symbol ?? '').toUpperCase().replace(/[-_/]?(USDC|USDT)$/, '') }
 function sameCoin(left?: string, right?: string) { return !!left && !!right && coinFromSymbol(left) === coinFromSymbol(right) }
 function displaySymbol(symbol: string, isTestnet: boolean) { const coin = coinFromSymbol(symbol); return isTestnet ? `${coin}-USDC` : symbol.toUpperCase() }

@@ -60,7 +60,7 @@ export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; a
 export type HyperliquidBook = { bid: string; ask: string; mid: string; asOf: string }
 export type HyperliquidMidPriceTick = { symbol: string; mid: string; asOf: string }
 export type HyperliquidAccountState = { accountId: string; symbol: string; accountValue: string; withdrawable: string; totalMarginUsed: string; netPosition: string; unrealizedPnl: string; entryPrice?: string | null; asOf: string }
-export type HyperliquidInstrument = { assetIndex: number; symbol: string; sizeDecimals: number; isDelisted: boolean }
+export type HyperliquidInstrument = { assetIndex: number; symbol: string; sizeDecimals: number; isDelisted: boolean; markPrice?: string | null; previousDayPrice?: string | null; fundingRate?: string | null }
 export type HyperliquidInstruments = { exchange: "HYPERLIQUID"; environment: "TESTNET"; tradingEnabled: boolean; asOf: string; universe: HyperliquidInstrument[] }
 export type ExchangeInstrumentRules = {
   symbol: string; environment: 'PAPER' | 'TESTNET'; assetIndex: number; sizeDecimals: number;

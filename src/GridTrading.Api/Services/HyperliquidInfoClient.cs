@@ -35,10 +35,20 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() < 2)
             throw new TradingProblemException(503, "EXCHANGE_RESPONSE_INVALID", "Hyperliquid metadata response was not recognized.");
-        var universe = root[0].GetProperty("universe").EnumerateArray().Select((item, index) => new
+        var contexts = root[1];
+        var universe = root[0].GetProperty("universe").EnumerateArray().Select((item, index) =>
         {
-            assetIndex = index, symbol = item.GetProperty("name").GetString(),
-            sizeDecimals = item.GetProperty("szDecimals").GetInt32(), isDelisted = item.TryGetProperty("isDelisted", out var delisted) && delisted.GetBoolean()
+            var context = contexts.ValueKind == JsonValueKind.Array && index < contexts.GetArrayLength()
+                ? contexts[index] : default;
+            return new
+            {
+                assetIndex = index, symbol = item.GetProperty("name").GetString(),
+                sizeDecimals = item.GetProperty("szDecimals").GetInt32(),
+                isDelisted = item.TryGetProperty("isDelisted", out var delisted) && delisted.GetBoolean(),
+                markPrice = OptionalDecimal(context, "markPx"),
+                previousDayPrice = OptionalDecimal(context, "prevDayPx"),
+                fundingRate = OptionalDecimal(context, "funding")
+            };
         }).ToArray();
         return new { exchange = "HYPERLIQUID", environment = "TESTNET", tradingEnabled = false, asOf = DateTimeOffset.UtcNow, universe };
     }
@@ -98,6 +108,12 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
             throw new TradingProblemException(403, "TESTNET_ONLY", "The read-only client only accepts the official Hyperliquid Testnet info endpoint.");
         return endpoint;
     }
+
+    private static decimal? OptionalDecimal(JsonElement context, string property) =>
+        context.ValueKind == JsonValueKind.Object && context.TryGetProperty(property, out var value) &&
+        value.ValueKind is JsonValueKind.String or JsonValueKind.Number &&
+        decimal.TryParse(value.ToString(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var number) ? number : null;
 
     private static decimal Decimal(JsonElement value) => decimal.Parse(value.GetString() ?? value.ToString(), System.Globalization.CultureInfo.InvariantCulture);
     private static decimal PowerOfTen(int exponent)

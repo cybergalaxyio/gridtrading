@@ -7,7 +7,7 @@ const nav: { route: Route; label: string; icon: string }[] = [
   { route: 'dashboard', label: '控制台', icon: 'dashboard' },
   { route: 'strategies', label: '策略', icon: 'strategy' },
   { route: 'orders', label: '订单与成交', icon: 'orders' },
-  { route: 'alerts', label: '风险与告警', icon: 'alert' },
+  { route: 'alerts', label: 'Risks', icon: 'alert' },
   { route: 'settings', label: '系统设置', icon: 'settings' },
 ]
 
@@ -28,7 +28,7 @@ export function Layout({ route, environment, emergencyBusy, onRoute, onEmergency
         <Icon name={sidebarCollapsed ? 'expand' : 'collapse'} size={16} />
       </button>
       <nav>{nav.map(item => <button key={item.route} className={route === item.route || (route === 'create' && item.route === 'strategies') ? 'active' : ''} onClick={() => onRoute(item.route)}>
-        <Icon name={item.icon} size={22} /><span>{item.label}</span>{item.route === 'alerts' && <i>2</i>}
+        <Icon name={item.icon} size={22} /><span>{item.label}</span>
       </button>)}</nav>
       <div className="sidebar-safety"><Icon name="shield" /><div><b>实盘硬锁已启用</b><span>仅 Replay / Paper / Testnet</span></div></div>
     </aside>

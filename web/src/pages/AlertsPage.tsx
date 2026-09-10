@@ -15,7 +15,7 @@ export function AlertsPage({ notify, reportError }: { notify: (message: string) 
       <Health title="订单状态同步" value="刚刚" detail="Reconciliation IN_SYNC" tone="green" /><Health title="风险评分" value="24 / 100" detail="低风险" tone="amber" /></div>
     <section className="panel alert-log"><header><h2>系统告警日志 <small>ALERT LOG</small></h2><div>{['全部', 'CRITICAL', 'WARNING', 'INFO'].map(x => <button key={x} className={filter === x ? 'active' : ''} onClick={() => setFilter(x)}>{x}</button>)}</div></header>
       <div className="table-wrap"><table><thead><tr><th>级别</th><th>时间</th><th>错误码</th><th>原因</th><th>系统行为</th><th>状态 / 操作</th></tr></thead><tbody>{rows.map(x => <tr key={x.id}><td><span className={`severity ${x.severity.toLowerCase()}`}><i />{x.severity}</span></td>
-        <td className="mono">{new Date(x.createdAt).toLocaleTimeString('zh-CN', { hour12: false })}</td><td className="mono dim">{x.code}</td><td><b>{x.message}</b></td><td>{action(x.code)}</td>
+        <td className="mono">{new Date(x.createdAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}</td><td className="mono dim">{x.code}</td><td><b>{x.message}</b></td><td>{action(x.code)}</td>
         <td>{x.acknowledged ? <span className="acknowledged"><Icon name="check" size={14} /> 已确认</span> : <button className="link" onClick={() => void ack(x.id)}>确认告警</button>}</td></tr>)}</tbody></table></div>
       <footer className="list-footer">显示 {rows.length} 条告警 <span>Advisory 颜色不自动改变 Cycle；Mandatory Safety 始终生效</span></footer></section>
   </div>
