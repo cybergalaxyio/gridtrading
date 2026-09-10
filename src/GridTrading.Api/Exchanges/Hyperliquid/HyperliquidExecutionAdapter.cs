@@ -68,6 +68,10 @@ public sealed class HyperliquidExecutionAdapter(
         await AccountAsync(selection, ct);
         foreach (var order in orders.Where(x => x.Status == "PENDING_EXCHANGE").ToArray())
         {
+            // A transport failure after send is not permission to submit again.
+            order.Status = "UNKNOWN";
+            order.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
             var result = await client.PlaceLimitAsync(selection.AccountId, order.Symbol, order.Side == "BUY", order.Price,
                 order.Quantity - order.FilledQuantity, order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits,
                 order.ClientOrderId, ct);
@@ -103,7 +107,7 @@ public sealed class HyperliquidExecutionAdapter(
             order.ExchangeOrderId = result.ExchangeOrderId ?? result.Cloid;
             order.Status = result.Status switch
             {
-                "WAITING" => "PENDING_EXCHANGE",
+                "WAITING" => "UNKNOWN",
                 "UNKNOWN" => "UNKNOWN",
                 "FILLED" => "PARTIALLY_FILLED",
                 _ => "NEW"
@@ -141,12 +145,19 @@ public sealed class HyperliquidExecutionAdapter(
                 order.Kind == "TAKE_PROFIT" ? "PROTECTIVE_ORDER_REJECTED" : "ORDER_AMEND_REJECTED",
                 result.Error ?? "Hyperliquid rejected an order amendment.");
 
-        order.ExchangeOrderId = result.ExchangeOrderId ?? order.ExchangeOrderId;
+        if (result.Status is "UNKNOWN" or "WAITING" || string.IsNullOrWhiteSpace(result.ExchangeOrderId))
+        {
+            order.Status = "UNKNOWN";
+            order.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            return; // Keep the last confirmed quantity; the lot retains its desired protection.
+        }
+        order.ExchangeOrderId = result.ExchangeOrderId;
         order.Price = price;
         order.Quantity = quantity;
         order.Status = result.Status switch
         {
-            "WAITING" => "PENDING_EXCHANGE",
+            "WAITING" => "UNKNOWN",
             "UNKNOWN" => "UNKNOWN",
             "FILLED" => "PARTIALLY_FILLED",
             _ => order.FilledQuantity > 0m ? "PARTIALLY_FILLED" : "NEW"
@@ -215,8 +226,15 @@ public sealed class HyperliquidExecutionAdapter(
         GridConfiguration config, CancellationToken ct)
     {
         await AccountAsync(selection, ct);
+        var fillStart = cycle.LastReconciledAt.AddSeconds(-5);
+        var unresolved = await (from lot in db.VirtualLots
+            join order in db.Orders on lot.TakeProfitOrderId equals order.Id
+            where lot.CycleId == cycle.Id && lot.ProtectionPending && lot.RemainingQuantity > 0m
+            select order.CreatedAt).ToListAsync(ct);
+        if (unresolved.Count > 0 && unresolved.Min().AddSeconds(-5) < fillStart)
+            fillStart = unresolved.Min().AddSeconds(-5);
         using var fillsDocument = await client.GetUserFillsAsync(selection.AccountId,
-            Math.Max(0, cycle.LastReconciledAt.AddSeconds(-5).ToUnixTimeMilliseconds()), ct);
+            Math.Max(0, fillStart.ToUnixTimeMilliseconds()), ct);
         var fills = fillsDocument.RootElement.ValueKind == JsonValueKind.Array
             ? await NormalizeFillsAsync(selection.AccountId, fillsDocument.RootElement.EnumerateArray().ToArray(), ct)
             : [];
@@ -227,24 +245,51 @@ public sealed class HyperliquidExecutionAdapter(
             ? NormalizeFundingPayments(selection.AccountId, fundingDocument.RootElement.EnumerateArray().ToArray())
             : [];
 
-        using var openDocument = await client.GetOpenOrdersAsync(selection.AccountId, ct);
+        using var openDocument = await client.GetFrontendOpenOrdersAsync(selection.AccountId, ct);
+        var local = await db.Orders.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
+        var byCloid = local.ToDictionary(x => HyperliquidWireCodec.CreateCloid(x.ClientOrderId));
         var openByClientId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (openDocument.RootElement.ValueKind == JsonValueKind.Array)
+        var observed = new Dictionary<string, ExecutionOrderSnapshot>();
+        foreach (var row in openDocument.RootElement.EnumerateArray())
         {
-            var local = await db.Orders.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
-            foreach (var row in openDocument.RootElement.EnumerateArray())
-            {
-                var oid = ReadString(row, "oid");
-                var cloid = ReadString(row, "cloid");
-                var order = local.FirstOrDefault(x => x.ExchangeOrderId == oid ||
-                    (!string.IsNullOrWhiteSpace(cloid) && HyperliquidWireCodec.CreateCloid(x.ClientOrderId) == cloid));
-                if (order is not null) openByClientId[order.ClientOrderId] = oid;
-            }
+            var order = FindOwned(row);
+            if (order is null) continue;
+            openByClientId[order.ClientOrderId] = ReadString(row, "oid");
+            observed[order.ClientOrderId] = Snapshot(row, "NEW", order);
         }
 
+        // Missing active orders require a terminal observation, not an assumed cancel.
+        // History also resolves the new OID after an acknowledged or timed-out amendment.
+        if (local.Any(x => !observed.ContainsKey(x.ClientOrderId) &&
+            (IsActive(x) || x.Status == "PENDING_EXCHANGE")))
+        {
+            using var history = await client.GetHistoricalOrdersAsync(selection.AccountId, ct);
+            foreach (var group in history.RootElement.EnumerateArray()
+                .Where(x => x.TryGetProperty("order", out _))
+                .GroupBy(x => ReadString(x.GetProperty("order"), "cloid")))
+            {
+                if (!byCloid.TryGetValue(group.Key, out var order) || observed.ContainsKey(order.ClientOrderId)) continue;
+                var latest = group.OrderByDescending(x => ReadDecimal(x.GetProperty("order"), "timestamp"))
+                    .ThenByDescending(x => ReadDecimal(x, "statusTimestamp"))
+                    .ThenBy(x => ReadString(x, "status") == "open" ? 1 : 0).First();
+                var status = MapStatus(ReadString(latest, "status"), order.FilledQuantity);
+                // An old "open" event is not a current observation.
+                if (status is "NEW" or "PARTIALLY_FILLED") continue;
+                observed[order.ClientOrderId] = Snapshot(latest.GetProperty("order"), status, order);
+            }
+        }
         var position = await client.GetPositionSnapshotAsync(selection.AccountId, config.Symbol, ct);
         return new ExecutionReconciliationSnapshot(fills, fundingPayments, [], openByClientId,
-            new ExecutionPosition(position.Quantity, position.PositionValue, position.UnrealizedPnl));
+            new ExecutionPosition(position.Quantity, position.PositionValue, position.UnrealizedPnl), observed.Values.ToArray());
+
+        OrderEntity? FindOwned(JsonElement row)
+        {
+            var cloid = ReadString(row, "cloid");
+            return byCloid.GetValueOrDefault(cloid) ?? local.FirstOrDefault(x => x.ExchangeOrderId == ReadString(row, "oid"));
+        }
+        static ExecutionOrderSnapshot Snapshot(JsonElement row, string status, OrderEntity order) =>
+            new(ReadString(row, "oid"), order.ClientOrderId, status, ReadDecimal(row, "limitPx"),
+                ReadDecimal(row, "origSz"), ReadDecimal(row, "sz"));
     }
 
     public async Task<IReadOnlyList<NormalizedExecutionFill>> NormalizeFillsAsync(
@@ -314,7 +359,7 @@ public sealed class HyperliquidExecutionAdapter(
     }
 
     private async Task<List<OrderEntity>> OwnedOrdersAsync(string accountId, CancellationToken ct) =>
-        await (from order in db.Orders
+        await (from order in db.Orders.AsNoTracking()
                join cycle in db.Cycles on order.CycleId equals cycle.Id
                where cycle.ExecutionAccountId == accountId && !cycle.IsTerminal
                select order).ToListAsync(ct);

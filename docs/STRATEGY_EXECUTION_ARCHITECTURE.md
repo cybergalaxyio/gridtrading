@@ -55,6 +55,16 @@ A running Cycle never reads the Strategy's current default environment/account. 
 - Duplicate or late fills are keyed by normalized execution ID and cannot create duplicate TP orders.
 - Paper and Hyperliquid use these same rules. Adapters that can receive fragmented fills must implement atomic order amendment.
 
+## Protective-order acknowledgement and recovery
+
+Hyperliquid amendments use a single-item `batchModify`, matching the official Python SDK's request shape. The signed MessagePack structure and JSON payload contain the same action. Unexpected success envelopes are treated as unconfirmed, preserving the last confirmed order quantity until reconciliation.
+
+Each entry fill commits the execution, lot quantities/target price, and `VirtualLot.ProtectionPending` together before sending a protective order. Reconciliation processes this durable intent independently of execution deduplication. An accepted amendment with a lost response is matched by CLOID and confirmed from the venue; an unchanged confirmed order can be amended again. Unknown submissions are never treated as fresh pending placements. While a TP intent is unresolved, new working entries are not created.
+
+Order reconciliation reads price, original size, remaining size, status, and OID, and resolves amendment generations through the stable CLOID. Logical order quantity includes executions from earlier OIDs plus the current generation's original size. Filled quantity is rebuilt from executions, avoiding both clipping against stale order metadata and counting IOC acknowledgements twice. Old-generation order updates cannot roll the current OID back. Exchange event timestamps are stored separately from local save timestamps.
+
+Nonterminal FAULT cycles continue read-only REST reconciliation. FAULT/CLOSING fill processing records executions and lot changes without submitting, amending, or cancelling orders. Reconciliation reloads Cycle state under the account gate before updating aggregates. Schema upgrades add recovery metadata without replacing existing records.
+
 ## Extension points
 
 To add an exchange/network, implement `IExecutionAdapter` and `IOrderAmendmentAdapter`, register a stable environment descriptor and expose its accounts. No GRID rule should be added to the adapter.

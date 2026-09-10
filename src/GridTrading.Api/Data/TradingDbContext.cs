@@ -85,6 +85,7 @@ public sealed class CycleEntity
 
 public sealed class OrderEntity
 {
+    public DateTimeOffset? LastExchangeUpdateAt { get; set; }
     public required string Id { get; set; }
     public required string CycleId { get; set; }
     public required string ClientOrderId { get; set; }
@@ -103,6 +104,7 @@ public sealed class OrderEntity
 
 public sealed class ExecutionEntity
 {
+    public string ExchangeOrderId { get; set; } = "";
     public required string Id { get; set; }
     public required string ExchangeExecutionId { get; set; }
     public required string CycleId { get; set; }
@@ -144,6 +146,9 @@ public sealed class VirtualLotEntity
     public decimal EntryFee { get; set; }
     public decimal ExitFee { get; set; }
     public decimal FundingAllocation { get; set; }
+    // Desired price and remaining quantity live on this lot. This flag survives a
+    // committed fill followed by a failed/uncertain protective-order action.
+    public bool ProtectionPending { get; set; }
 }
 
 public sealed class OperationEntity

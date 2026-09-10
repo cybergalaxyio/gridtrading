@@ -1,0 +1,77 @@
+{
+  "cycleId": "cycle_9030f8e838b8417587f662ed9d926cb4",
+  "orders": [
+    {
+      "orderId": "order_afb9e55ef8f746098fde7b85bd04dfdf",
+      "exchangeOrderId": "59119485095",
+      "beforeQuantity": "0.39",
+      "beforeFilled": "0.39",
+      "after": "0.66"
+    },
+    {
+      "orderId": "order_9e123e8a9d2a4568a8d083ea472c8391",
+      "exchangeOrderId": "59125950087",
+      "beforeQuantity": "0.15",
+      "beforeFilled": "0.15",
+      "after": "0.89"
+    },
+    {
+      "orderId": "order_e9eaca54593243e2934752f6b93c53cd",
+      "exchangeOrderId": "59200928612",
+      "beforeQuantity": "0.17",
+      "beforeFilled": "0.17",
+      "after": "0.49"
+    },
+    {
+      "orderId": "order_4b3d622b81fc495c81c7044e235609d7",
+      "exchangeOrderId": "59226002871",
+      "beforeQuantity": "0.15",
+      "beforeFilled": "0.15",
+      "after": "0.31"
+    },
+    {
+      "orderId": "order_440ebb92408b445a94c0e8de65115804",
+      "exchangeOrderId": "59301476024",
+      "beforeQuantity": "0.11",
+      "beforeFilled": "0.11",
+      "after": "0.36"
+    },
+    {
+      "orderId": "order_24cc8616fc5642c0ba0f4ae0ef72ba89",
+      "exchangeOrderId": "59301543794",
+      "beforeQuantity": "0.1",
+      "beforeFilled": "0.1",
+      "after": "0.42"
+    },
+    {
+      "orderId": "order_840c1d210a4f4186a8a536e585497fbe",
+      "exchangeOrderId": "59302302582",
+      "beforeQuantity": "0.4",
+      "beforeFilled": "0.4",
+      "after": "0.49"
+    },
+    {
+      "orderId": "order_bd667a9a23cd463d9a9d7de91313561c",
+      "exchangeOrderId": "59314509821",
+      "beforeQuantity": "0.11",
+      "beforeFilled": "0.11",
+      "after": "0.42"
+    }
+  ],
+  "totals": {
+    "RealisedCyclePnl": {
+      "before": "32.9194",
+      "after": "33.3068"
+    },
+    "PaidFees": {
+      "before": "0.497271",
+      "after": "0.503474"
+    }
+  },
+  "statePreserved": "WAITING_FOR_OPERATOR",
+  "positionPreserved": "0.00",
+  "pnlBasis": "net-flat cycle execution cashflow",
+  "evidenceSha256": "0688418c6121f17388af95bcc2719e03b26dbdd1e1e47749de86a7b26ae18d47",
+  "backup": "/home/azureuser/projects/GridTrading/src/GridTrading.Api/data/grid-trading-before-tp-repair-20260910T094239150625.db",
+  "applied": true
+}

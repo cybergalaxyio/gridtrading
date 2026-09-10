@@ -19,6 +19,7 @@ public sealed partial class GridOrderLifecycle
         var plan = JsonSerializer.Deserialize<GridPlan>(cycle.FrozenPlanJson, JsonSupport.Options)!;
         var active = await ActiveOrdersAsync(cycle.Id, ct);
         var openLots = await db.VirtualLots.Where(x => x.CycleId == cycle.Id && x.Status != "CLOSED").ToListAsync(ct);
+        if (openLots.Any(x => x.ProtectionPending && x.TakeProfitOrderId != null)) return;
         var created = new List<OrderEntity>();
 
         foreach (var side in new[] { OrderSide.Buy, OrderSide.Sell })
@@ -57,117 +58,110 @@ public sealed partial class GridOrderLifecycle
     }
 
     private async Task CreateOrAmendTakeProfitAsync(CycleEntity cycle, GridConfiguration config, OrderEntity entry,
-        ExecutionEntity execution, CancellationToken ct)
+        ExecutionEntity execution, CancellationToken ct, bool allowExchangeActions = true)
     {
         var entrySide = Enum.Parse<OrderSide>(entry.Side, true);
-        var tpSide = entrySide == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-        var rules = TradingService.RulesFor(config);
-        var existingLot = await db.VirtualLots.FirstOrDefaultAsync(x =>
-            x.EntryOrderId == entry.Id && x.Status != "CLOSED", ct);
-        if (existingLot is not null)
+        var lot = await db.VirtualLots.FirstOrDefaultAsync(x => x.EntryOrderId == entry.Id && x.Status != "CLOSED", ct);
+        if (lot is null)
         {
-            await AddFillToTakeProfitAsync(cycle, config, entry, execution, entrySide, rules, existingLot, ct);
+            lot = new VirtualLotEntity
+            {
+                Id = Ids.New("lot"), CycleId = cycle.Id, EntryOrderId = entry.Id, Side = entry.Side,
+                Status = "TP_ACCUMULATING", GridLevel = entry.GridLevel, EntryFillPrice = execution.Price,
+                FilledQuantity = execution.Quantity, RemainingQuantity = execution.Quantity, EntryFee = execution.Fee
+            };
+            db.VirtualLots.Add(lot);
+        }
+        else
+        {
+            var remaining = lot.RemainingQuantity + execution.Quantity;
+            lot.EntryFillPrice = (lot.EntryFillPrice * lot.RemainingQuantity + execution.Price * execution.Quantity) / remaining;
+            lot.FilledQuantity += execution.Quantity;
+            lot.RemainingQuantity = remaining;
+            lot.EntryFee += execution.Fee;
+        }
+        lot.TakeProfitPrice = GridMath.TakeProfitPrice(entrySide, lot.EntryFillPrice,
+            config.TakeProfitPoints, TradingService.RulesFor(config).TickSize);
+        lot.ProtectionPending = true;
+        // Commit the execution, lot, and protection intent together BEFORE external I/O.
+        await db.SaveChangesAsync(ct);
+        if (allowExchangeActions && cycle.State is "RUNNING" or "PAUSED")
+            await EnsureLotProtectionAsync(cycle, config, entry, lot, ct);
+    }
+
+    private async Task EnsureLotProtectionAsync(CycleEntity cycle, GridConfiguration config, OrderEntity entry,
+        VirtualLotEntity lot, CancellationToken ct)
+    {
+        if (lot.RemainingQuantity <= 0m)
+        {
+            lot.ProtectionPending = false;
             return;
         }
-
-        var price = GridMath.TakeProfitPrice(entrySide, execution.Price, config.TakeProfitPoints, rules.TickSize);
-        var lot = new VirtualLotEntity
+        var rules = TradingService.RulesFor(config);
+        var tp = lot.TakeProfitOrderId is null ? null : await db.Orders.SingleAsync(x => x.Id == lot.TakeProfitOrderId, ct);
+        if (tp is not null && tp.Status is "NEW" or "PARTIALLY_FILLED" &&
+            tp.Quantity - tp.FilledQuantity == lot.RemainingQuantity && tp.Price == lot.TakeProfitPrice)
         {
-            Id = Ids.New("lot"), CycleId = cycle.Id, EntryOrderId = entry.Id, Side = entry.Side,
-            Status = "TP_ACCUMULATING", GridLevel = entry.GridLevel, EntryFillPrice = execution.Price,
-            FilledQuantity = execution.Quantity, RemainingQuantity = execution.Quantity,
-            TakeProfitPrice = price, EntryFee = execution.Fee
-        };
-        db.VirtualLots.Add(lot);
-        if (!MeetsProtectiveMinimum(cycle, rules, price, execution.Quantity))
+            lot.ProtectionPending = false;
+            await db.SaveChangesAsync(ct);
+            return;
+        }
+        lot.ProtectionPending = true;
+        if (!MeetsProtectiveMinimum(cycle, rules, lot.TakeProfitPrice, lot.RemainingQuantity))
         {
             await db.SaveChangesAsync(ct);
             await HandleUnprotectableRemainderAsync(cycle, entry, lot, ct);
             return;
         }
-
-        var tp = new OrderEntity
+        // UNKNOWN must first be resolved by a venue observation. A FILLED status can
+        // precede its executions; never replace it before those fills have arrived.
+        if (tp is not null && tp.Status is "UNKNOWN" or "PENDING_EXCHANGE" or "FILLED") return;
+        var place = tp is null || tp.Status is "CANCELLED" or "REJECTED";
+        if (tp is null)
         {
-            Id = Ids.New("order"), CycleId = cycle.Id, ClientOrderId = Ids.New($"tp-{entry.GridLevel}"), ExchangeOrderId = "pending",
-            Symbol = entry.Symbol, Side = tpSide.ToString().ToUpperInvariant(), Kind = "TAKE_PROFIT", Status = "PENDING_EXCHANGE",
-            GridLevel = entry.GridLevel, Price = price, Quantity = execution.Quantity,
-            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
-        };
-        db.Orders.Add(tp);
-        lot.TakeProfitOrderId = tp.Id;
-        lot.Status = "TP_PENDING";
-        await db.SaveChangesAsync(ct);
-        await PlaceProtectiveOrderAsync(cycle, config, tp, ct);
-    }
-
-    private async Task AddFillToTakeProfitAsync(CycleEntity cycle, GridConfiguration config, OrderEntity entry,
-        ExecutionEntity execution, OrderSide entrySide, InstrumentRules rules, VirtualLotEntity lot, CancellationToken ct)
-    {
-        var remaining = lot.RemainingQuantity + execution.Quantity;
-        lot.EntryFillPrice = (lot.EntryFillPrice * lot.RemainingQuantity + execution.Price * execution.Quantity) / remaining;
-        lot.FilledQuantity += execution.Quantity;
-        lot.RemainingQuantity = remaining;
-        lot.EntryFee += execution.Fee;
-        lot.TakeProfitPrice = GridMath.TakeProfitPrice(entrySide, lot.EntryFillPrice,
-            config.TakeProfitPoints, rules.TickSize);
-
-        if (lot.TakeProfitOrderId is null)
-        {
-            if (!MeetsProtectiveMinimum(cycle, rules, lot.TakeProfitPrice, remaining))
-            {
-                await db.SaveChangesAsync(ct);
-                await HandleUnprotectableRemainderAsync(cycle, entry, lot, ct);
-                return;
-            }
-
-            var tpSide = entrySide == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-            var tp = new OrderEntity
+            tp = new OrderEntity
             {
                 Id = Ids.New("order"), CycleId = cycle.Id, ClientOrderId = Ids.New($"tp-{entry.GridLevel}"),
-                ExchangeOrderId = "pending", Symbol = entry.Symbol, Side = tpSide.ToString().ToUpperInvariant(),
+                ExchangeOrderId = "pending", Symbol = entry.Symbol, Side = entry.Side == "BUY" ? "SELL" : "BUY",
                 Kind = "TAKE_PROFIT", Status = "PENDING_EXCHANGE", GridLevel = entry.GridLevel,
-                Price = lot.TakeProfitPrice, Quantity = remaining,
+                Price = lot.TakeProfitPrice, Quantity = lot.RemainingQuantity,
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
             };
             db.Orders.Add(tp);
             lot.TakeProfitOrderId = tp.Id;
-            lot.Status = "TP_PENDING";
-            await db.SaveChangesAsync(ct);
-            await PlaceProtectiveOrderAsync(cycle, config, tp, ct);
-            return;
         }
-
-        var existingTp = await db.Orders.SingleAsync(x => x.Id == lot.TakeProfitOrderId, ct);
-        var desiredQuantity = existingTp.FilledQuantity + remaining;
+        else if (place)
+        {
+            tp.Status = "PENDING_EXCHANGE";
+            tp.ExchangeOrderId = "pending";
+            tp.Price = lot.TakeProfitPrice;
+            tp.Quantity = tp.FilledQuantity + lot.RemainingQuantity;
+        }
+        lot.Status = "TP_PENDING";
         await db.SaveChangesAsync(ct);
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
         try
         {
-            if (adapter is not IOrderAmendmentAdapter amendments)
-                throw new TradingProblemException(422, "PROTECTIVE_ORDER_REJECTED",
-                    "The execution adapter cannot atomically amend a fragmented take-profit order.");
-            await amendments.AmendOrderAsync(selection, config, existingTp,
-                lot.TakeProfitPrice, desiredQuantity, ct);
+            if (place) await adapter.PlaceOrdersAsync(selection, config, [tp], ct);
+            else if (adapter is IOrderAmendmentAdapter amendments)
+                await amendments.AmendOrderAsync(selection, config, tp, lot.TakeProfitPrice,
+                    tp.FilledQuantity + lot.RemainingQuantity, ct);
+            else throw new TradingProblemException(422, "PROTECTIVE_ORDER_REJECTED",
+                "The execution adapter cannot atomically amend a fragmented take-profit order.");
+            lot.ProtectionPending = tp.Status is not ("NEW" or "PARTIALLY_FILLED") ||
+                tp.Price != lot.TakeProfitPrice || tp.Quantity - tp.FilledQuantity != lot.RemainingQuantity;
+            await db.SaveChangesAsync(ct);
         }
         catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
         {
             await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct);
         }
-    }
-
-    private async Task PlaceProtectiveOrderAsync(CycleEntity cycle, GridConfiguration config,
-        OrderEntity tp, CancellationToken ct)
-    {
-        var selection = Selection(cycle);
-        var adapter = environments.Adapter(selection.EnvironmentId);
-        try
+        catch (Exception ex) when (!ct.IsCancellationRequested && (ex is HttpRequestException or TaskCanceledException ||
+            ex is TradingProblemException problem && problem.Code is "EXCHANGE_HTTP_ERROR" or "EXCHANGE_ACTION_REJECTED"))
         {
-            await adapter.PlaceOrdersAsync(selection, config, [tp], ct);
-        }
-        catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
-        {
-            await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct);
+            tp.Status = "UNKNOWN";
+            await db.SaveChangesAsync(ct); // Keep the intent; never turn an uncertain send into a fresh order.
         }
     }
 
@@ -184,6 +178,19 @@ public sealed partial class GridOrderLifecycle
     {
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
+        if (await db.VirtualLots.AnyAsync(x => x.CycleId == cycle.Id && x.Id != lot.Id &&
+            x.ProtectionPending && x.TakeProfitOrderId != null && x.RemainingQuantity > 0m, ct))
+        {
+            // Do not turn an unconfirmed amendment into a fabricated exposure failure.
+            // Pending protection blocks new entries until reconciliation establishes the facts.
+            db.RiskAlerts.Add(new RiskAlertEntity
+            {
+                Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "WARNING", Code = "PROTECTION_RECONCILIATION_REQUIRED",
+                Message = "Unprotected exposure cannot be confirmed until pending TP amendments are reconciled.", CreatedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync(ct);
+            return;
+        }
         var exception = new TradingProblemException(422, "PROTECTIVE_ORDER_REJECTED",
             $"Filled Entry {entry.Side[0]}{entry.GridLevel} leaves {lot.RemainingQuantity} unprotected because its " +
             $"take-profit value is below the venue minimum.");
@@ -271,7 +278,7 @@ public sealed partial class GridOrderLifecycle
     }
 
 
-    private async Task CloseLotAsync(CycleEntity cycle, OrderEntity tp, ExecutionEntity execution, CancellationToken ct)
+    private async Task CloseLotAsync(CycleEntity cycle, OrderEntity tp, ExecutionEntity execution, CancellationToken ct, bool allowExchangeActions = true)
     {
         var lot = await db.VirtualLots.SingleOrDefaultAsync(x => x.TakeProfitOrderId == tp.Id, ct);
         if (lot is null) return;
@@ -281,7 +288,12 @@ public sealed partial class GridOrderLifecycle
         cycle.RealisedCyclePnl += lot.Side == "BUY"
             ? (execution.Price - lot.EntryFillPrice) * closed
             : (lot.EntryFillPrice - execution.Price) * closed;
-        if (lot.RemainingQuantity <= 0m) lot.Status = "CLOSED";
+        if (lot.RemainingQuantity <= 0m)
+        {
+            lot.Status = "CLOSED";
+            lot.ProtectionPending = false;
+        }
+        if (!allowExchangeActions || cycle.State is not ("RUNNING" or "PAUSED")) return;
 
         var entry = await db.Orders.SingleOrDefaultAsync(x => x.Id == lot.EntryOrderId, ct);
         if (entry is null || entry.FilledQuantity <= 0m || entry.FilledQuantity >= entry.Quantity ||

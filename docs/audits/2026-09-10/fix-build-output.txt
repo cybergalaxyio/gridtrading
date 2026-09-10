@@ -1,0 +1,8 @@
+  GridTrading.Domain -> /home/azureuser/projects/GridTrading/src/GridTrading.Domain/bin/Debug/net10.0/GridTrading.Domain.dll
+  GridTrading.Api -> /home/azureuser/projects/GridTrading/src/GridTrading.Api/bin/Debug/net10.0/GridTrading.Api.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:03.21

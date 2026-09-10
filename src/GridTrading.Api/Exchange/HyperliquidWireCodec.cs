@@ -21,8 +21,10 @@ public static class HyperliquidWireCodec
     public static byte[] PackModifyAction(string oid, HyperliquidLimitOrder order)
     {
         var buffer = new ArrayBufferWriter<byte>(); var writer = new MessagePackWriter(buffer);
-        writer.WriteMapHeader(3);
-        writer.Write("type"); writer.Write("modify");
+        writer.WriteMapHeader(2);
+        writer.Write("type"); writer.Write("batchModify");
+        writer.Write("modifies"); writer.WriteArrayHeader(1);
+        writer.WriteMapHeader(2);
         writer.Write("oid"); writer.Write(oid);
         writer.Write("order"); WriteLimitOrder(ref writer, order);
         writer.Flush(); return buffer.WrittenSpan.ToArray();

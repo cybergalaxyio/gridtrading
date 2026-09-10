@@ -15,6 +15,10 @@ public sealed class DatabaseCompatibilityTests
         await using (var command = connection.CreateCommand())
         {
             command.CommandText = """
+                CREATE TABLE "VirtualLots" ("Id" TEXT PRIMARY KEY);
+                CREATE TABLE "Executions" ("Id" TEXT PRIMARY KEY);
+                CREATE TABLE "Orders" ("Id" TEXT PRIMARY KEY);
+                INSERT INTO "VirtualLots" VALUES ('pending-lot');
                 CREATE TABLE "Strategies" ("Id" TEXT PRIMARY KEY, "ExchangeAccountId" TEXT NOT NULL);
                 CREATE TABLE "Cycles" ("Id" TEXT PRIMARY KEY, "StrategyId" TEXT NOT NULL);
                 INSERT INTO "Strategies" VALUES ('paper-strategy', 'acct_paper_01');
@@ -37,6 +41,7 @@ public sealed class DatabaseCompatibilityTests
         await using (var command = connection.CreateCommand())
         {
             command.CommandText = """
+                UPDATE "VirtualLots" SET "ProtectionPending" = 1 WHERE "Id" = 'pending-lot';
                 UPDATE "Cycles" SET "ExecutionEnvironmentId" = 'frozen-env',
                     "ExecutionAccountId" = 'frozen-account' WHERE "Id" = 'hl-cycle';
                 """;
@@ -45,6 +50,9 @@ public sealed class DatabaseCompatibilityTests
         await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
 
         Assert.Equal(("frozen-env", "frozen-account"), await CycleBindingAsync(connection, "hl-cycle", ct));
+        await using var pendingCommand = connection.CreateCommand();
+        pendingCommand.CommandText = "SELECT ProtectionPending FROM VirtualLots WHERE Id = 'pending-lot'";
+        Assert.Equal(1L, await pendingCommand.ExecuteScalarAsync(ct));
     }
 
     private static async Task<(string Type, string Environment)> StrategyBindingAsync(

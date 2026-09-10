@@ -81,9 +81,14 @@ public sealed partial class GridOrderLifecycle(
             var order = await FindOrderAsync(accountId, update.ExchangeOrderId, update.ClientOrderId, ct);
             if (order is null) continue;
             var cycle = await db.Cycles.SingleAsync(x => x.Id == order.CycleId, ct);
-            order.ExchangeOrderId = string.IsNullOrWhiteSpace(update.ExchangeOrderId) ? order.ExchangeOrderId : update.ExchangeOrderId;
+            // A cancel/open from an earlier amendment generation must not roll
+            // the current OID back. REST resolves unknown/new generations by CLOID.
+            if (order.ExchangeOrderId != update.ExchangeOrderId || update.OccurredAt < order.LastExchangeUpdateAt) continue;
+            if (order.Status is "FILLED" or "CANCELLED" or "REJECTED" && update.Status is "NEW" or "PARTIALLY_FILLED") continue;
+            if (order.Status == "FILLED" && update.Status != "FILLED") continue;
             order.Status = update.Status;
-            order.UpdatedAt = update.OccurredAt;
+            order.LastExchangeUpdateAt = update.OccurredAt;
+            order.UpdatedAt = DateTimeOffset.UtcNow;
             processed++;
             if (update.Status == "CANCELLED" && update.FilledQuantity <= order.FilledQuantity && cycle.State == "RUNNING")
                 affected[cycle.Id] = (cycle, DeserializeConfig(cycle));
@@ -99,88 +104,75 @@ public sealed partial class GridOrderLifecycle(
 
     private async Task<decimal> ReconcileCoreAsync(CycleEntity cycle, CancellationToken ct)
     {
+        // Background selection happens before the account gate. Refresh inside it
+        // so an old tracked Cycle cannot overwrite newer fill/fee accumulators.
+        await db.Entry(cycle).ReloadAsync(ct);
         var config = DeserializeConfig(cycle);
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
         var snapshot = await adapter.ReconcileAsync(selection, cycle, config, ct);
-
         foreach (var fill in snapshot.Fills.OrderBy(x => x.OccurredAt))
-            await ApplyFillAsync(cycle, config, fill, ct);
+            await ApplyFillAsync(cycle, config, fill, ct, allowExchangeActions: false);
         await ApplyFundingPaymentsCoreAsync(selection.AccountId, snapshot.FundingPayments, ct);
-        foreach (var update in snapshot.OrderUpdates)
-        {
-            var order = await FindOrderAsync(selection.AccountId, update.ExchangeOrderId, update.ClientOrderId, ct);
-            if (order is null) continue;
-            order.Status = update.Status;
-            order.FilledQuantity = Math.Max(order.FilledQuantity, update.FilledQuantity);
-            order.UpdatedAt = update.OccurredAt;
-        }
-
-        var pending = await db.Orders.Where(x => x.CycleId == cycle.Id && x.Status == "PENDING_EXCHANGE").ToListAsync(ct);
-        foreach (var order in pending)
-        {
-            if (!snapshot.OpenOrdersByClientId.TryGetValue(order.ClientOrderId, out var exchangeId)) continue;
-            order.ExchangeOrderId = exchangeId;
-            order.Status = "NEW";
-            order.UpdatedAt = DateTimeOffset.UtcNow;
-        }
-        await db.SaveChangesAsync(ct);
-        try
-        {
-            await adapter.PlaceOrdersAsync(selection, config, pending.Where(x => x.Status == "PENDING_EXCHANGE"), ct);
-        }
-        catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
-        {
-            var faulted = await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct);
-            if (faulted) throw;
-        }
-
-        var openClientIds = snapshot.OpenOrdersByClientId.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var order in await ActiveOrdersAsync(cycle.Id, ct))
-        {
-            if (order.Status == "PENDING_EXCHANGE" || openClientIds.Contains(order.ClientOrderId) || order.FilledQuantity >= order.Quantity) continue;
-            order.Status = "CANCELLED";
-            order.UpdatedAt = DateTimeOffset.UtcNow;
-        }
-        await db.SaveChangesAsync(ct);
-        await CancelExpiredPartialEntriesAsync(cycle, config, openClientIds, ct);
+        await ApplyOrderSnapshotAsync(cycle, snapshot, ct);
 
         cycle.ActualNetQuantity = snapshot.Position.Quantity;
         cycle.ReconstructedNetQuantity = await ReconstructedPositionAsync(cycle.Id, ct);
+        cycle.PaidFees = (await db.Executions.Where(x => x.CycleId == cycle.Id).ToListAsync(ct)).Sum(x => x.Fee);
         cycle.LastReconciledAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
-        if (cycle.State == "RUNNING") await MaintainEntryOrdersAsync(cycle, config, quote: null, ct);
 
+        // FAULT and CLOSING synchronize records only. No placement, amendment,
+        // partial-entry cancellation, or entry maintenance is allowed here.
+        if (cycle.State is "RUNNING" or "PAUSED")
+        {
+            var pending = await db.Orders.Where(x => x.CycleId == cycle.Id && x.Status == "PENDING_EXCHANGE").ToListAsync(ct);
+            try { await adapter.PlaceOrdersAsync(selection, config, pending, ct); }
+            catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
+            {
+                if (await HandleProtectiveOrderRejectionAsync(cycle, selection, adapter, ex, ct)) throw;
+            }
+            if (cycle.State is "RUNNING" or "PAUSED")
+            {
+                await RecoverLotProtectionAsync(cycle, config, ct);
+                if (cycle.State is "RUNNING" or "PAUSED")
+                    await CancelExpiredPartialEntriesAsync(cycle, config, snapshot.OpenOrdersByClientId.Keys.ToHashSet(), ct);
+            }
+        }
+        if (cycle.State == "RUNNING") await MaintainEntryOrdersAsync(cycle, config, quote: null, ct);
         var finalFee = Math.Abs(snapshot.Position.PositionValue) * config.TakerFeeRate;
         var slippage = Math.Abs(snapshot.Position.PositionValue) * config.EstimatedExitSlippagePct / 100m;
         return GridMath.CalculateBasketPnl(new BasketPnlInput(cycle.RealisedCyclePnl, snapshot.Position.UnrealizedPnl,
             cycle.PaidFees, config.IncludeFunding ? cycle.AccruedFunding : 0m, finalFee, slippage)).LiquidationPnl;
     }
 
-
-    private async Task<bool> ApplyFillAsync(CycleEntity cycle, GridConfiguration config, NormalizedExecutionFill fill, CancellationToken ct)
+    private async Task<bool> ApplyFillAsync(CycleEntity cycle, GridConfiguration config, NormalizedExecutionFill fill, CancellationToken ct, bool allowExchangeActions = true)
     {
         var order = await db.Orders.SingleOrDefaultAsync(x => x.CycleId == cycle.Id &&
             (x.ExchangeOrderId == fill.ExchangeOrderId ||
              (fill.ClientOrderId != null && x.ClientOrderId == fill.ClientOrderId)), ct);
         if (order is null || await db.Executions.AnyAsync(x => x.ExchangeExecutionId == fill.ExecutionId, ct)) return false;
-        if (!string.IsNullOrWhiteSpace(fill.ExchangeOrderId)) order.ExchangeOrderId = fill.ExchangeOrderId;
+        if (order.ExchangeOrderId == "pending") order.ExchangeOrderId = fill.ExchangeOrderId;
         var terminalBeforeFill = order.Status is "CANCELLED" or "REJECTED";
         var execution = new ExecutionEntity
         {
-            Id = Ids.New("execution"), ExchangeExecutionId = fill.ExecutionId, CycleId = cycle.Id, OrderId = order.Id,
+            Id = Ids.New("execution"), ExchangeExecutionId = fill.ExecutionId, ExchangeOrderId = fill.ExchangeOrderId, CycleId = cycle.Id, OrderId = order.Id,
             Side = fill.Side, Price = fill.Price, Quantity = fill.Quantity, Fee = fill.Fee, OccurredAt = fill.OccurredAt
         };
         db.Executions.Add(execution);
-        order.FilledQuantity = Math.Min(order.Quantity, order.FilledQuantity + fill.Quantity);
+        // Rebuild from executions, not a status/placement ACK that may already
+        // include this fill (notably IOC flatten acknowledgements).
+        order.FilledQuantity = (await db.Executions.Where(x => x.OrderId == order.Id).ToListAsync(ct))
+            .Sum(x => x.Quantity) + fill.Quantity;
+        order.Quantity = Math.Max(order.Quantity, order.FilledQuantity);
         if (!terminalBeforeFill) order.Status = order.FilledQuantity >= order.Quantity ? "FILLED" : "PARTIALLY_FILLED";
         order.UpdatedAt = DateTimeOffset.UtcNow;
         cycle.PaidFees += fill.Fee;
         cycle.ActualNetQuantity += fill.Side == "BUY" ? fill.Quantity : -fill.Quantity;
         cycle.ReconstructedNetQuantity += fill.Side == "BUY" ? fill.Quantity : -fill.Quantity;
 
-        if (order.Kind == "ENTRY") await CreateOrAmendTakeProfitAsync(cycle, config, order, execution, ct);
-        else if (order.Kind == "TAKE_PROFIT") await CloseLotAsync(cycle, order, execution, ct);
+        if (order.Kind == "ENTRY") await CreateOrAmendTakeProfitAsync(cycle, config, order, execution, ct, allowExchangeActions);
+        else if (order.Kind == "TAKE_PROFIT") await CloseLotAsync(cycle, order, execution, ct, allowExchangeActions);
         await db.SaveChangesAsync(ct);
         return true;
     }

@@ -1,0 +1,18 @@
+  GridTrading.Domain -> /tmp/grid-amend-validation/src/GridTrading.Domain/bin/Debug/net10.0/GridTrading.Domain.dll
+  GridTrading.Domain.Tests -> /tmp/grid-amend-validation/tests/GridTrading.Domain.Tests/bin/Debug/net10.0/GridTrading.Domain.Tests.dll
+Test run for /tmp/grid-amend-validation/tests/GridTrading.Domain.Tests/bin/Debug/net10.0/GridTrading.Domain.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+  GridTrading.Api -> /tmp/grid-amend-validation/src/GridTrading.Api/bin/Debug/net10.0/GridTrading.Api.dll
+
+Passed!  - Failed:     0, Passed:    42, Skipped:     0, Total:    42, Duration: 133 ms - GridTrading.Domain.Tests.dll (net10.0)
+  GridTrading.Api.Tests -> /tmp/grid-amend-validation/tests/GridTrading.Api.Tests/bin/Debug/net10.0/GridTrading.Api.Tests.dll
+Test run for /tmp/grid-amend-validation/tests/GridTrading.Api.Tests/bin/Debug/net10.0/GridTrading.Api.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+
+Passed!  - Failed:     0, Passed:    65, Skipped:     0, Total:    65, Duration: 3 s - GridTrading.Api.Tests.dll (net10.0)

@@ -1,0 +1,18 @@
+Test run for /tmp/grid-root-cause-repro/tests/GridTrading.Api.Tests/bin/Debug/net10.0/GridTrading.Api.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.11)
+[xUnit.net 00:00:00.22]   Discovering: GridTrading.Api.Tests
+[xUnit.net 00:00:00.50]   Discovered:  GridTrading.Api.Tests
+[xUnit.net 00:00:00.73]   Starting:    GridTrading.Api.Tests
+  Passed GridTrading.Api.Tests.ModifyAcknowledgementReproTests.FragmentedEntryRealAdapterPersistsOnlyWhenModifyResponseHasOrderStatuses(quantityText: "0.42", defaultAck: True) [2 s]
+[xUnit.net 00:00:03.23]   Finished:    GridTrading.Api.Tests
+  Passed GridTrading.Api.Tests.ModifyAcknowledgementReproTests.FragmentedEntryRealAdapterPersistsOnlyWhenModifyResponseHasOrderStatuses(quantityText: "0.36", defaultAck: True) [120 ms]
+  Passed GridTrading.Api.Tests.ModifyAcknowledgementReproTests.FragmentedEntryRealAdapterPersistsOnlyWhenModifyResponseHasOrderStatuses(quantityText: "0.36", defaultAck: False) [62 ms]
+
+Test Run Successful.
+Total tests: 3
+     Passed: 3
+ Total time: 3.7987 Seconds

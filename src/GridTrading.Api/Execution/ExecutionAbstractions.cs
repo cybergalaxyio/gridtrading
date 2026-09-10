@@ -33,12 +33,16 @@ public sealed record NormalizedFundingPayment(
     string FundingId, string Coin, decimal UsdcDelta, decimal PositionQuantity,
     decimal FundingRate, DateTimeOffset OccurredAt);
 public sealed record ExecutionPosition(decimal Quantity, decimal PositionValue, decimal UnrealizedPnl);
+public sealed record ExecutionOrderSnapshot(
+    string ExchangeOrderId, string ClientOrderId, string Status, decimal Price,
+    decimal OriginalQuantity, decimal RemainingQuantity);
 public sealed record ExecutionReconciliationSnapshot(
     IReadOnlyList<NormalizedExecutionFill> Fills,
     IReadOnlyList<NormalizedFundingPayment> FundingPayments,
     IReadOnlyList<NormalizedOrderUpdate> OrderUpdates,
     IReadOnlyDictionary<string, string> OpenOrdersByClientId,
-    ExecutionPosition Position);
+    ExecutionPosition Position,
+    IReadOnlyList<ExecutionOrderSnapshot>? Orders = null);
 
 public interface IExecutionAdapter
 {

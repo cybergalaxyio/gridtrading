@@ -1,0 +1,272 @@
+{
+  "cycleId": "cycle_9030f8e838b8417587f662ed9d926cb4",
+  "capturedAt": "2026-09-10T09:04:41.517705+00:00",
+  "passed": 12,
+  "failed": 5,
+  "checks": [
+    {
+      "check": "frozen_grid_plan",
+      "pass": true,
+      "detail": {
+        "levels": 28,
+        "errors": []
+      }
+    },
+    {
+      "check": "entry_prices_and_quantities",
+      "pass": true,
+      "detail": {
+        "orders": 55,
+        "errors": []
+      }
+    },
+    {
+      "check": "orders_found_at_venue",
+      "pass": true,
+      "detail": 85
+    },
+    {
+      "check": "execution_identity_and_values",
+      "pass": true,
+      "detail": {
+        "count": 82,
+        "errors": []
+      }
+    },
+    {
+      "check": "persisted_filled_quantities",
+      "pass": false,
+      "detail": [
+        {
+          "orderId": "order_afb9e55ef8f746098fde7b85bd04dfdf",
+          "exchangeOrderId": "59119485095",
+          "kind": "TAKE_PROFIT",
+          "level": 8,
+          "localQuantity": "0.39",
+          "localFilled": "0.39",
+          "actualFilled": "0.66"
+        },
+        {
+          "orderId": "order_9e123e8a9d2a4568a8d083ea472c8391",
+          "exchangeOrderId": "59125950087",
+          "kind": "TAKE_PROFIT",
+          "level": 10,
+          "localQuantity": "0.15",
+          "localFilled": "0.15",
+          "actualFilled": "0.89"
+        },
+        {
+          "orderId": "order_e9eaca54593243e2934752f6b93c53cd",
+          "exchangeOrderId": "59200928612",
+          "kind": "TAKE_PROFIT",
+          "level": 6,
+          "localQuantity": "0.17",
+          "localFilled": "0.17",
+          "actualFilled": "0.49"
+        },
+        {
+          "orderId": "order_4b3d622b81fc495c81c7044e235609d7",
+          "exchangeOrderId": "59226002871",
+          "kind": "TAKE_PROFIT",
+          "level": 3,
+          "localQuantity": "0.15",
+          "localFilled": "0.15",
+          "actualFilled": "0.31"
+        },
+        {
+          "orderId": "order_440ebb92408b445a94c0e8de65115804",
+          "exchangeOrderId": "59301476024",
+          "kind": "TAKE_PROFIT",
+          "level": 4,
+          "localQuantity": "0.11",
+          "localFilled": "0.11",
+          "actualFilled": "0.36"
+        },
+        {
+          "orderId": "order_24cc8616fc5642c0ba0f4ae0ef72ba89",
+          "exchangeOrderId": "59301543794",
+          "kind": "TAKE_PROFIT",
+          "level": 5,
+          "localQuantity": "0.1",
+          "localFilled": "0.1",
+          "actualFilled": "0.42"
+        },
+        {
+          "orderId": "order_840c1d210a4f4186a8a536e585497fbe",
+          "exchangeOrderId": "59302302582",
+          "kind": "TAKE_PROFIT",
+          "level": 6,
+          "localQuantity": "0.4",
+          "localFilled": "0.4",
+          "actualFilled": "0.49"
+        },
+        {
+          "orderId": "order_bd667a9a23cd463d9a9d7de91313561c",
+          "exchangeOrderId": "59314509821",
+          "kind": "TAKE_PROFIT",
+          "level": 5,
+          "localQuantity": "0.11",
+          "localFilled": "0.11",
+          "actualFilled": "0.42"
+        }
+      ]
+    },
+    {
+      "check": "lot_quantity_conservation",
+      "pass": true,
+      "detail": {
+        "lots": 31,
+        "errors": []
+      }
+    },
+    {
+      "check": "tp_price_side_and_fill_limits",
+      "pass": true,
+      "detail": {
+        "tpOrders": 30,
+        "errors": []
+      }
+    },
+    {
+      "check": "no_reentry_while_lot_open",
+      "pass": true,
+      "detail": []
+    },
+    {
+      "check": "one_working_entry_per_side",
+      "pass": true,
+      "detail": {
+        "B": 1,
+        "A": 1
+      }
+    },
+    {
+      "check": "worst_case_net_capacity",
+      "pass": true,
+      "detail": {
+        "maxNet": "6.17",
+        "maxBuyScenario": "6.17",
+        "maxSellScenario": "1.01",
+        "cap": "10"
+      }
+    },
+    {
+      "check": "final_position_reconciles",
+      "pass": true,
+      "detail": {
+        "fills": "0.03",
+        "venue": "0.03",
+        "local": "0.03"
+      }
+    },
+    {
+      "check": "cycle_fee_aggregate",
+      "pass": false,
+      "detail": {
+        "recomputed": "0.502115",
+        "stored": "0.495912",
+        "understated": "0.006203"
+      }
+    },
+    {
+      "check": "cycle_grid_profit_aggregate",
+      "pass": false,
+      "detail": {
+        "recomputed": "33.3194",
+        "stored": "32.9194",
+        "understated": "0.4000"
+      }
+    },
+    {
+      "check": "local_funding_aggregate",
+      "pass": true,
+      "detail": {
+        "recomputed": "0.233637",
+        "stored": "0.233637"
+      }
+    },
+    {
+      "check": "fault_threshold_justified_by_venue",
+      "pass": false,
+      "detail": {
+        "at": "2026-09-04 17:52:10.2240728+00:00",
+        "venueUnprotected": "3.0948",
+        "localImplied": "61.2694",
+        "threshold": "10",
+        "components": [
+          {
+            "level": 0,
+            "remaining": "0.2",
+            "localProtectionFromStoredQuantity": "0.2",
+            "venueProtection": "0.2",
+            "localImpliedExposure": "0.000",
+            "venueUnprotectedExposure": "0.000"
+          },
+          {
+            "level": 1,
+            "remaining": "0.23",
+            "localProtectionFromStoredQuantity": "0.23",
+            "venueProtection": "0.23",
+            "localImpliedExposure": "0.0000",
+            "venueUnprotectedExposure": "0.0000"
+          },
+          {
+            "level": 2,
+            "remaining": "0.27",
+            "localProtectionFromStoredQuantity": "0.27",
+            "venueProtection": "0.27",
+            "localImpliedExposure": "0.0000",
+            "venueUnprotectedExposure": "0.0000"
+          },
+          {
+            "level": 3,
+            "remaining": "0.31",
+            "localProtectionFromStoredQuantity": "0.31",
+            "venueProtection": "0.31",
+            "localImpliedExposure": "0.0000",
+            "venueUnprotectedExposure": "0.0000"
+          },
+          {
+            "level": 4,
+            "remaining": "0.36",
+            "localProtectionFromStoredQuantity": "0.11",
+            "venueProtection": "0.36",
+            "localImpliedExposure": "26.0400",
+            "venueUnprotectedExposure": "0.0000"
+          },
+          {
+            "level": 5,
+            "remaining": "0.42",
+            "localProtectionFromStoredQuantity": "0.11",
+            "venueProtection": "0.42",
+            "localImpliedExposure": "32.1346",
+            "venueUnprotectedExposure": "0.0000"
+          },
+          {
+            "level": 6,
+            "remaining": "0.03",
+            "localProtectionFromStoredQuantity": "0",
+            "venueProtection": "0",
+            "localImpliedExposure": "3.0948",
+            "venueUnprotectedExposure": "3.0948"
+          }
+        ]
+      }
+    },
+    {
+      "check": "no_new_entries_after_fault",
+      "pass": true,
+      "detail": {
+        "lastEntryCreatedAt": "2026-09-04 15:55:26.3633503+00:00"
+      }
+    },
+    {
+      "check": "fault_reconciliation_fresh_at_capture",
+      "pass": false,
+      "detail": {
+        "lastReconciledAt": "2026-09-04 17:52:02.3435376+00:00",
+        "capturedAt": "2026-09-10T09:04:41.517705+00:00"
+      }
+    }
+  ]
+}

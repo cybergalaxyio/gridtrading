@@ -28,7 +28,7 @@ public sealed class GridReconciliationService(
         var lifecycle = scope.ServiceProvider.GetRequiredService<GridOrderLifecycle>();
         var trading = scope.ServiceProvider.GetRequiredService<TradingService>();
         var cycles = await db.Cycles.Where(x => !x.IsTerminal &&
-            (x.State == "RUNNING" || x.State == "PAUSED" || x.State == "CLOSING")).ToListAsync(ct);
+            (x.State == "RUNNING" || x.State == "PAUSED" || x.State == "CLOSING" || x.State == "FAULT")).ToListAsync(ct);
 
         foreach (var cycle in cycles)
         {

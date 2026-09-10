@@ -127,14 +127,17 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         var order = new HyperliquidLimitOrder(asset, isBuy, HyperliquidWireCodec.PriceToWire(price, sizeDecimals),
             HyperliquidWireCodec.SizeToWire(size, sizeDecimals), false, postOnly ? "Alo" : "Gtc", cloid);
         var actionBytes = HyperliquidWireCodec.PackModifyAction(cloid, order);
-        var action = new Dictionary<string, object>
+        var modification = new Dictionary<string, object>
         {
-            ["type"] = "modify",
             ["oid"] = cloid,
             ["order"] = new Dictionary<string, object> { ["a"] = order.Asset, ["b"] = order.IsBuy,
                 ["p"] = order.Price, ["s"] = order.Size, ["r"] = order.ReduceOnly,
                 ["t"] = new Dictionary<string, object> { ["limit"] = new Dictionary<string, object> { ["tif"] = order.Tif } },
                 ["c"] = order.Cloid }
+        };
+        var action = new Dictionary<string, object>
+        {
+            ["type"] = "batchModify", ["modifies"] = new[] { modification }
         };
         return await SendOrderAction(account, action, actionBytes, cloid, ct);
     }
@@ -183,7 +186,27 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
     public async Task<JsonDocument> GetUserFillsAsync(string accountId, long startTime, CancellationToken ct)
     {
         var account = await Account(accountId, ct);
-        return await PostInfo(new { type = "userFillsByTime", user = account.AccountAddress, startTime, aggregateByTime = false }, ct);
+        var collected = new Dictionary<string, JsonElement>();
+        while (true)
+        {
+            using var page = await PostInfo(new { type = "userFillsByTime", user = account.AccountAddress, startTime, aggregateByTime = false }, ct);
+            if (page.RootElement.ValueKind != JsonValueKind.Array)
+                throw new TradingProblemException(503, "INVALID_FILL_SNAPSHOT", "Expected an exchange fill array.");
+            var before = collected.Count;
+            var latest = startTime;
+            foreach (var fill in page.RootElement.EnumerateArray())
+            {
+                var time = fill.GetProperty("time").GetInt64();
+                latest = Math.Max(latest, time);
+                var key = $"{fill.GetProperty("hash")}:{fill.GetProperty("oid")}:{time}:{fill.GetProperty("tid")}";
+                collected[key] = fill.Clone();
+            }
+            if (page.RootElement.GetArrayLength() < 2000) break;
+            if (collected.Count == before || latest == startTime)
+                throw new TradingProblemException(503, "FILL_HISTORY_TRUNCATED", "Fill history cannot be paginated without losing executions at the boundary.");
+            startTime = latest; // Inclusive overlap avoids losing fills with the same timestamp.
+        }
+        return JsonDocument.Parse(JsonSerializer.Serialize(collected.Values));
     }
 
     public async Task<JsonDocument> GetUserFundingAsync(string accountId, long startTime, CancellationToken ct)
@@ -231,7 +254,12 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
     {
         using var result = await Send(account, action, bytes, ct);
         EnsureOk(result.RootElement, "order");
-        var statuses = result.RootElement.GetProperty("response").GetProperty("data").GetProperty("statuses");
+        if (!result.RootElement.TryGetProperty("response", out var response) || response.ValueKind != JsonValueKind.Object ||
+            !response.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("statuses", out var statuses) || statuses.ValueKind != JsonValueKind.Array ||
+            statuses.GetArrayLength() != 1)
+            return new HyperliquidOrderResult("UNKNOWN", null, cloid,
+                "Exchange acknowledged the action without a confirmed order status; reconciliation is required.");
         return ParseOrderStatus(statuses[0], cloid);
     }
 

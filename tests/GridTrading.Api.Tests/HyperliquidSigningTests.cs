@@ -82,8 +82,10 @@ public sealed class HyperliquidSigningTests
         var order = new HyperliquidLimitOrder(5, false, "100.19", "0.2", false, "Alo", cloid);
 
         var reader = new MessagePackReader(HyperliquidWireCodec.PackModifyAction(cloid, order));
-        Assert.Equal(3, reader.ReadMapHeader());
-        Assert.Equal("type", reader.ReadString()); Assert.Equal("modify", reader.ReadString());
+        Assert.Equal(2, reader.ReadMapHeader());
+        Assert.Equal("type", reader.ReadString()); Assert.Equal("batchModify", reader.ReadString());
+        Assert.Equal("modifies", reader.ReadString()); Assert.Equal(1, reader.ReadArrayHeader());
+        Assert.Equal(2, reader.ReadMapHeader());
         Assert.Equal("oid", reader.ReadString()); Assert.Equal(cloid, reader.ReadString());
         Assert.Equal("order", reader.ReadString());
         Assert.Equal(7, reader.ReadMapHeader());
