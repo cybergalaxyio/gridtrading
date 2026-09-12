@@ -182,6 +182,7 @@ public sealed class HyperliquidExecutionAdapter(
             (x.Status == "PENDING_EXCHANGE" || x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" ||
              x.Status == "UNKNOWN")).ToListAsync(ct);
         await CancelOrdersAsync(selection, active, ct);
+        await Task.Delay(TimeSpan.FromSeconds(5), ct);
         using var openOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
         var remainingOrders = await ownership.CountTrackedOpenOrdersAsync(selection.AccountId, config.Symbol, cycle.Id,
             openOrders.RootElement, ct);
