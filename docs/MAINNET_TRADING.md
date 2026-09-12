@@ -15,11 +15,11 @@ Mainnet uses the `hyperliquid-mainnet` execution environment, with separate API 
 
 Mainnet uses your configured grid spacing, levels, quantities, size growth, maximum quantities and basket thresholds. Set optional basket thresholds or the per-order quantity cap to zero to disable them. `MaxNetLot` remains a required strategy parameter. The shared grid engine supports up to 200 levels per side and maintains one working entry per side, advancing after fills. These engine rules apply across environments.
 
-Exchange minimum notionals and quantity/price precision still apply. The account must have valid credentials and funds. Startup requires a flat account without outstanding orders and permits one active Mainnet cycle per account, because closing uses the account's actual position. Use an account dedicated to this strategy. Fresh quotes, acknowledged cancellations and complete position snapshots remain execution requirements.
+Exchange minimum notionals and quantity/price precision still apply. The account must have valid credentials and funds. Startup requires a flat position and no outstanding orders for the selected symbol. Each Mainnet account can run one active strategy per symbol; strategies on different symbols may run together. Symbol aliases such as `SOL` and `SOL-USDC` share the same reservation, which follows the running cycle's frozen market even if its saved strategy is edited. Fresh quotes, acknowledged cancellations and complete position snapshots remain execution requirements.
 
 ## Pause, close and restart
 
-**Pause Entry** cancels entries while maintaining take profits. **Exit** cancels tracked cycle orders, checks for remaining account orders, and closes the actual position in the selected market with a reduce-only IOC order. The cycle completes only after the account position is confirmed flat. Unexpected external orders must be resolved before closing can continue.
+**Pause Entry** cancels entries while maintaining take profits. **Exit** cancels tracked cycle orders, checks for remaining orders in the selected market, and closes that market's actual position with a reduce-only IOC order. The cycle completes only after that symbol's position is confirmed flat. Unexpected external orders on the same symbol must be resolved before closing can continue. Other symbols' positions and orders do not block startup or closing, and are left untouched.
 
 Your configured basket thresholds are evaluated during backend reconciliation. Existing nonterminal cycles resume reconciliation after a backend restart. Starting the service does not create a new cycle. Keep the service running while it manages a cycle.
 

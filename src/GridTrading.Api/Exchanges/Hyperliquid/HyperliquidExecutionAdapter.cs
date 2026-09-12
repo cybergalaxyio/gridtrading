@@ -55,12 +55,11 @@ public sealed class HyperliquidExecutionAdapter(
             throw new TradingProblemException(409, "TESTNET_POSITION_NOT_FLAT", $"Start is blocked because the actual {symbol} position is {check.NetPosition}.");
         if (network == HyperliquidNetwork.Mainnet)
         {
-            using var state = await client.GetClearinghouseStateAsync(selection.AccountId, ct);
-            if (state.RootElement.GetProperty("assetPositions").EnumerateArray().Any(x => ReadDecimal(x.GetProperty("position"), "szi") != 0m))
-                throw new TradingProblemException(409, "MAINNET_ACCOUNT_NOT_FLAT", "Use a dedicated, flat mainnet account for trading.");
+            if (await client.GetPositionAsync(selection.AccountId, symbol, ct) != 0m)
+                throw new TradingProblemException(409, "MAINNET_POSITION_NOT_FLAT", $"Start requires a flat {symbol} position on this mainnet account.");
             using var allOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
-            if (allOrders.RootElement.GetArrayLength() != 0)
-                throw new TradingProblemException(409, "MAINNET_OPEN_ORDERS_EXIST", "Cancel all existing mainnet account orders before starting.");
+            if (CountSymbolOpenOrders(allOrders.RootElement, symbol) != 0)
+                throw new TradingProblemException(409, "MAINNET_OPEN_ORDERS_EXIST", $"Cancel all existing {symbol} orders on this mainnet account before starting.");
         }
         if (check.OpenOrderCount != 0)
         {
@@ -186,11 +185,13 @@ public sealed class HyperliquidExecutionAdapter(
         using var openOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
         var remainingOrders = await ownership.CountTrackedOpenOrdersAsync(selection.AccountId, config.Symbol, cycle.Id,
             openOrders.RootElement, ct);
-        if (remainingOrders != 0 || (network == HyperliquidNetwork.Mainnet && openOrders.RootElement.GetArrayLength() != 0))
+        var blockingOrders = network == HyperliquidNetwork.Mainnet
+            ? CountSymbolOpenOrders(openOrders.RootElement, config.Symbol) : remainingOrders;
+        if (remainingOrders != 0 || blockingOrders != 0)
             throw new TradingProblemException(503, "CANCEL_INCOMPLETE",
-                $"Close is blocked because {remainingOrders} tracked strategy order(s) remain open.");
+                $"Close is blocked because {Math.Max(remainingOrders, blockingOrders)} {config.Symbol} order(s) remain open.");
 
-        // Mainnet requires a dedicated account and closes the observed venue position.
+        // Mainnet reserves this account's symbol and closes its observed venue position.
         // Testnet retains its existing strategy-attribution semantics.
         var strategyPosition = network == HyperliquidNetwork.Mainnet
             ? await client.GetPositionAsync(selection.AccountId, config.Symbol, ct)
@@ -396,6 +397,13 @@ public sealed class HyperliquidExecutionAdapter(
         if (status == "canceled" || status.EndsWith("canceled", StringComparison.Ordinal) || status == "scheduledcancel")
             return "CANCELLED";
         return "UNKNOWN";
+    }
+
+    private static int CountSymbolOpenOrders(JsonElement orders, string symbol)
+    {
+        var coin = HyperliquidTradingClient.ToCoin(symbol);
+        return orders.EnumerateArray().Count(order =>
+            HyperliquidTradingClient.ToCoin(order.GetProperty("coin").GetString()!) == coin);
     }
 
     private static bool IsActive(OrderEntity order) =>

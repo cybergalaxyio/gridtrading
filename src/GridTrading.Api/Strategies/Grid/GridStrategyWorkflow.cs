@@ -164,8 +164,16 @@ public sealed class GridStrategyWorkflow(
         var adapter = environments.Adapter(selection.EnvironmentId);
         if (selection.EnvironmentId == ExecutionEnvironmentIds.HyperliquidMainnet)
         {
-            if (await db.Cycles.AnyAsync(x => x.ExecutionAccountId == selection.AccountId && !x.IsTerminal, ct))
-                throw Problem(409, "MAINNET_ACCOUNT_BUSY", "Only one active cycle is allowed on a mainnet account.");
+            var activeConfigurations = await db.Cycles.AsNoTracking()
+                .Where(x => x.ExecutionEnvironmentId == selection.EnvironmentId &&
+                    x.ExecutionAccountId == selection.AccountId && !x.IsTerminal)
+                .Select(x => x.FrozenConfigurationJson).ToListAsync(ct);
+            var coin = HyperliquidTradingClient.ToCoin(preview.Configuration.Symbol);
+            // A saved strategy can be edited while running; ownership follows the frozen cycle market.
+            if (activeConfigurations.Any(json => HyperliquidTradingClient.ToCoin(
+                    JsonSerializer.Deserialize<GridConfiguration>(json, JsonSupport.Options)!.Symbol) == coin))
+                throw Problem(409, "MAINNET_SYMBOL_BUSY",
+                    $"Only one active strategy is allowed for {coin} on this mainnet account.");
         }
         var confirmation = request.OperatorConfirmation;
         var environmentConfirmed = confirmation.EnvironmentConfirmed.Equals(selection.EnvironmentId, StringComparison.OrdinalIgnoreCase) ||

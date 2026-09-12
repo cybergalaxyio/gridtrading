@@ -19,7 +19,7 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace GridTrading.Api.Tests;
 
-public sealed class HyperliquidMainnetTests
+public sealed partial class HyperliquidMainnetTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -109,7 +109,6 @@ public sealed class HyperliquidMainnetTests
     [InlineData("unapproved", "API_WALLET_NOT_APPROVED")]
     [InlineData("unfunded", "TESTNET_ACCOUNT_UNFUNDED")]
     [InlineData("orders", "MAINNET_OPEN_ORDERS_EXIST")]
-    [InlineData("other-position", "MAINNET_ACCOUNT_NOT_FLAT")]
     public async Task MainnetPreflightFailsClosed(string condition, string code)
     {
         await using var f = await Fixture.CreateAsync();
@@ -185,7 +184,7 @@ public sealed class HyperliquidMainnetTests
     }
 
     [Fact]
-    public async Task ExplicitMainnetStartSendsTwoSmallEntriesAndReservesAccount()
+    public async Task ExplicitMainnetStartSendsTwoSmallEntriesAndReservesSymbol()
     {
         await using var f = await Fixture.CreateAsync();
         var workflow = await f.WorkflowAsync();
@@ -335,6 +334,8 @@ public sealed class HyperliquidMainnetTests
         public string Condition { get; set; } = "";
         public decimal Position { get; set; }
         public bool LeaveResidual { get; set; }
+        public object[] OpenOrders { get; set; } = [];
+        public decimal OtherPosition { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Hosts.Add(request.RequestUri!.Host);
@@ -348,10 +349,10 @@ public sealed class HyperliquidMainnetTests
                     "userFees" => """{"userAddRate":"0.0001","userCrossRate":"0.0004"}""",
                     "l2Book" => $$"""{"time":{{DateTimeOffset.UtcNow.AddSeconds(Condition == "stale-book" ? -30 : 0).ToUnixTimeMilliseconds()}},"levels":[[{"px":"99.9"}],[{"px":"100.1"}]]}""",
                     "userRole" => Condition == "unapproved" ? """{"role":"missing"}""" : JsonSerializer.Serialize(new { role = "agent", data = new { user = Fixture.Address } }),
-                    "clearinghouseState" => JsonSerializer.Serialize(new { marginSummary = new { accountValue = Condition == "unfunded" ? "0" : "100" }, withdrawable = "100", assetPositions = new[] { new { position = new { coin = Condition == "other-position" ? "BTC" : "SOL", szi = (Condition == "other-position" ? 1m : Position).ToString(System.Globalization.CultureInfo.InvariantCulture), positionValue = "12", unrealizedPnl = "0" } } } }),
+                    "clearinghouseState" => JsonSerializer.Serialize(new { marginSummary = new { accountValue = Condition == "unfunded" ? "0" : "100" }, withdrawable = "100", assetPositions = new[] { new { position = new { coin = "SOL", szi = Position.ToString(System.Globalization.CultureInfo.InvariantCulture), positionValue = "12", unrealizedPnl = "0" } }, new { position = new { coin = "BTC", szi = (Condition == "other-position" ? 1m : OtherPosition).ToString(System.Globalization.CultureInfo.InvariantCulture), positionValue = "12", unrealizedPnl = "0" } } } }),
                     "spotClearinghouseState" => """{"balances":[]}""",
                     "userAbstraction" => "\"disabled\"",
-                    "openOrders" or "frontendOpenOrders" => Condition == "orders" ? """[{"coin":"SOL","oid":5,"side":"B","sz":"0.12","cloid":null}]""" : "[]",
+                    "openOrders" or "frontendOpenOrders" => Condition == "orders" ? """[{"coin":"SOL","oid":5,"side":"B","sz":"0.12","cloid":null}]""" : JsonSerializer.Serialize(OpenOrders),
                     "activeAssetData" => JsonSerializer.Serialize(new { leverage = new { type = "cross", value = Condition == "leverage" ? 10 : 1 } }),
                     var type => throw new InvalidOperationException(type)
                 });
