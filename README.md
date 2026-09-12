@@ -25,6 +25,14 @@
 - **Initial Gap** 单位为 pts，表示完整初始间距，每侧使用一半；`0` 自动使用 Grid Spacing 作为完整间距。Buy 向下、Sell 向上按 Tick Size 取整。Current Mid 的首层买卖价差还包含启动时的 Bid / Ask spread。
 - Cycle 启动后冻结中心、Bid / Ask 基准和实际 Grid，不随市场或策略编辑移动。已有运行中 Cycle 保留原计划。此前未保存中心价格的 Manual 策略需要编辑并补填价格后才能启动。
 
+## Entry Fill Limit
+
+在“资金与风控”中启用 **Enable Entry Fill Limit**，配置 **Lookback Window (min)** 和 **Max Filled Entries per Side**。默认关闭，初始值为 60 分钟、3 张；买卖分别计数，共用参数。
+
+下新 Entry 前只查询订单历史，以 `FilledAt` 统计窗口内完全成交的 Entry，每张订单计一次；部分成交、TP 和平仓不计数。历史限定为同一策略、环境、账户和市场，包含之前 Cycle。达到上限后停止该方向的新 Entry，并撤销该方向的 Entry 余单（包括部分成交余量），保留 TP；撤单失败会在 Sync 重试。数量降至上限以下后，正常对账恢复下单资格，仍受其他风控限制。
+
+后端启动时自动添加完成时间字段并一次性回填旧订单；无法确认完成时间时，通过告警提示该方向历史未就绪并阻止新 Entry。重启不会清零计数。配置在 Cycle 启动时冻结，编辑策略只影响未来 Cycle；旧 Cycle 默认关闭。此规则按完全成交数量限制后续下单，不保证交易所在撤单确认前不会继续成交已有订单。
+
 ## Telegram 风险告警通知
 
 1. 在 Telegram 中通过 @BotFather 创建 Bot 并复制 Bot Token。私聊需要先向 Bot 发送一条消息；群组需要把 Bot 加入群组；频道需要授予 Bot 发消息权限。
@@ -67,7 +75,7 @@ Vite 开发服务器为 <http://localhost:5173>，并代理 `/api` 与 `/hubs`�
 dotnet restore GridTrading.slnx
 dotnet build GridTrading.slnx --no-restore
 dotnet test GridTrading.slnx --no-build
-cd web && npm run build
+cd web && npm test && npm run build
 ```
 
 ## 目录

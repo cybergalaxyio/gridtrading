@@ -27,6 +27,8 @@ public sealed partial class GridOrderLifecycle
         {
             if ((config.GridMode == GridMode.BuyOnly && side == OrderSide.Sell) ||
                 (config.GridMode == GridMode.SellOnly && side == OrderSide.Buy)) continue;
+            // Enforce the limit even when resting entries do not need a replacement.
+            if (!await CanPlaceNewEntryOrderAsync(cycle, config, side, ct)) continue;
             var sideName = side.ToString().ToUpperInvariant();
             var currentEntries = active.Where(x => x.Kind == "ENTRY" && x.Side == sideName).ToList();
             var occupiedLevels = GridOrderRules.OccupiedLevels(side, openLots.Select(x =>
@@ -55,7 +57,7 @@ public sealed partial class GridOrderLifecycle
 
         if (created.Count == 0) return;
         await db.SaveChangesAsync(ct);
-        await adapter.PlaceOrdersAsync(selection, config, created, ct);
+        await PlaceNewEntryOrdersAsync(cycle, config, created, ct);
     }
 
     private async Task CreateOrAmendTakeProfitAsync(CycleEntity cycle, GridConfiguration config, OrderEntity entry,

@@ -29,14 +29,15 @@ public sealed record NormalizedExecutionFill(
     string ExecutionId, string ExchangeOrderId, string? ClientOrderId, string Side,
     decimal Price, decimal Quantity, decimal Fee, DateTimeOffset OccurredAt);
 public sealed record NormalizedOrderUpdate(
-    string ExchangeOrderId, string? ClientOrderId, string Status, decimal FilledQuantity, DateTimeOffset OccurredAt);
+    string ExchangeOrderId, string? ClientOrderId, string Status, decimal FilledQuantity, DateTimeOffset OccurredAt,
+    bool HasExchangeTimestamp = true);
 public sealed record NormalizedFundingPayment(
     string FundingId, string Coin, decimal UsdcDelta, decimal PositionQuantity,
     decimal FundingRate, DateTimeOffset OccurredAt);
 public sealed record ExecutionPosition(decimal Quantity, decimal PositionValue, decimal UnrealizedPnl);
 public sealed record ExecutionOrderSnapshot(
     string ExchangeOrderId, string ClientOrderId, string Status, decimal Price,
-    decimal OriginalQuantity, decimal RemainingQuantity);
+    decimal OriginalQuantity, decimal RemainingQuantity, DateTimeOffset? FilledAt = null);
 public sealed record ExecutionReconciliationSnapshot(
     IReadOnlyList<NormalizedExecutionFill> Fills,
     IReadOnlyList<NormalizedFundingPayment> FundingPayments,

@@ -160,6 +160,8 @@ public static class GridMath
         if (config.BaseLotSize <= 0m || config.MaxNetLot <= 0m)
             throw new GridValidationException("QUANTITY", "Base lot and max net lot must be positive.");
         if (config.LotSizeIncreasePercent < 0m) throw new GridValidationException("LOT_GROWTH", "Lot growth cannot be negative.");
+        if (config.EntryFillWindowMinutes <= 0 || config.MaxEntryFillsPerSide <= 0)
+            throw new GridValidationException("ENTRY_FILL_LIMIT_INVALID", "Lookback Window and Max Filled Entries per Side must be positive integers.");
         if (config.PartialFillCancelAfterMinutes < 0)
             throw new GridValidationException("PARTIAL_FILL_TIMEOUT", "Partial fill cancel timeout cannot be negative.");
         if (rules.TickSize <= 0m || rules.QuantityStep <= 0m) throw new GridValidationException("INSTRUMENT_RULES", "Invalid exchange rules.");

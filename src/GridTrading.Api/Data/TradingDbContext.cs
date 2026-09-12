@@ -24,6 +24,10 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
         modelBuilder.Entity<CycleEntity>().HasIndex(x => new { x.StrategyId, x.IsTerminal });
         modelBuilder.Entity<OrderEntity>().HasIndex(x => x.ClientOrderId).IsUnique();
         modelBuilder.Entity<OrderEntity>().HasIndex(x => new { x.CycleId, x.Status });
+        modelBuilder.Entity<OrderEntity>().Property(x => x.FilledAt).HasConversion(
+            new Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<DateTimeOffset, long>(
+                value => value.ToUnixTimeMilliseconds(), value => DateTimeOffset.FromUnixTimeMilliseconds(value)));
+        modelBuilder.Entity<OrderEntity>().HasIndex(x => new { x.CycleId, x.Kind, x.Side, x.FilledAt });
         modelBuilder.Entity<ExecutionEntity>().HasIndex(x => x.ExchangeExecutionId).IsUnique();
         modelBuilder.Entity<FundingPaymentEntity>().HasIndex(x => x.ExchangeFundingId).IsUnique();
         modelBuilder.Entity<FundingPaymentEntity>().HasIndex(x => new { x.CycleId, x.OccurredAt });
@@ -100,6 +104,7 @@ public sealed class CycleEntity
 public sealed class OrderEntity
 {
     public DateTimeOffset? LastExchangeUpdateAt { get; set; }
+    public DateTimeOffset? FilledAt { get; set; }
     public required string Id { get; set; }
     public required string CycleId { get; set; }
     public required string ClientOrderId { get; set; }

@@ -270,6 +270,83 @@ public sealed partial class HyperliquidMainnetTests
         Assert.All(f.Handler.Hosts, host => Assert.Equal("api.hyperliquid.xyz", host));
     }
 
+    [Theory]
+    [InlineData(GridMode.BuyOnly, "BUY")]
+    [InlineData(GridMode.SellOnly, "SELL")]
+    public async Task MainnetEntryFillLimitBlocksStartupOrdersUsingPersistedHistory(GridMode mode, string side)
+    {
+        await using var f = await Fixture.CreateAsync();
+        var config = ExampleConfig() with { GridMode = mode, EntryFillLimitEnabled = true, MaxEntryFillsPerSide = 1 };
+        var workflow = await f.WorkflowAsync(config);
+        var now = DateTimeOffset.UtcNow;
+        f.Db.Cycles.Add(new CycleEntity
+        {
+            Id = "history-cycle", StrategyId = "strategy", ExecutionEnvironmentId = "hyperliquid-mainnet",
+            ExecutionAccountId = "live", State = "WAITING_FOR_OPERATOR", IsTerminal = true,
+            FrozenConfigurationJson = "{}", FrozenPlanJson = "{}", ExitReason = "CLOSED", StartedAt = now.AddHours(-1)
+        });
+        f.Db.Orders.Add(new OrderEntity
+        {
+            Id = "history-order", CycleId = "history-cycle", ClientOrderId = "history-order", ExchangeOrderId = "old-oid",
+            Symbol = "SOL-USDC", Side = side, Kind = "ENTRY", Status = "FILLED", Price = 100m,
+            Quantity = .12m, FilledQuantity = .12m, FilledAt = now.AddMinutes(-10), CreatedAt = now.AddHours(-1), UpdatedAt = now
+        });
+        await f.Db.SaveChangesAsync(Ct);
+        var (_, cycle) = await workflow.StartCycleAsync("strategy", new("preview", 100m, new(true, true, "MAINNET")), "limited-start", Ct);
+        Assert.Equal("RUNNING", cycle.State);
+        Assert.Empty(f.Handler.Actions);
+        Assert.Empty(await f.Db.Orders.Where(x => x.CycleId == cycle.Id).ToListAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData(GridMode.BuyOnly, "BUY")]
+    [InlineData(GridMode.SellOnly, "SELL")]
+    public async Task MainnetReconciliationUsesTerminalOrderTimeWithoutIndividualFills(GridMode mode, string side)
+    {
+        await using var f = await Fixture.CreateAsync();
+        var config = ExampleConfig() with { GridMode = mode, EntryFillLimitEnabled = true, MaxEntryFillsPerSide = 1 };
+        var workflow = await f.WorkflowAsync(config);
+        var (_, cycle) = await workflow.StartCycleAsync("strategy", new("preview", 100m, new(true, true, "MAINNET")), "history-time", Ct);
+        var entry = await f.Db.Orders.SingleAsync(Ct);
+        var completedAt = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.AddMinutes(-2).ToUnixTimeMilliseconds());
+        f.Handler.HistoricalOrders = [new
+        {
+            order = new { oid = 10, cloid = HyperliquidWireCodec.CreateCloid(entry.ClientOrderId), coin = "SOL",
+                limitPx = entry.Price.ToString(System.Globalization.CultureInfo.InvariantCulture), origSz = "0.12", sz = "0",
+                timestamp = completedAt.AddMinutes(-1).ToUnixTimeMilliseconds() },
+            status = "filled", statusTimestamp = completedAt.ToUnixTimeMilliseconds()
+        }];
+        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]), new());
+        await lifecycle.ReconcileAsync(cycle, Ct);
+        Assert.Equal(completedAt, entry.FilledAt);
+        Assert.Equal("FILLED", entry.Status);
+        Assert.Empty(await f.Db.Executions.ToListAsync(Ct));
+        Assert.Single(f.Handler.Actions); // No replacement request after the full Entry.
+        Assert.False(await lifecycle.CanPlaceNewEntryOrderAsync(cycle, config, Enum.Parse<OrderSide>(side, true), Ct));
+    }
+
+    [Fact]
+    public async Task MissingExchangeStatusTimestampDoesNotFabricateCompletionTime()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var config = ExampleConfig() with { GridMode = GridMode.SellOnly, EntryFillLimitEnabled = true };
+        var workflow = await f.WorkflowAsync(config);
+        var (_, cycle) = await workflow.StartCycleAsync("strategy", new("preview", 100m, new(true, true, "MAINNET")), "missing-time", Ct);
+        var entry = await f.Db.Orders.SingleAsync(Ct);
+        var update = JsonSerializer.SerializeToElement(new
+        {
+            order = new { oid = 10, cloid = HyperliquidWireCodec.CreateCloid(entry.ClientOrderId), origSz = "0.12", sz = "0" },
+            status = "filled"
+        });
+        var normalized = await f.Adapter.NormalizeOrderUpdatesAsync("live", [update], Ct);
+        Assert.False(Assert.Single(normalized).HasExchangeTimestamp);
+        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]), new());
+        await lifecycle.ProcessOrderUpdatesAsync("live", normalized, Ct);
+        Assert.Null(entry.FilledAt);
+        Assert.False(await lifecycle.CanPlaceNewEntryOrderAsync(cycle, config, OrderSide.Sell, Ct));
+        Assert.Equal("ENTRY_FILL_HISTORY_NOT_READY_SELL", (await f.Db.RiskAlerts.SingleAsync(Ct)).Code);
+    }
+
     private static GridConfiguration ExampleConfig() => new()
     {
         Symbol = "SOLUSDC", CenterPrice = 100m, TickSize = .01m, QuantityStep = .01m, MinOrderQuantity = .01m,
@@ -334,6 +411,7 @@ public sealed partial class HyperliquidMainnetTests
         public string Condition { get; set; } = "";
         public decimal Position { get; set; }
         public bool LeaveResidual { get; set; }
+        public object[] HistoricalOrders { get; set; } = [];
         public object[] OpenOrders { get; set; } = [];
         public decimal OtherPosition { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -350,6 +428,8 @@ public sealed partial class HyperliquidMainnetTests
                     "l2Book" => $$"""{"time":{{DateTimeOffset.UtcNow.AddSeconds(Condition == "stale-book" ? -30 : 0).ToUnixTimeMilliseconds()}},"levels":[[{"px":"99.9"}],[{"px":"100.1"}]]}""",
                     "userRole" => Condition == "unapproved" ? """{"role":"missing"}""" : JsonSerializer.Serialize(new { role = "agent", data = new { user = Fixture.Address } }),
                     "clearinghouseState" => JsonSerializer.Serialize(new { marginSummary = new { accountValue = Condition == "unfunded" ? "0" : "100" }, withdrawable = "100", assetPositions = new[] { new { position = new { coin = "SOL", szi = Position.ToString(System.Globalization.CultureInfo.InvariantCulture), positionValue = "12", unrealizedPnl = "0" } }, new { position = new { coin = "BTC", szi = (Condition == "other-position" ? 1m : OtherPosition).ToString(System.Globalization.CultureInfo.InvariantCulture), positionValue = "12", unrealizedPnl = "0" } } } }),
+                    "userFillsByTime" or "userFunding" => "[]",
+                    "historicalOrders" => JsonSerializer.Serialize(HistoricalOrders),
                     "spotClearinghouseState" => """{"balances":[]}""",
                     "userAbstraction" => "\"disabled\"",
                     "openOrders" or "frontendOpenOrders" => Condition == "orders" ? """[{"coin":"SOL","oid":5,"side":"B","sz":"0.12","cloid":null}]""" : JsonSerializer.Serialize(OpenOrders),

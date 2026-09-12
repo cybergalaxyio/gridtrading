@@ -14,6 +14,9 @@ public sealed record StrategyRequest(
 {
     public string StrategyType { get; init; } = "GRID";
     public decimal? ManualCenterPrice { get; init; }
+    public bool EntryFillLimitEnabled { get; init; }
+    public int EntryFillWindowMinutes { get; init; } = 60;
+    public int MaxEntryFillsPerSide { get; init; } = 3;
     public string? DefaultExecutionEnvironmentId { get; init; }
     public string? DefaultExecutionAccountId { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]
@@ -22,6 +25,8 @@ public sealed record StrategyRequest(
     public GridConfiguration ToConfiguration(decimal centerPrice = 0m) => new()
     {
         Symbol = Symbol, GridMode = GridMode,
+        EntryFillLimitEnabled = EntryFillLimitEnabled, EntryFillWindowMinutes = EntryFillWindowMinutes,
+        MaxEntryFillsPerSide = MaxEntryFillsPerSide,
         CenterSuggestionMode = CenterSuggestionMode,
         CenterPrice = CenterSuggestionMode == "MANUAL" ? ManualCenterPrice ?? 0m : centerPrice,
         MaxLevelsPerSide = MaxLevelsPerSide,
@@ -52,7 +57,8 @@ public sealed record CandidateConfiguration(
     decimal TakeProfitPoints, decimal BaseLotSize, decimal LotSizeIncreasePercent,
     decimal MaxTradeLot, decimal MaxNetLot,
     string? ExecutionEnvironmentId = null, string? ExecutionAccountId = null,
-    string CenterSuggestionMode = "CURRENT_MID");
+    string CenterSuggestionMode = "CURRENT_MID",
+    bool EntryFillLimitEnabled = false, int EntryFillWindowMinutes = 60, int MaxEntryFillsPerSide = 3);
 
 public sealed record PreviewRequest(string? StrategyId, int? StrategyVersion, decimal ConfirmedCenterPrice,
     CandidateConfiguration? CandidateConfiguration, object? ParameterOverrides,

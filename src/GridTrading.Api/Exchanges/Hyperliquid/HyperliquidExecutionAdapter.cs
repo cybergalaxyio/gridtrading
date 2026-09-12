@@ -276,7 +276,7 @@ public sealed class HyperliquidExecutionAdapter(
         // Missing active orders require a terminal observation, not an assumed cancel.
         // History also resolves the new OID after an acknowledged or timed-out amendment.
         if (local.Any(x => !observed.ContainsKey(x.ClientOrderId) &&
-            (IsActive(x) || x.Status == "PENDING_EXCHANGE")))
+            (IsActive(x) || x.Status == "PENDING_EXCHANGE" || (x.Kind == "ENTRY" && x.Status == "FILLED" && x.FilledAt == null))))
         {
             using var history = await client.GetHistoricalOrdersAsync(selection.AccountId, ct);
             foreach (var group in history.RootElement.EnumerateArray()
@@ -290,7 +290,10 @@ public sealed class HyperliquidExecutionAdapter(
                 var status = MapStatus(ReadString(latest, "status"), order.FilledQuantity);
                 // An old "open" event is not a current observation.
                 if (status is "NEW" or "PARTIALLY_FILLED") continue;
-                observed[order.ClientOrderId] = Snapshot(latest.GetProperty("order"), status, order);
+                DateTimeOffset? filledAt = status == "FILLED" && latest.TryGetProperty("statusTimestamp", out var timestamp) &&
+                    timestamp.TryGetInt64(out var milliseconds)
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds) : null;
+                observed[order.ClientOrderId] = Snapshot(latest.GetProperty("order"), status, order, filledAt);
             }
         }
         var position = await client.GetPositionSnapshotAsync(selection.AccountId, config.Symbol, ct);
@@ -302,9 +305,9 @@ public sealed class HyperliquidExecutionAdapter(
             var cloid = ReadString(row, "cloid");
             return byCloid.GetValueOrDefault(cloid) ?? local.FirstOrDefault(x => x.ExchangeOrderId == ReadString(row, "oid"));
         }
-        static ExecutionOrderSnapshot Snapshot(JsonElement row, string status, OrderEntity order) =>
+        static ExecutionOrderSnapshot Snapshot(JsonElement row, string status, OrderEntity order, DateTimeOffset? filledAt = null) =>
             new(ReadString(row, "oid"), order.ClientOrderId, status, ReadDecimal(row, "limitPx"),
-                ReadDecimal(row, "origSz"), ReadDecimal(row, "sz"));
+                ReadDecimal(row, "origSz"), ReadDecimal(row, "sz"), filledAt);
     }
 
     public async Task<IReadOnlyList<NormalizedExecutionFill>> NormalizeFillsAsync(
@@ -366,9 +369,10 @@ public sealed class HyperliquidExecutionAdapter(
                 (!string.IsNullOrWhiteSpace(cloid) && HyperliquidWireCodec.CreateCloid(x.ClientOrderId) == cloid));
             var filled = Math.Max(0m, ReadDecimal(details, "origSz") - ReadDecimal(details, "sz"));
             var status = MapStatus(ReadString(update, "status"), local?.FilledQuantity ?? filled);
-            var occurredAt = update.TryGetProperty("statusTimestamp", out var timestamp) && timestamp.TryGetInt64(out var milliseconds)
-                ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds) : DateTimeOffset.UtcNow;
-            result.Add(new NormalizedOrderUpdate(oid, local?.ClientOrderId, status, filled, occurredAt));
+            long milliseconds = 0;
+            var hasExchangeTimestamp = update.TryGetProperty("statusTimestamp", out var timestamp) && timestamp.TryGetInt64(out milliseconds);
+            var occurredAt = hasExchangeTimestamp ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds) : DateTimeOffset.UtcNow;
+            result.Add(new NormalizedOrderUpdate(oid, local?.ClientOrderId, status, filled, occurredAt, hasExchangeTimestamp));
         }
         return result;
     }

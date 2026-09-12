@@ -76,6 +76,16 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     [config, center, instrument, isManual, preview])
 
   function set<K extends keyof StrategyConfig>(key: K, value: StrategyConfig[K]) { setConfig(x => ({ ...x, [key]: value })); setPreview(null) }
+  function toggleEntryFillLimit(enabled: boolean) {
+    setConfig(current => ({
+      ...current, entryFillLimitEnabled: enabled,
+      entryFillWindowMinutes: !enabled && !isPositiveInt32(current.entryFillWindowMinutes)
+        ? defaultConfig.entryFillWindowMinutes : current.entryFillWindowMinutes,
+      maxEntryFillsPerSide: !enabled && !isPositiveInt32(current.maxEntryFillsPerSide)
+        ? defaultConfig.maxEntryFillsPerSide : current.maxEntryFillsPerSide,
+    }))
+    setPreview(null)
+  }
   function changeEnvironment(value: string) {
     setEnvironment(value); setPreview(null); setInstrument(null); setAccounts([])
     setConfig(current => ({ ...current, defaultExecutionEnvironmentId: value,
@@ -104,6 +114,14 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     for (const [key, label, fieldStep] of numericFields) {
       if (!String(config[key]).trim() || !Number.isFinite(Number(config[key]))) {
         setStep(fieldStep); reportError(`请填写有效数字：${label}（如不启用可选项，请明确填写 0）`); return false
+      }
+    }
+    for (const [value, label] of [
+      [config.entryFillWindowMinutes, 'Lookback Window (min)'],
+      [config.maxEntryFillsPerSide, 'Max Filled Entries per Side'],
+    ] as const) {
+      if (!isPositiveInt32(value)) {
+        setStep(3); reportError(`${label} must be a positive integer (maximum 2147483647).`); return false
       }
     }
     reportError('')
@@ -163,7 +181,16 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <NumberField label={<HelpLabel label="命令超时" text="发送下单、撤单或平仓命令后等待交易所确认的最长时间。超时后不能假定命令失败，系统需要通过 Sync 查询最终状态，避免重复下单。" />} value={config.orderCommandTimeoutSeconds} onChange={v => set('orderCommandTimeoutSeconds', +v)} suffix="秒" />
           <NumberField label={<HelpLabel label="最大下单频率" text="限制策略每秒最多发送多少条下单指令，用于削峰并降低触发交易所限频的风险。数值越低，批量铺设网格所需时间越长。" />} value={config.maxOrderFrequency} onChange={v => set('maxOrderFrequency', +v)} suffix="单/秒" />
           <NumberField label={<HelpLabel label="部分成交撤单等待" text="Entry 首次部分成交后开始计时；超过该时间仍未全部成交时，撤销剩余数量。已成交部分对应的 TP 会保留，并按当前价格补充新的 Entry。0 = 不启用。" />} value={config.partialFillCancelAfterMinutes} onChange={v => set('partialFillCancelAfterMinutes', +v)} suffix="分钟" />
-        </div><div className="check-row"><label><input type="checkbox" checked={config.includeFunding} onChange={e => set('includeFunding', e.target.checked)} /> Basket PnL 计入资金费</label><span>Maker / Taker Fee 从交易账户自动加载</span></div><div className="safety-note"><Icon name="shield" /><p><b>强制安全规则不可关闭</b><span>陈旧行情、Sync 未完成、仓位/残留单不为零、MaxNetLot 超限都会阻止启动或新建敞口。</span></p></div></>}
+        </div>
+        <div className="check-row"><label><input type="checkbox" checked={config.entryFillLimitEnabled} aria-controls="entry-fill-limit-fields" onChange={event => toggleEntryFillLimit(event.target.checked)} /> Enable Entry Fill Limit</label></div>
+        {config.entryFillLimitEnabled && <div id="entry-fill-limit-fields">
+          <div className="form-grid">
+            <NumberField label="Lookback Window (min)" value={config.entryFillWindowMinutes} min={1} step={1} onChange={value => set('entryFillWindowMinutes', +value)} suffix="min" />
+            <NumberField label="Max Filled Entries per Side" value={config.maxEntryFillsPerSide} min={1} step={1} onChange={value => set('maxEntryFillsPerSide', +value)} suffix="orders" />
+          </div>
+          <p className="entry-fill-limit-hint">Counts fully filled Entry orders only, separately for Buy and Sell, including prior cycles. At the limit, same-side Entry remainders are cancelled; TP orders remain working.</p>
+        </div>}
+        <div className="check-row"><label><input type="checkbox" checked={config.includeFunding} onChange={e => set('includeFunding', e.target.checked)} /> Basket PnL 计入资金费</label><span>Maker / Taker Fee 从交易账户自动加载</span></div><div className="safety-note"><Icon name="shield" /><p><b>强制安全规则不可关闭</b><span>陈旧行情、Sync 未完成、仓位/残留单不为零、MaxNetLot 超限都会阻止启动或新建敞口。</span></p></div></>}
         {step === 4 && <><SectionTitle title="预览确认" subtitle="Preview 不会创建订单；启动时后端仍会重新校验全部前置条件。" />{preview ? <>
           <div className="preview-stats"><div><small>价格区间</small><b>{(+preview.outermostBuyPrice).toFixed(3)} — {(+preview.outermostSellPrice).toFixed(3)}</b></div><div><small>计划挂单层数</small><b>{totalLevels}</b></div><div><small>单侧计划数量</small><b>{preview.maximumPlannedQuantityPerSide} SOL</b></div><div><small>单侧名义价值</small><b>~ {(+preview.maximumPlannedNotionalPerSide).toFixed(2)} USDC</b></div></div>
           <div className="preview-table table-wrap"><table><thead><tr><th>方向</th><th>Level</th><th>Entry Price</th><th>Lot Size</th><th>Notional</th><th>Cumulative Qty</th></tr></thead><tbody>{previewRows.map(x => <tr key={`${x.side}${x.levelIndex}`}><td className={x.side === 'BUY' ? 'positive' : 'negative'}>{x.side}</td><td>#{x.levelIndex}</td><td>{(+x.entryPrice).toFixed(3)}</td><td>{x.plannedQuantity}</td><td>{(+x.orderNotional).toFixed(2)}</td><td>{x.cumulativeQuantity}</td></tr>)}</tbody></table></div>
@@ -182,9 +209,11 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
   </div>
 }
 
+function isPositiveInt32(value: number) { return Number.isInteger(value) && value >= 1 && value <= 2147483647 }
+
 function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) { return <header className="section-title"><h2>{title}</h2><p>{subtitle}</p></header> }
 function Field({ label, hint, children }: { label: React.ReactNode; hint?: string; children: React.ReactNode }) { return <label className="field"><span>{label}{hint && <small>{hint}</small>}</span>{children}</label> }
-function NumberField({ label, value, suffix, hint, onChange }: { label: React.ReactNode; value: string | number; suffix: string; hint?: string; onChange: (value: string) => void }) { return <Field label={label} hint={hint}><div className="number-input"><input type="number" min="0" step="any" value={value} onChange={e => onChange(e.target.value)} /><span>{suffix}</span></div></Field> }
+function NumberField({ label, value, suffix, hint, onChange, min = 0, step = 'any' }: { label: React.ReactNode; value: string | number; suffix: string; hint?: string; onChange: (value: string) => void; min?: number; step?: number | string }) { return <Field label={label} hint={hint}><div className="number-input"><input type="number" min={min} step={step} value={value} onChange={e => onChange(e.target.value)} /><span>{suffix}</span></div></Field> }
 function InfoTooltip({ text }: { text: string }) { return <span className="info-tooltip" tabIndex={0} aria-label={text}>i<span role="tooltip">{text}</span></span> }
 function HelpLabel({ label, text }: { label: string; text: string }) { return <span className="label-with-help">{label} <InfoTooltip text={text} /></span> }
 function pointHint(points: string, instrument: ExchangeInstrumentRules | null) { return instrument ? `${points} × ${instrument.tickSize} = ${formatDecimal(+points * +instrument.tickSize)}` : '等待 Tick Size' }

@@ -7,6 +7,8 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
 }) {
   const frozen = strategy.activeCycle?.frozenConfiguration
   const config = { ...strategy.configuration, ...frozen }
+  // Old frozen cycles omit the new fields and must stay disabled even if the template is edited.
+  const entryFillLimit = frozen ?? strategy.configuration
   const effectiveTick = frozen?.tickSize ?? tickSize ?? strategy.configuration.tickSize
   const effectiveQuantityStep = frozen?.quantityStep ?? quantityStep ?? strategy.configuration.quantityStep
   const initialGap = +config.initialGapPoints === 0 ? +config.gridSpacingPoints : +config.initialGapPoints
@@ -34,6 +36,9 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
       ['单笔上限', `${config.maxTradeLot} ${coin(strategy.symbol)}`], ['MaxNetLot', `${config.maxNetLot} ${coin(strategy.symbol)}`], ['Basket TP', `${config.basketTakeProfitUsdt} USDC`],
       ['Basket SL', +config.basketStopLossUsdt === 0 ? '不启用' : `${config.basketStopLossUsdt} USDC`],
       ['风险暂停敞口阈值', `${config.faultExposureThresholdUsdt ?? 10} USD`],
+      ['Enable Entry Fill Limit', entryFillLimit.entryFillLimitEnabled ? 'Enabled' : 'Disabled'],
+      ['Lookback Window (min)', `${entryFillLimit.entryFillWindowMinutes ?? 60}`],
+      ['Max Filled Entries per Side', `${entryFillLimit.maxEntryFillsPerSide ?? 3}`],
       ['Fee', frozen ? `Maker ${rate(config.makerFeeRate)} · Taker ${rate(config.takerFeeRate)}` : '预览时从交易账户加载'], ['退出滑点储备', `${config.estimatedExitSlippagePct}%`],
       ['计入资金费', yesNo(config.includeFunding)],
     ] },

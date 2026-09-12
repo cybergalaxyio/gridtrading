@@ -33,6 +33,8 @@ public sealed partial class GridOrderLifecycle
                 order.ExchangeOrderId = observed.ExchangeOrderId;
                 order.Status = observed.Status == "NEW" && order.FilledQuantity > 0m ? "PARTIALLY_FILLED" : observed.Status;
                 if (order.Status is "NEW" or "PARTIALLY_FILLED" && order.FilledQuantity >= order.Quantity) order.Status = "FILLED";
+                if (observed.Status == "FILLED" && observed.FilledAt.HasValue)
+                    order.FilledAt ??= observed.FilledAt.Value.ToUniversalTime();
                 order.UpdatedAt = DateTimeOffset.UtcNow;
             }
             else if (snapshot.OpenOrdersByClientId.TryGetValue(order.ClientOrderId, out var oid))
@@ -44,11 +46,17 @@ public sealed partial class GridOrderLifecycle
             {
                 order.Status = "UNKNOWN"; // Absence from the book is not cancel confirmation.
             }
+            var filledAt = OrderCompletion.FindFilledAt(order.Quantity, fills.Select(x => (x.Quantity, x.OccurredAt)));
+            if (filledAt.HasValue) order.FilledAt = filledAt;
         }
         foreach (var update in snapshot.OrderUpdates)
         {
             var order = orders.FirstOrDefault(x => x.ExchangeOrderId == update.ExchangeOrderId);
-            if (order is null || update.OccurredAt < order.UpdatedAt) continue;
+            if (order is null) continue;
+            // A confirmed terminal event carries a completion time even when a
+            // newer local reconciliation has already touched UpdatedAt.
+            if (update.Status == "FILLED" && update.HasExchangeTimestamp) order.FilledAt ??= update.OccurredAt.ToUniversalTime();
+            if (update.OccurredAt < order.UpdatedAt) continue;
             order.Status = update.Status;
             order.UpdatedAt = update.OccurredAt;
         }

@@ -1,5 +1,6 @@
 export type StrategyConfig = {
   strategyType: 'GRID'; defaultExecutionEnvironmentId: string; defaultExecutionAccountId: string;
+  entryFillLimitEnabled: boolean; entryFillWindowMinutes: number; maxEntryFillsPerSide: number;
   name: string; exchangeAccountId: string; symbol: string; gridMode: 'BUY_ONLY' | 'SELL_ONLY' | 'TWO_WAY';
   centerSuggestionMode: 'CURRENT_MID' | 'MANUAL'; manualCenterPrice?: string | null; autoRestart: boolean;
   maxLevelsPerSide: number; workingEntriesPerSide: number; initialGapPoints: string;

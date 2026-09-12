@@ -53,6 +53,9 @@ public sealed record GridConfiguration
     public int OrderCommandTimeoutSeconds { get; init; } = 10;
     public int MaxOrderFrequency { get; init; } = 5;
     public int PartialFillCancelAfterMinutes { get; init; } = 10;
+    public bool EntryFillLimitEnabled { get; init; }
+    public int EntryFillWindowMinutes { get; init; } = 60;
+    public int MaxEntryFillsPerSide { get; init; } = 3;
 }
 
 public sealed record GridLevel(

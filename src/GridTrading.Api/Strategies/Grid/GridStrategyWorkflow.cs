@@ -100,6 +100,9 @@ public sealed class GridStrategyWorkflow(
             {
                 Symbol = candidate.Symbol, GridMode = candidate.GridMode, CenterPrice = request.ConfirmedCenterPrice,
                 CenterSuggestionMode = candidate.CenterSuggestionMode,
+                EntryFillLimitEnabled = candidate.EntryFillLimitEnabled,
+                EntryFillWindowMinutes = candidate.EntryFillWindowMinutes,
+                MaxEntryFillsPerSide = candidate.MaxEntryFillsPerSide,
                 MaxLevelsPerSide = candidate.MaxLevelsPerSide, WorkingEntriesPerSide = candidate.WorkingEntriesPerSide,
                 InitialGapPoints = candidate.InitialGapPoints, GridSpacingPoints = candidate.GridSpacingPoints,
                 GridSpacingStepPoints = candidate.GridSpacingStepPoints, TakeProfitPoints = candidate.TakeProfitPoints,
@@ -218,6 +221,7 @@ public sealed class GridStrategyWorkflow(
         {
             if ((preview.Configuration.GridMode == GridMode.BuyOnly && side == OrderSide.Sell) ||
                 (preview.Configuration.GridMode == GridMode.SellOnly && side == OrderSide.Buy)) continue;
+            if (!await lifecycle.CanPlaceNewEntryOrderAsync(cycle, preview.Configuration, side, ct)) continue;
             var level = GridMath.SelectWorkingEntryLevel(preview.Plan, side, quote.Mid, []);
             if (level is null) continue;
             var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, 0m, reservations,
@@ -230,7 +234,7 @@ public sealed class GridStrategyWorkflow(
 
         try
         {
-            await adapter.PlaceOrdersAsync(selection, preview.Configuration,
+            await lifecycle.PlaceNewEntryOrdersAsync(cycle, preview.Configuration,
                 db.Orders.Local.Where(x => x.CycleId == cycle.Id), ct);
         }
         catch (Exception ex)

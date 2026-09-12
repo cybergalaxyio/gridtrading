@@ -10,8 +10,9 @@ namespace GridTrading.Api.Strategies.Grid;
 public sealed partial class GridOrderLifecycle(
     TradingDbContext db,
     ExecutionEnvironmentRegistry environments,
-    ExecutionAccountOperationGate accountGate)
+    ExecutionAccountOperationGate accountGate, TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     public Task<int> ProcessFillsAsync(string accountId, IReadOnlyList<NormalizedExecutionFill> fills, CancellationToken ct) =>
         accountGate.RunAsync(accountId, () => ProcessFillsCoreAsync(accountId, fills, ct), ct);
 
@@ -80,6 +81,7 @@ public sealed partial class GridOrderLifecycle(
     {
         var processed = 0;
         var affected = new Dictionary<string, (CycleEntity Cycle, GridConfiguration Config)>();
+        var completedEntries = new Dictionary<(string CycleId, string Side), CycleEntity>();
         foreach (var update in updates)
         {
             var order = await FindOrderAsync(accountId, update.ExchangeOrderId, update.ClientOrderId, ct);
@@ -91,6 +93,12 @@ public sealed partial class GridOrderLifecycle(
             if (order.Status is "FILLED" or "CANCELLED" or "REJECTED" && update.Status is "NEW" or "PARTIALLY_FILLED") continue;
             if (order.Status == "FILLED" && update.Status != "FILLED") continue;
             order.Status = update.Status;
+            if (update.Status == "FILLED")
+            {
+                if (update.HasExchangeTimestamp) order.FilledAt ??= update.OccurredAt.ToUniversalTime();
+                if (order.Kind == "ENTRY" && cycle.State == "RUNNING")
+                    completedEntries[(cycle.Id, order.Side)] = cycle;
+            }
             order.LastExchangeUpdateAt = update.OccurredAt;
             order.UpdatedAt = DateTimeOffset.UtcNow;
             processed++;
@@ -99,6 +107,11 @@ public sealed partial class GridOrderLifecycle(
                 affected[cycle.Id] = (cycle, DeserializeConfig(cycle));
         }
         await db.SaveChangesAsync(ct);
+        // Terminal order notifications may precede fills. Enforce the limit now,
+        // but leave replenishment to fill processing so no unrecorded lot is skipped.
+        foreach (var item in completedEntries)
+            await CanPlaceNewEntryOrderAsync(item.Value, DeserializeConfig(item.Value),
+                Enum.Parse<OrderSide>(item.Key.Side, true), ct);
         foreach (var item in affected.Values)
         {
             await UpdateRiskPauseAsync(item.Cycle, ct);
@@ -182,7 +195,7 @@ public sealed partial class GridOrderLifecycle(
         {
             var pendingEntries = await db.Orders.Where(x => x.CycleId == cycle.Id &&
                 x.Status == "PENDING_EXCHANGE" && x.Kind == "ENTRY").ToListAsync(ct);
-            await adapter.PlaceOrdersAsync(selection, config, pendingEntries, ct);
+            await PlaceNewEntryOrdersAsync(cycle, config, pendingEntries, ct);
             await MaintainEntryOrdersAsync(cycle, config, quote: null, ct);
         }
         var finalFee = Math.Abs(snapshot.Position.PositionValue) * config.TakerFeeRate;
@@ -207,9 +220,12 @@ public sealed partial class GridOrderLifecycle(
         db.Executions.Add(execution);
         // Rebuild from executions, not a status/placement ACK that may already
         // include this fill (notably IOC flatten acknowledgements).
-        order.FilledQuantity = (await db.Executions.Where(x => x.OrderId == order.Id).ToListAsync(ct))
-            .Sum(x => x.Quantity) + fill.Quantity;
+        var orderExecutions = await db.Executions.Where(x => x.OrderId == order.Id).ToListAsync(ct);
+        order.FilledQuantity = orderExecutions.Sum(x => x.Quantity) + fill.Quantity;
         order.Quantity = Math.Max(order.Quantity, order.FilledQuantity);
+        var filledAt = OrderCompletion.FindFilledAt(order.Quantity,
+            orderExecutions.Append(execution).Select(x => (x.Quantity, x.OccurredAt)));
+        if (filledAt.HasValue) order.FilledAt = filledAt;
         if (!terminalBeforeFill) order.Status = order.FilledQuantity >= order.Quantity ? "FILLED" : "PARTIALLY_FILLED";
         order.UpdatedAt = DateTimeOffset.UtcNow;
         cycle.PaidFees += fill.Fee;
