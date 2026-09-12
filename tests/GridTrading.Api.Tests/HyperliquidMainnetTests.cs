@@ -231,6 +231,46 @@ public sealed class HyperliquidMainnetTests
         Assert.Equal(firstNonce + 1, secondNonce);
     }
 
+    [Theory]
+    [InlineData(GridMode.BuyOnly, true, true)]
+    [InlineData(GridMode.BuyOnly, true, false)]
+    [InlineData(GridMode.SellOnly, false, true)]
+    [InlineData(GridMode.SellOnly, false, false)]
+    public async Task SingleModeStartsOnlySelectedEntryAndSendsOppositeTakeProfit(GridMode mode, bool isBuy, bool postOnlyTp)
+    {
+        await using var f = await Fixture.CreateAsync();
+        var config = ExampleConfig() with { GridMode = mode, MaxNetLot = .12m, PostOnlyTakeProfits = postOnlyTp };
+        var workflow = await f.WorkflowAsync(config);
+        var (_, cycle) = await workflow.StartCycleAsync("strategy",
+            new("preview", 100m, new(true, true, "MAINNET")), "single-start", Ct);
+        var entry = await f.Db.Orders.SingleAsync(Ct);
+        Assert.Equal(isBuy ? "BUY" : "SELL", entry.Side);
+        var submitted = Assert.Single(f.Handler.Actions).GetProperty("action").GetProperty("orders");
+        Assert.Equal(1, submitted.GetArrayLength());
+        Assert.Equal(isBuy, submitted[0].GetProperty("b").GetBoolean());
+        Assert.Equal("Alo", submitted[0].GetProperty("t").GetProperty("limit").GetProperty("tif").GetString());
+
+        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]),
+            new ExecutionAccountOperationGate());
+        await lifecycle.ProcessFillsAsync("live", [new NormalizedExecutionFill("single-fill",
+            entry.ExchangeOrderId, entry.ClientOrderId, entry.Side, entry.Price, entry.Quantity, 0m,
+            DateTimeOffset.UtcNow)], Ct);
+
+        var tp = await f.Db.Orders.SingleAsync(x => x.Kind == "TAKE_PROFIT", Ct);
+        Assert.Equal(isBuy ? "SELL" : "BUY", tp.Side);
+        Assert.Equal(entry.Quantity, tp.Quantity);
+        Assert.Equal(isBuy ? entry.Price + .4m : entry.Price - .4m, tp.Price);
+        Assert.Equal("NEW", tp.Status);
+        Assert.Equal("RUNNING", cycle.State);
+        Assert.Equal(2, f.Handler.Actions.Count);
+        var protection = f.Handler.Actions[1].GetProperty("action").GetProperty("orders");
+        Assert.Equal(1, protection.GetArrayLength());
+        Assert.Equal(!isBuy, protection[0].GetProperty("b").GetBoolean());
+        Assert.Equal(postOnlyTp ? "Alo" : "Gtc", protection[0].GetProperty("t").GetProperty("limit").GetProperty("tif").GetString());
+        Assert.Single(await f.Db.Orders.Where(x => x.Kind == "ENTRY").ToListAsync(Ct));
+        Assert.All(f.Handler.Hosts, host => Assert.Equal("api.hyperliquid.xyz", host));
+    }
+
     private static GridConfiguration ExampleConfig() => new()
     {
         Symbol = "SOLUSDC", CenterPrice = 100m, TickSize = .01m, QuantityStep = .01m, MinOrderQuantity = .01m,
