@@ -14,6 +14,8 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
     public DbSet<AuditEntity> AuditLogs => Set<AuditEntity>();
     public DbSet<RiskAlertEntity> RiskAlerts => Set<RiskAlertEntity>();
     public DbSet<HyperliquidAccountEntity> HyperliquidAccounts => Set<HyperliquidAccountEntity>();
+    public DbSet<TelegramNotificationSettingsEntity> TelegramNotificationSettings => Set<TelegramNotificationSettingsEntity>();
+    public DbSet<TelegramAlertDeliveryEntity> TelegramAlertDeliveries => Set<TelegramAlertDeliveryEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -28,6 +30,9 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
         modelBuilder.Entity<OperationEntity>().HasIndex(x => x.IdempotencyKey).IsUnique();
         modelBuilder.Entity<RiskAlertEntity>().HasIndex(x => new { x.CycleId, x.CreatedAt });
         modelBuilder.Entity<HyperliquidAccountEntity>().HasIndex(x => x.AgentAddress).IsUnique();
+        modelBuilder.Entity<TelegramAlertDeliveryEntity>().HasKey(x => x.RiskAlertId);
+        modelBuilder.Entity<TelegramAlertDeliveryEntity>().HasOne<RiskAlertEntity>().WithOne()
+            .HasForeignKey<TelegramAlertDeliveryEntity>(x => x.RiskAlertId).OnDelete(DeleteBehavior.Cascade);
 
         foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(x => x.GetProperties()).Where(x => x.ClrType == typeof(decimal)))
             property.SetValueConverter(new Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<decimal, string>(

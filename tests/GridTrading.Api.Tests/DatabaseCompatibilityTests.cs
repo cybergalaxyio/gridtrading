@@ -32,6 +32,15 @@ public sealed class DatabaseCompatibilityTests
         await using var db = new TradingDbContext(options);
 
         await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type = 'table' AND name IN ('TelegramNotificationSettings', 'TelegramAlertDeliveries');
+                """;
+            Assert.Equal(2L, await command.ExecuteScalarAsync(ct));
+        }
+
 
         Assert.Equal(("GRID", "paper-local"), await StrategyBindingAsync(connection, "paper-strategy", ct));
         Assert.Equal(("GRID", "hyperliquid-testnet"), await StrategyBindingAsync(connection, "hl-strategy", ct));

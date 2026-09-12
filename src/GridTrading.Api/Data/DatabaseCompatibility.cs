@@ -48,6 +48,34 @@ public static class DatabaseCompatibility
             ON "FundingPayments" ("CycleId", "OccurredAt");
             """);
 
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TelegramNotificationSettings" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_TelegramNotificationSettings" PRIMARY KEY,
+                "EncryptedBotToken" TEXT NOT NULL,
+                "ChatId" TEXT NOT NULL,
+                "Enabled" INTEGER NOT NULL,
+                "BotUsername" TEXT NULL,
+                "VerifiedAt" TEXT NULL,
+                "EnabledAt" TEXT NULL,
+                "LastTestedAt" TEXT NULL,
+                "LastTestError" TEXT NULL,
+                "LastDeliveryAt" TEXT NULL,
+                "LastDeliveryStatus" TEXT NULL,
+                "LastDeliveryError" TEXT NULL,
+                "UpdatedAt" TEXT NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TelegramAlertDeliveries" (
+                "RiskAlertId" TEXT NOT NULL CONSTRAINT "PK_TelegramAlertDeliveries" PRIMARY KEY,
+                "AttemptedAt" TEXT NOT NULL,
+                "DeliveredAt" TEXT NULL,
+                "Error" TEXT NULL,
+                CONSTRAINT "FK_TelegramAlertDeliveries_RiskAlerts_RiskAlertId"
+                    FOREIGN KEY ("RiskAlertId") REFERENCES "RiskAlerts" ("Id") ON DELETE CASCADE
+            );
+            """);
+
         await AddColumnIfMissingAsync(db, "Orders", "LastExchangeUpdateAt", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "VirtualLots", "ProtectionPending", "INTEGER NOT NULL DEFAULT 0");
         await AddColumnIfMissingAsync(db, "Executions", "ExchangeOrderId", "TEXT NOT NULL DEFAULT ''");

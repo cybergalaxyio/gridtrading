@@ -65,3 +65,19 @@ public sealed record EmergencyConfirmation(bool CancelAllStrategyOrders, bool Fl
 public sealed record AcknowledgementRequest(string Note);
 public sealed record PreviewCacheItem(string Id, string? StrategyId, int StrategyVersion, string ExecutionEnvironmentId, string ExecutionAccountId,
     DateTimeOffset ExpiresAt, GridConfiguration Configuration, GridPlan Plan);
+
+public sealed record TelegramSettingsRequest(string? BotToken, string ChatId);
+
+public sealed record TelegramSettingsDto(
+    bool Configured,
+    bool Enabled,
+    bool TokenStored,
+    string ChatId,
+    string? BotUsername,
+    DateTimeOffset? VerifiedAt,
+    DateTimeOffset? EnabledAt,
+    DateTimeOffset? LastTestedAt,
+    string? LastTestError,
+    DateTimeOffset? LastDeliveryAt,
+    string? LastDeliveryStatus,
+    string? LastDeliveryError);

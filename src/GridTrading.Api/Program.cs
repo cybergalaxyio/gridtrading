@@ -22,6 +22,8 @@ builder.Services.AddSingleton<ReplayStore>();
 builder.Services.AddSingleton<ReplayService>();
 builder.Services.AddHttpClient<HyperliquidInfoClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<CredentialProtector>();
+builder.Services.AddSingleton<ITelegramBotClient, TelegramBotClient>();
+builder.Services.AddScoped<TelegramNotificationSettingsService>();
 builder.Services.AddSingleton<GridTrading.Api.Exchange.HyperliquidL1Signer>();
 builder.Services.AddScoped<HyperliquidNonceManager>();
 builder.Services.AddHttpClient<HyperliquidTradingClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -45,6 +47,7 @@ builder.Services.AddHostedService<GridReconciliationService>();
 builder.Services.AddScoped<TradingService>();
 builder.Services.AddHostedService<MarketBroadcastService>();
 builder.Services.AddHostedService<PaperExecutionService>();
+builder.Services.AddHostedService<TelegramAlertDispatcher>();
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNameCaseInsensitive = true;
@@ -272,6 +275,24 @@ api.MapPost("/risk-alerts/{id}/acknowledgements", async (string id, Acknowledgem
 {
     var alert = await db.RiskAlerts.FindAsync([id], ct); if (alert is null) return Results.NotFound();
     alert.Acknowledged = true; alert.AcknowledgementNote = request.Note; await db.SaveChangesAsync(ct); return Results.Ok(alert);
+});
+
+api.MapGet("/notification-settings/telegram", async (TelegramNotificationSettingsService service, CancellationToken ct) =>
+    Results.Ok(await service.GetAsync(ct)));
+api.MapPut("/notification-settings/telegram", async (TelegramSettingsRequest request,
+    TelegramNotificationSettingsService service, CancellationToken ct) =>
+    Results.Ok(await service.SaveAsync(request, ct)));
+api.MapPost("/notification-settings/telegram/test-and-enable", async (
+    TelegramNotificationSettingsService service, CancellationToken ct) =>
+    Results.Ok(await service.TestAndEnableAsync(ct)));
+api.MapPost("/notification-settings/telegram/disable", async (
+    TelegramNotificationSettingsService service, CancellationToken ct) =>
+    Results.Ok(await service.DisableAsync(ct)));
+api.MapDelete("/notification-settings/telegram", async (
+    TelegramNotificationSettingsService service, CancellationToken ct) =>
+{
+    await service.DeleteAsync(ct);
+    return Results.NoContent();
 });
 
 app.MapReplayAndExchangeEndpoints();

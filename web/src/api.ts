@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
+import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, TelegramSettings, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -32,6 +32,13 @@ export const api = {
   snapshot: (cycleId: string) => call<Snapshot>(`/cycles/${cycleId}/snapshot`),
   orders: (cycleId?: string) => call<Order[]>(`/orders${cycleId ? `?cycleId=${cycleId}` : ''}`),
   alerts: () => call<Alert[]>('/risk-alerts'),
+  telegramSettings: () => call<TelegramSettings>('/notification-settings/telegram'),
+  saveTelegramSettings: (body: { botToken?: string; chatId: string }) => call<TelegramSettings>('/notification-settings/telegram', {
+    method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body),
+  }),
+  testAndEnableTelegram: () => call<TelegramSettings>('/notification-settings/telegram/test-and-enable', { method: 'POST' }),
+  disableTelegram: () => call<TelegramSettings>('/notification-settings/telegram/disable', { method: 'POST' }),
+  removeTelegram: () => call<void>('/notification-settings/telegram', { method: 'DELETE' }),
   preview: (strategyId: string, version: number, center: string, executionEnvironmentId: string, executionAccountId: string) => call<Preview>('/grid-plan-previews', {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ strategyId, strategyVersion: version, confirmedCenterPrice: center, executionEnvironmentId, executionAccountId, parameterOverrides: null }),
   }),

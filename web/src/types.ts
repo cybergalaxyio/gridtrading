@@ -97,3 +97,10 @@ export type HyperliquidHistoricalOrder = HyperliquidOrderAttribution & {
   };
   status: string; statusTimestamp: number;
 }
+
+export type TelegramSettings = {
+  configured: boolean; enabled: boolean; tokenStored: boolean; chatId: string;
+  botUsername?: string | null; verifiedAt?: string | null; enabledAt?: string | null;
+  lastTestedAt?: string | null; lastTestError?: string | null; lastDeliveryAt?: string | null;
+  lastDeliveryStatus?: 'SUCCEEDED' | 'FAILED' | null; lastDeliveryError?: string | null;
+}
