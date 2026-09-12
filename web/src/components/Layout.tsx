@@ -4,11 +4,11 @@ import { Icon } from './Icon'
 export type Route = 'dashboard' | 'strategies' | 'orders' | 'alerts' | 'settings' | 'create'
 
 const nav: { route: Route; label: string; icon: string }[] = [
-  { route: 'dashboard', label: '控制台', icon: 'dashboard' },
-  { route: 'strategies', label: '策略', icon: 'strategy' },
-  { route: 'orders', label: '订单与成交', icon: 'orders' },
+  { route: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
+  { route: 'strategies', label: 'Strategies', icon: 'strategy' },
+  { route: 'orders', label: 'Orders & Fills', icon: 'orders' },
   { route: 'alerts', label: 'Risks', icon: 'alert' },
-  { route: 'settings', label: '系统设置', icon: 'settings' },
+  { route: 'settings', label: 'Settings', icon: 'settings' },
 ]
 
 export function Layout({ route, environment, emergencyBusy, onRoute, onEmergency, children }: {
