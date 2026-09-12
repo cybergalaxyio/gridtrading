@@ -1,7 +1,7 @@
 export type StrategyConfig = {
   strategyType: 'GRID'; defaultExecutionEnvironmentId: string; defaultExecutionAccountId: string;
   name: string; exchangeAccountId: string; symbol: string; gridMode: 'BUY_ONLY' | 'SELL_ONLY' | 'TWO_WAY';
-  centerSuggestionMode: 'CURRENT_MID' | 'VWAP_EMA' | 'MANUAL'; autoRestart: boolean;
+  centerSuggestionMode: 'CURRENT_MID' | 'MANUAL'; manualCenterPrice?: string | null; autoRestart: boolean;
   maxLevelsPerSide: number; workingEntriesPerSide: number; initialGapPoints: string;
   gridSpacingPoints: string; gridSpacingStepPoints: string; takeProfitPoints: string;
   baseLotSize: string; lotSizeIncreasePercent: string; maxTradeLot: string; maxNetLot: string;
@@ -20,6 +20,7 @@ export type Cycle = {
   operatorResetRequired: boolean; fixedCenterPrice: string; startedAt: string; endedAt?: string;
   executionEnvironmentId: string; executionAccountId: string;
   frozenConfiguration?: StrategyConfig | null;
+  frozenPlan?: { levels: GridLevel[] } | null;
 }
 
 export type Strategy = {

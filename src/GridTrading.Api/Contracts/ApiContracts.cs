@@ -13,6 +13,7 @@ public sealed record StrategyRequest(
     int PartialFillCancelAfterMinutes = 10, decimal FaultExposureThresholdUsdt = 10m)
 {
     public string StrategyType { get; init; } = "GRID";
+    public decimal? ManualCenterPrice { get; init; }
     public string? DefaultExecutionEnvironmentId { get; init; }
     public string? DefaultExecutionAccountId { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]
@@ -20,7 +21,10 @@ public sealed record StrategyRequest(
 
     public GridConfiguration ToConfiguration(decimal centerPrice = 0m) => new()
     {
-        Symbol = Symbol, GridMode = GridMode, CenterPrice = centerPrice, MaxLevelsPerSide = MaxLevelsPerSide,
+        Symbol = Symbol, GridMode = GridMode,
+        CenterSuggestionMode = CenterSuggestionMode,
+        CenterPrice = CenterSuggestionMode == "MANUAL" ? ManualCenterPrice ?? 0m : centerPrice,
+        MaxLevelsPerSide = MaxLevelsPerSide,
         WorkingEntriesPerSide = WorkingEntriesPerSide, InitialGapPoints = InitialGapPoints,
         GridSpacingPoints = GridSpacingPoints, GridSpacingStepPoints = GridSpacingStepPoints,
         TakeProfitPoints = TakeProfitPoints, BaseLotSize = BaseLotSize,
@@ -47,7 +51,8 @@ public sealed record CandidateConfiguration(
     decimal InitialGapPoints, decimal GridSpacingPoints, decimal GridSpacingStepPoints,
     decimal TakeProfitPoints, decimal BaseLotSize, decimal LotSizeIncreasePercent,
     decimal MaxTradeLot, decimal MaxNetLot,
-    string? ExecutionEnvironmentId = null, string? ExecutionAccountId = null);
+    string? ExecutionEnvironmentId = null, string? ExecutionAccountId = null,
+    string CenterSuggestionMode = "CURRENT_MID");
 
 public sealed record PreviewRequest(string? StrategyId, int? StrategyVersion, decimal ConfirmedCenterPrice,
     CandidateConfiguration? CandidateConfiguration, object? ParameterOverrides,

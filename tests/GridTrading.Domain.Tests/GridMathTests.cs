@@ -15,6 +15,28 @@ public sealed class GridMathTests
     };
 
     [Fact]
+    public void InitialGapIsSplitInHalfAroundBidAndAskWithOutwardTickRounding()
+    {
+        var config = Configuration() with
+        {
+            CenterPrice = 100.015m, InitialBid = 100m, InitialAsk = 100.03m,
+            CenterSuggestionMode = "CURRENT_MID", InitialGapPoints = 11m
+        };
+        var plan = GridMath.BuildPlan(config, Rules with { TickSize = .01m });
+        Assert.Equal(99.94m, plan.Levels.Single(x => x.Side == OrderSide.Buy && x.LevelIndex == 0).EntryPrice);
+        Assert.Equal(100.09m, plan.Levels.Single(x => x.Side == OrderSide.Sell && x.LevelIndex == 0).EntryPrice);
+        Assert.Equal(99.82m, plan.Levels.Single(x => x.Side == OrderSide.Buy && x.LevelIndex == 1).EntryPrice);
+    }
+
+    [Fact]
+    public void ManualInitialGapIsSplitAroundTheEnteredCenter()
+    {
+        var plan = GridMath.BuildPlan(Configuration() with { InitialGapPoints = 20m }, Rules);
+        Assert.Equal(99.99m, plan.Levels.Single(x => x.Side == OrderSide.Buy && x.LevelIndex == 0).EntryPrice);
+        Assert.Equal(100.01m, plan.Levels.Single(x => x.Side == OrderSide.Sell && x.LevelIndex == 0).EntryPrice);
+    }
+
+    [Fact]
     public void Plan_UsesHalfSpacingForZeroInitialGapAndProgressiveIntervals()
     {
         var plan = GridMath.BuildPlan(Configuration(), Rules);

@@ -37,11 +37,12 @@ export const api = {
   }),
   previewCandidate: (config: StrategyConfig, center: string) => call<Preview>('/grid-plan-previews', {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({
-      strategyId: null, confirmedCenterPrice: center, parameterOverrides: null,
+      strategyId: null, confirmedCenterPrice: config.centerSuggestionMode === 'MANUAL' ? center : '0', parameterOverrides: null,
       executionEnvironmentId: config.defaultExecutionEnvironmentId, executionAccountId: config.defaultExecutionAccountId,
       candidateConfiguration: {
         exchangeAccountId: config.defaultExecutionAccountId, executionEnvironmentId: config.defaultExecutionEnvironmentId,
         executionAccountId: config.defaultExecutionAccountId, symbol: config.symbol, gridMode: config.gridMode, maxLevelsPerSide: config.maxLevelsPerSide,
+        centerSuggestionMode: config.centerSuggestionMode,
         workingEntriesPerSide: config.workingEntriesPerSide, initialGapPoints: config.initialGapPoints,
         gridSpacingPoints: config.gridSpacingPoints, gridSpacingStepPoints: config.gridSpacingStepPoints,
         takeProfitPoints: config.takeProfitPoints, baseLotSize: config.baseLotSize,

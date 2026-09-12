@@ -7,10 +7,12 @@ public static class GridMath
         Validate(config, rules);
         var initialGap = (config.InitialGapPoints > 0m
             ? config.InitialGapPoints
-            : config.GridSpacingPoints / 2m) * rules.TickSize;
+            : config.GridSpacingPoints) / 2m * rules.TickSize;
 
-        var buyPrice = RoundDown(config.CenterPrice - initialGap, rules.TickSize);
-        var sellPrice = RoundUp(config.CenterPrice + initialGap, rules.TickSize);
+        var buyAnchor = config.InitialBid ?? config.CenterPrice;
+        var sellAnchor = config.InitialAsk ?? config.CenterPrice;
+        var buyPrice = RoundDown(buyAnchor - initialGap, rules.TickSize);
+        var sellPrice = RoundUp(sellAnchor + initialGap, rules.TickSize);
         var includeBuy = config.GridMode != GridMode.SellOnly;
         var includeSell = config.GridMode != GridMode.BuyOnly;
         var levels = new List<GridLevel>(config.MaxLevelsPerSide * (config.GridMode == GridMode.TwoWay ? 2 : 1));

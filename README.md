@@ -17,6 +17,13 @@
 - 保守 OHLC 回放：同一 Bar 同时触及 Entry 与 TP 时，不假设有利成交顺序。
 - Testnet/Mainnet 独立账户、签名、官方主机与行情订阅；Mainnet 使用用户填写的策略参数，无试运行预设或额外下单开关。
 
+## 中心模式与 Initial Gap
+
+- **Current Mid**：无需输入中心价格。预览使用当时的 Bid / Ask；Start 在后端重新获取实时行情并生成实际 Grid。`Buy0 = Bid − Initial Gap × Tick Size ÷ 2`，`Sell0 = Ask + Initial Gap × Tick Size ÷ 2`。
+- **Manual**：必须填写大于 0 的中心价格。价格随策略保存，预览和 Start 都使用该值；Buy0 / Sell0 分别位于手动中心下方 / 上方半个 Initial Gap。
+- **Initial Gap** 单位为 pts，表示完整初始间距，每侧使用一半；`0` 自动使用 Grid Spacing 作为完整间距。Buy 向下、Sell 向上按 Tick Size 取整。Current Mid 的首层买卖价差还包含启动时的 Bid / Ask spread。
+- Cycle 启动后冻结中心、Bid / Ask 基准和实际 Grid，不随市场或策略编辑移动。已有运行中 Cycle 保留原计划。此前未保存中心价格的 Manual 策略需要编辑并补填价格后才能启动。
+
 ## Hyperliquid Testnet
 
 完整配置和用户操作见 [docs/TESTNET_TRADING.md](docs/TESTNET_TRADING.md)。启动 Testnet cycle 前，后端会强制验证 API Wallet 授权、账户已有测试资金、实际仓位为零以及没有残留挂单。nonce 由后端按签名地址管理，用户无需输入。

@@ -14,7 +14,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     symbol: initialStrategy.symbol, workingEntriesPerSide: 1,
   } : { ...defaultConfig })
   const [environment, setEnvironment] = useState(() => initialStrategy?.defaultExecutionEnvironmentId ?? defaultConfig.defaultExecutionEnvironmentId)
-  const [center, setCenter] = useState(initialStrategy?.activeCycle?.fixedCenterPrice ?? '')
+  const [center, setCenter] = useState(initialStrategy?.configuration.manualCenterPrice ?? '')
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState(false)
   const [instrument, setInstrument] = useState<ExchangeInstrumentRules | null>(null)
@@ -68,7 +68,12 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
   const [step, setStep] = useState(1)
   const totalLevels = plannedLevelCount(config)
   const previewRows = useMemo(() => preview?.levels.filter((_, i) => i < 12) ?? [], [preview])
-  const gridPreview = useMemo(() => buildGridPreview(config, center, instrument?.tickSize, instrument?.quantityStep), [config, center, instrument])
+  const isManual = config.centerSuggestionMode === 'MANUAL'
+  const displayCenter = isManual ? center : preview?.confirmedCenterPrice ?? ''
+  const gridPreview = useMemo(() => isManual
+    ? buildGridPreview(config, center, instrument?.tickSize, instrument?.quantityStep)
+    : (preview?.levels.map(level => ({ side: level.side as 'BUY' | 'SELL', level: level.levelIndex, price: +level.entryPrice, quantity: +level.plannedQuantity })) ?? []),
+    [config, center, instrument, isManual, preview])
 
   function set<K extends keyof StrategyConfig>(key: K, value: StrategyConfig[K]) { setConfig(x => ({ ...x, [key]: value })); setPreview(null) }
   function changeEnvironment(value: string) {
@@ -79,15 +84,11 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
   function changeAccount(value: string) {
     setConfig(current => ({ ...current, defaultExecutionAccountId: value, exchangeAccountId: value })); setPreview(null)
   }
-  async function suggestCenter() {
-    try { const value = environment === 'paper-local' ? (await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/center-suggestion?mode=CURRENT_MID').then(r => r.json()) as { suggestedCenterPrice: string }).suggestedCenterPrice : (await api.hyperliquidBook(config.symbol, environment)).mid; setCenter(value) }
-    catch { reportError('无法获取最新中心建议') }
-  }
-  function validateForm(requireCenter: boolean) {
+  function validateForm() {
     if (!config.name.trim()) { setStep(1); reportError('请填写策略名称'); return false }
     if (!config.defaultExecutionAccountId) { setStep(1); reportError('请选择执行账户'); return false }
-    if (requireCenter && (!center.trim() || !Number.isFinite(Number(center)) || Number(center) <= 0)) {
-      setStep(2); reportError('请填写大于 0 的确认中心价格，或点击“获取建议”'); return false
+    if (isManual && (!center.trim() || !Number.isFinite(Number(center)) || Number(center) <= 0)) {
+      setStep(2); reportError('Manual 模式需要填写大于 0 的中心价格'); return false
     }
     const numericFields: [keyof StrategyConfig, string, number][] = [
       ['maxLevelsPerSide', '单侧最大层数', 2], ['initialGapPoints', 'Initial Gap', 2],
@@ -109,13 +110,16 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     return true
   }
   async function generatePreview() {
-    if (!validateForm(true)) return
+    if (!validateForm()) return
     setBusy(true); try { setPreview(await api.previewCandidate(config, center)); setStep(4) }
     catch (e) { reportError(e instanceof Error ? e.message : '预览失败') } finally { setBusy(false) }
   }
   async function save() {
-    if (!validateForm(false)) return
-    setBusy(true); try { initialStrategy ? await api.updateStrategy(initialStrategy.strategyId, config) : await api.createStrategy(config); await onSaved(!!initialStrategy) }
+    if (!validateForm()) return
+    setBusy(true); try {
+      const savedConfig = { ...config, manualCenterPrice: isManual ? center : null }
+      initialStrategy ? await api.updateStrategy(initialStrategy.strategyId, savedConfig) : await api.createStrategy(savedConfig); await onSaved(!!initialStrategy)
+    }
     catch (e) { reportError(e instanceof Error ? e.message : '保存失败') } finally { setBusy(false) }
   }
 
@@ -133,12 +137,13 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <Field label="Quantity Step" hint={instrument ? `szDecimals ${instrument.sizeDecimals}` : ''}><input value={instrumentLoading ? '加载中…' : (instrument?.quantityStep ?? instrumentError) || '—'} disabled /></Field>
         </div><div className="check-row"><label><input type="checkbox" checked={config.autoRestart} onChange={e => set('autoRestart', e.target.checked)} /> Cycle 结束后自动重启</label></div></>}
         {step === 2 && <><SectionTitle title="网格参数" subtitle={`中心价格与网格距离共同定义计划；当前 Tick Size ${instrument?.tickSize ?? (instrumentLoading ? '加载中…' : '不可用')}。`} /><div className="form-grid">
-          <Field label="中心建议模式"><select value={config.centerSuggestionMode} onChange={e => set('centerSuggestionMode', e.target.value as StrategyConfig['centerSuggestionMode'])}><option value="CURRENT_MID">Current Mid</option><option value="VWAP_EMA">VWAP / EMA</option><option value="MANUAL">Manual</option></select></Field>
-          <Field label="确认中心价格" hint="Cycle 启动后保持固定"><div className="input-action"><input value={center} onChange={e => { setCenter(e.target.value); setPreview(null) }} /><button onClick={() => void suggestCenter()}>获取建议</button></div></Field>
+          <Field label="中心模式"><select value={config.centerSuggestionMode} onChange={e => set('centerSuggestionMode', e.target.value as StrategyConfig['centerSuggestionMode'])}><option value="CURRENT_MID">Current Mid</option><option value="MANUAL">Manual</option></select></Field>
+          {isManual ? <Field label="手动中心价格" hint="必填；保存后用于启动 Cycle"><input type="number" min="0" step="any" required value={center} onChange={e => { setCenter(e.target.value); setPreview(null) }} /></Field>
+            : <Field label="启动时使用实时 Bid / Ask" hint="无需输入价格；启动后 Grid 保持固定"><span>Buy0 = Bid − Initial Gap ÷ 2；Sell0 = Ask + Initial Gap ÷ 2（按 Tick Size 换算）</span></Field>}
         </div><div className="form-grid three grid-parameter-fields">
           <NumberField label="单侧最大层数" value={config.maxLevelsPerSide} onChange={v => set('maxLevelsPerSide', +v)} suffix="层" />
           <NumberField label="单侧工作 Entry" value={1} onChange={() => undefined} suffix="单" hint="固定维持 1 张；成交后按当前价格选择下一有效网格层" />
-          <NumberField label="Initial Gap" value={config.initialGapPoints} onChange={v => set('initialGapPoints', v)} suffix="pts" hint={+config.initialGapPoints === 0 ? `自动取 Grid Spacing 一半；${pointHint(String(+config.gridSpacingPoints / 2), instrument)}` : pointHint(config.initialGapPoints, instrument)} />
+          <NumberField label="Initial Gap" value={config.initialGapPoints} onChange={v => set('initialGapPoints', v)} suffix="pts" hint={`${+config.initialGapPoints === 0 ? '0 = 使用 Grid Spacing；' : ''}每侧偏移一半：${pointHint(String((+config.initialGapPoints > 0 ? +config.initialGapPoints : +config.gridSpacingPoints) / 2), instrument)}`} />
           <NumberField label="Grid Spacing" value={config.gridSpacingPoints} onChange={v => set('gridSpacingPoints', v)} suffix="pts" hint={pointHint(config.gridSpacingPoints, instrument)} />
           <NumberField label={<span className="label-with-help">Spacing Step <InfoTooltip text="控制网格越往外扩张时，每一层间距增加多少 Points。Level n 与前一层的距离 = Grid Spacing + n × Spacing Step；设为 0 时所有层等距。例如 250 / 10：L1 间距 260 pts，L2 间距 270 pts。" /></span>} value={config.gridSpacingStepPoints} onChange={v => set('gridSpacingStepPoints', v)} suffix="pts" hint={pointHint(config.gridSpacingStepPoints, instrument)} />
           <NumberField label="Take Profit" value={config.takeProfitPoints} onChange={v => set('takeProfitPoints', v)} suffix="pts" hint={pointHint(config.takeProfitPoints, instrument)} />
@@ -162,7 +167,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
         {step === 4 && <><SectionTitle title="预览确认" subtitle="Preview 不会创建订单；启动时后端仍会重新校验全部前置条件。" />{preview ? <>
           <div className="preview-stats"><div><small>价格区间</small><b>{(+preview.outermostBuyPrice).toFixed(3)} — {(+preview.outermostSellPrice).toFixed(3)}</b></div><div><small>计划挂单层数</small><b>{totalLevels}</b></div><div><small>单侧计划数量</small><b>{preview.maximumPlannedQuantityPerSide} SOL</b></div><div><small>单侧名义价值</small><b>~ {(+preview.maximumPlannedNotionalPerSide).toFixed(2)} USDC</b></div></div>
           <div className="preview-table table-wrap"><table><thead><tr><th>方向</th><th>Level</th><th>Entry Price</th><th>Lot Size</th><th>Notional</th><th>Cumulative Qty</th></tr></thead><tbody>{previewRows.map(x => <tr key={`${x.side}${x.levelIndex}`}><td className={x.side === 'BUY' ? 'positive' : 'negative'}>{x.side}</td><td>#{x.levelIndex}</td><td>{(+x.entryPrice).toFixed(3)}</td><td>{x.plannedQuantity}</td><td>{(+x.orderNotional).toFixed(2)}</td><td>{x.cumulativeQuantity}</td></tr>)}</tbody></table></div>
-          <p className="preview-expiry">此预览于 {new Date(preview.expiresAt).toLocaleTimeString('zh-CN', { hour12: false })} 过期 · 当前仅保存策略，不会自动启动</p>
+          <p className="preview-expiry">{!isManual && 'Current Mid 预览仅供参考；启动时按最新 Bid / Ask 重新生成。'}此预览于 {new Date(preview.expiresAt).toLocaleTimeString('zh-CN', { hour12: false })} 过期 · 当前仅保存策略，不会自动启动</p>
         </> : <div className="preview-placeholder"><span>▦</span><h3>尚未生成完整网格计划</h3><p>完成参数填写后点击“生成预览”，后端将按 Tick Size、Quantity Step 和最小名义价值校验全部层级。</p><button className="primary" onClick={() => void generatePreview()} disabled={busy}>{busy ? '计算中…' : '生成预览'}</button></div>}</>}
         <footer className="form-actions"><button className="secondary" onClick={step === 1 ? onCancel : () => setStep(x => x - 1)}>{step === 1 ? '取消' : '上一步'}</button><span />
           {step < 3 && <button className="primary" onClick={() => setStep(x => x + 1)}>下一步</button>}
@@ -170,8 +175,8 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           {step === 4 && preview && <button className="primary" onClick={() => void save()} disabled={busy}>{busy ? '保存中…' : initialStrategy ? '保存修改' : '确认并保存策略'}</button>}
         </footer>
       </section>
-      <aside className="preview-side panel"><h3>配置摘要</h3><dl><div><dt>交易对</dt><dd>{config.symbol}</dd></div><div><dt>Tick Size</dt><dd>{instrument?.tickSize ?? '—'}</dd></div><div><dt>Quantity Step</dt><dd>{instrument?.quantityStep ?? '—'}</dd></div><div><dt>固定中心</dt><dd>{center}</dd></div><div><dt>计划层数</dt><dd>{totalLevels}</dd></div><div><dt>基础数量</dt><dd>{config.baseLotSize} SOL</dd></div><div><dt>MaxNetLot</dt><dd>{config.maxNetLot} SOL</dd></div><div><dt>Basket TP / SL</dt><dd>{config.basketTakeProfitUsdt} / {config.basketStopLossUsdt}</dd></div></dl>
-        <GridPreview levels={gridPreview} center={center} tickSize={instrument?.tickSize} quantityStep={instrument?.quantityStep} symbol={coin(config.symbol)} />
+      <aside className="preview-side panel"><h3>配置摘要</h3><dl><div><dt>交易对</dt><dd>{config.symbol}</dd></div><div><dt>Tick Size</dt><dd>{instrument?.tickSize ?? '—'}</dd></div><div><dt>Quantity Step</dt><dd>{instrument?.quantityStep ?? '—'}</dd></div><div><dt>{isManual ? '手动中心' : '预览中间价'}</dt><dd>{displayCenter || (isManual ? '请输入中心价格' : '启动时自动获取')}</dd></div><div><dt>计划层数</dt><dd>{totalLevels}</dd></div><div><dt>基础数量</dt><dd>{config.baseLotSize} SOL</dd></div><div><dt>MaxNetLot</dt><dd>{config.maxNetLot} SOL</dd></div><div><dt>Basket TP / SL</dt><dd>{config.basketTakeProfitUsdt} / {config.basketStopLossUsdt}</dd></div></dl>
+        <GridPreview levels={gridPreview} center={displayCenter} indicative={!isManual} tickSize={instrument?.tickSize} quantityStep={instrument?.quantityStep} symbol={coin(config.symbol)} />
         <p className="readonly-note">交易规则来自后端 Instrument Metadata，前端不能覆盖 Tick Size、Quantity Step 或最小订单限制。</p></aside>
     </div>
   </div>

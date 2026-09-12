@@ -9,9 +9,13 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
   const config = { ...strategy.configuration, ...frozen }
   const effectiveTick = frozen?.tickSize ?? tickSize ?? strategy.configuration.tickSize
   const effectiveQuantityStep = frozen?.quantityStep ?? quantityStep ?? strategy.configuration.quantityStep
+  const initialGap = +config.initialGapPoints === 0 ? +config.gridSpacingPoints : +config.initialGapPoints
   const center = strategy.activeCycle?.fixedCenterPrice
   const [tab, setTab] = useState<'parameters' | 'grid'>('parameters')
-  const previewLevels = useMemo(() => buildGridPreview(config, center ?? '', effectiveTick, effectiveQuantityStep), [config, center, effectiveTick, effectiveQuantityStep])
+  const frozenLevels = strategy.activeCycle?.frozenPlan?.levels
+  const previewLevels = useMemo(() => frozenLevels
+    ? frozenLevels.map(level => ({ side: level.side as 'BUY' | 'SELL', level: level.levelIndex, price: +level.entryPrice, quantity: +level.plannedQuantity }))
+    : buildGridPreview(config, center ?? '', effectiveTick, effectiveQuantityStep), [frozenLevels, config, center, effectiveTick, effectiveQuantityStep])
   const groups: { title: string; rows: [string, string][] }[] = [
     { title: '基础信息', rows: [
       ['Strategy ID', strategy.strategyId], ['版本', `v${strategy.version}`], ['交易账户', strategy.activeCycle?.executionAccountId ?? strategy.defaultExecutionAccountId],
@@ -20,8 +24,8 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
       ['Tick Size', effectiveTick ?? '等待市场规则'], ['Quantity Step', effectiveQuantityStep ?? '等待市场规则'],
     ] },
     { title: '网格参数', rows: [
-      ['固定中心', strategy.activeCycle?.fixedCenterPrice ?? 'Cycle 启动时确认'], ['单侧最大层数', `${config.maxLevelsPerSide} 层`],
-      ['单侧工作 Entry', `${config.workingEntriesPerSide} 单`], ['Initial Gap', +config.initialGapPoints === 0 ? `自动 ½ spacing · ${pointValue(+config.gridSpacingPoints / 2, effectiveTick)}` : pointValue(config.initialGapPoints, effectiveTick)],
+      ['固定中心', strategy.activeCycle?.fixedCenterPrice ?? (config.centerSuggestionMode === 'MANUAL' ? config.manualCenterPrice ?? '请编辑并填写中心价格' : '启动时使用实时 Bid / Ask')], ['单侧最大层数', `${config.maxLevelsPerSide} 层`],
+      ['单侧工作 Entry', `${config.workingEntriesPerSide} 单`], ['Initial Gap', `${+config.initialGapPoints === 0 ? '自动使用 Grid Spacing · ' : ''}${pointValue(initialGap, effectiveTick)}；每侧 ½：${pointValue(initialGap / 2, effectiveTick)}`],
       ['Grid Spacing', pointValue(config.gridSpacingPoints, effectiveTick)], ['Spacing Step', pointValue(config.gridSpacingStepPoints, effectiveTick)],
       ['Take Profit', pointValue(config.takeProfitPoints, effectiveTick)],
     ] },
@@ -55,7 +59,7 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
       {center && effectiveTick && effectiveQuantityStep ? <>
         <div className="parameter-grid-meta"><span>固定中心 <b>{center}</b></span><span>Tick Size <b>{effectiveTick}</b></span><span>Quantity Step <b>{effectiveQuantityStep}</b></span></div>
         <GridPreview levels={previewLevels} center={center} tickSize={effectiveTick} quantityStep={effectiveQuantityStep} symbol={coin(strategy.symbol)} />
-        <p>该 Grid 由当前 Cycle 的冻结参数预先计算；价格与 Lot Size 不会随策略实例后续修改而变化。</p>
+        <p>该 Grid 显示当前 Cycle 启动时保存的实际计划；价格与 Lot Size 不会随策略实例后续修改而变化。</p>
       </> : <div className="parameter-grid-empty"><b>尚无固定 Grid</b><span>策略启动前还没有确认中心价格。请通过 Edit 生成预览；启动 Cycle 后这里会显示冻结 Grid。</span></div>}
     </div>}
     <div className="parameter-actions"><button className="secondary" onClick={onClose}>关闭</button>{onEdit && <button className="secondary" onClick={onEdit}>Edit</button>}{onOpen && <button className="primary" onClick={onOpen}>打开控制台</button>}</div>

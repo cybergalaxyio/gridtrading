@@ -24,6 +24,7 @@ public sealed class GridStrategyWorkflow(
     {
         ValidateStrategy(request);
         var selection = await ResolveDefaultsAsync(request, ct);
+        await ValidateStrategyPlanAsync(request, selection, ct);
         var now = DateTimeOffset.UtcNow;
         var entity = new StrategyEntity
         {
@@ -53,6 +54,8 @@ public sealed class GridStrategyWorkflow(
         if (entity is null || entity.Archived) return null;
         if (!entity.StrategyType.Equals("GRID", StringComparison.OrdinalIgnoreCase))
             throw Problem(422, "STRATEGY_TYPE_UNSUPPORTED", $"Strategy type '{entity.StrategyType}' is not supported.");
+
+        await ValidateStrategyPlanAsync(request, selection, ct);
 
         entity.Name = request.Name.Trim();
         entity.DefaultExecutionEnvironmentId = selection.EnvironmentId;
@@ -96,6 +99,7 @@ public sealed class GridStrategyWorkflow(
             configuration = new GridConfiguration
             {
                 Symbol = candidate.Symbol, GridMode = candidate.GridMode, CenterPrice = request.ConfirmedCenterPrice,
+                CenterSuggestionMode = candidate.CenterSuggestionMode,
                 MaxLevelsPerSide = candidate.MaxLevelsPerSide, WorkingEntriesPerSide = candidate.WorkingEntriesPerSide,
                 InitialGapPoints = candidate.InitialGapPoints, GridSpacingPoints = candidate.GridSpacingPoints,
                 GridSpacingStepPoints = candidate.GridSpacingStepPoints, TakeProfitPoints = candidate.TakeProfitPoints,
@@ -109,6 +113,9 @@ public sealed class GridStrategyWorkflow(
 
         EnsureSafeSelection(selection);
         var adapter = environments.Adapter(selection.EnvironmentId);
+        ValidateCenterMode(configuration.CenterSuggestionMode);
+        if (configuration.CenterSuggestionMode == "CURRENT_MID")
+            configuration = WithStartupQuote(configuration, await adapter.GetQuoteAsync(selection, configuration.Symbol, ct));
         var instrument = await adapter.GetInstrumentAsync(selection, configuration.Symbol, configuration.CenterPrice, ct);
         configuration = configuration with
         {
@@ -141,7 +148,8 @@ public sealed class GridStrategyWorkflow(
     {
         if (!previews.Items.TryGetValue(request.PreviewId, out var preview) || preview.ExpiresAt <= DateTimeOffset.UtcNow)
             throw Problem(422, "PREVIEW_EXPIRED", "Create a fresh grid preview before starting.");
-        if (preview.StrategyId != strategyId || preview.Plan.CenterPrice != request.ConfirmedCenterPrice)
+        if (preview.StrategyId != strategyId ||
+            (preview.Configuration.CenterSuggestionMode != "CURRENT_MID" && preview.Plan.CenterPrice != request.ConfirmedCenterPrice))
             throw Problem(422, "PREVIEW_MISMATCH", "Preview does not match this strategy and centre.");
 
         var strategy = await db.Strategies.FindAsync([strategyId], ct)
@@ -167,6 +175,19 @@ public sealed class GridStrategyWorkflow(
             throw Problem(422, "OPERATOR_CONFIRMATION_REQUIRED", "The preview execution environment, parameters and centre must be confirmed.");
 
         var quote = await adapter.PreflightStartAsync(selection, strategy.Symbol, ct);
+        if (preview.Configuration.CenterSuggestionMode == "CURRENT_MID")
+        {
+            var configuration = WithStartupQuote(preview.Configuration, quote);
+            var instrument = await adapter.GetInstrumentAsync(selection, configuration.Symbol, configuration.CenterPrice, ct);
+            configuration = configuration with
+            {
+                TickSize = instrument.TickSize, QuantityStep = instrument.QuantityStep,
+                MinOrderQuantity = instrument.MinOrderQuantity, MinOrderNotional = instrument.MinOrderNotional,
+                MaxActiveOrders = instrument.MaxActiveOrders, SizeDecimals = instrument.SizeDecimals,
+                MakerFeeRate = instrument.MakerFeeRate, TakerFeeRate = instrument.TakerFeeRate
+            };
+            preview = preview with { Configuration = configuration, Plan = GridMath.BuildPlan(configuration, instrument.Rules) };
+        }
         var operation = await NewOperationAsync("START_CYCLE", strategyId, key, request, ct);
         if (operation.Status == "COMPLETED")
             return (operation, await db.Cycles.SingleAsync(x => x.Id == operation.ResourceId, ct));
@@ -176,7 +197,7 @@ public sealed class GridStrategyWorkflow(
         {
             Id = Ids.New("cycle"), StrategyId = strategyId,
             ExecutionEnvironmentId = selection.EnvironmentId, ExecutionAccountId = selection.AccountId,
-            State = "STARTING", StateVersion = 1, FixedCenterPrice = request.ConfirmedCenterPrice,
+            State = "STARTING", StateVersion = 1, FixedCenterPrice = preview.Plan.CenterPrice,
             FrozenConfigurationJson = JsonSerializer.Serialize(preview.Configuration, JsonSupport.Options),
             FrozenPlanJson = JsonSerializer.Serialize(preview.Plan, JsonSupport.Options),
             ExitReason = "", StartedAt = now, LastReconciledAt = now
@@ -419,13 +440,42 @@ public sealed class GridStrategyWorkflow(
             payload = new { state = cycle.State, cycle.StateVersion }
         }, ct);
 
+    private static void ValidateCenterMode(string mode)
+    {
+        if (mode is not ("CURRENT_MID" or "MANUAL"))
+            throw Problem(422, "CENTER_MODE_INVALID", "Choose Current Mid or Manual.");
+    }
+
+    private static GridConfiguration WithStartupQuote(GridConfiguration configuration, ExecutionQuote quote)
+    {
+        if (quote.Bid <= 0m || quote.Ask < quote.Bid ||
+            DateTimeOffset.UtcNow - quote.AsOf > TimeSpan.FromSeconds(configuration.MarketDataStaleSeconds))
+            throw Problem(422, "MARKET_DATA_STALE", "A fresh, valid bid/ask quote is required to build the grid.");
+        return configuration with
+        {
+            CenterPrice = (quote.Bid + quote.Ask) / 2m, InitialBid = quote.Bid, InitialAsk = quote.Ask
+        };
+    }
+
+    private async Task ValidateStrategyPlanAsync(StrategyRequest request, ExecutionSelection selection, CancellationToken ct)
+    {
+        var adapter = environments.Adapter(selection.EnvironmentId);
+        var configuration = request.ToConfiguration();
+        if (configuration.CenterSuggestionMode == "CURRENT_MID")
+            configuration = WithStartupQuote(configuration, await adapter.GetQuoteAsync(selection, configuration.Symbol, ct));
+        var instrument = await adapter.GetInstrumentAsync(selection, configuration.Symbol, configuration.CenterPrice, ct);
+        _ = GridMath.BuildPlan(configuration, instrument.Rules);
+    }
+
     private static void ValidateStrategy(StrategyRequest request)
     {
         if (!request.StrategyType.Equals("GRID", StringComparison.OrdinalIgnoreCase))
             throw Problem(422, "STRATEGY_TYPE_UNSUPPORTED", $"Strategy type '{request.StrategyType}' is not supported.");
+        ValidateCenterMode(request.CenterSuggestionMode);
+        if (request.CenterSuggestionMode == "MANUAL" && !(request.ManualCenterPrice > 0m))
+            throw Problem(422, "CENTER_PRICE", "Manual mode requires a positive center price.");
         if (request.AutoRestart || !request.IncludeFunding)
             throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires autoRestart=false and includeFunding=true.");
-        _ = GridMath.BuildPlan(request.ToConfiguration(145.25m), TradingService.SolRules);
         if (request.FaultExposureThresholdUsdt < 0m)
             throw Problem(422, "FAULT_THRESHOLD_INVALID", "Entry risk pause exposure threshold must be zero or greater.");
     }

@@ -292,10 +292,10 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     if (!strategy) return
     setBusy(true)
     try {
-      const quote = isHyperliquid ? await api.hyperliquidBook(strategy.symbol, selectedEnvironment)
-        : await fetch('/api/v1/market-data/acct_paper_01/SOLUSDT/snapshot').then(r => r.json()) as { mid: string }
-      const preview = await api.preview(strategy.strategyId, strategy.version, quote.mid, runEnvironmentId, runAccountId)
-      await api.start(strategy.strategyId, preview.previewId, quote.mid, preview.executionEnvironmentId)
+      const center = strategy.configuration.centerSuggestionMode === 'MANUAL'
+        ? strategy.configuration.manualCenterPrice ?? '0' : '0'
+      const preview = await api.preview(strategy.strategyId, strategy.version, center, runEnvironmentId, runAccountId)
+      await api.start(strategy.strategyId, preview.previewId, preview.confirmedCenterPrice, preview.executionEnvironmentId)
       notify('Cycle 已启动，中心和网格计划已冻结'); await reload(); await refresh()
     } catch (e) { reportError(e instanceof Error ? e.message : '启动失败') } finally { setBusy(false) }
   }

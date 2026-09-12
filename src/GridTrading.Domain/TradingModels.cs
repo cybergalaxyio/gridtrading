@@ -26,6 +26,9 @@ public sealed record GridConfiguration
     public int MaxActiveOrders { get; init; } = 500;
     public int? SizeDecimals { get; init; }
     public decimal CenterPrice { get; init; }
+    public string CenterSuggestionMode { get; init; } = "MANUAL";
+    public decimal? InitialBid { get; init; }
+    public decimal? InitialAsk { get; init; }
     public int MaxLevelsPerSide { get; init; } = 10;
     public int WorkingEntriesPerSide { get; init; } = 1;
     public decimal InitialGapPoints { get; init; }

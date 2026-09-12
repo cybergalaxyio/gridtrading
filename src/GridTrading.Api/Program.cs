@@ -300,6 +300,7 @@ static object CycleDto(CycleEntity x) => new
     x.RiskPaused, operatorPaused = x.IsOperatorPaused, x.EntryPauseReasons, x.RiskRecoveryChecks,
     x.ExecutionEnvironmentId, x.ExecutionAccountId, x.FixedCenterPrice,
     frozenConfiguration = JsonSerializer.Deserialize<GridConfiguration>(x.FrozenConfigurationJson, JsonSupport.Options),
+    frozenPlan = JsonSerializer.Deserialize<GridPlan>(x.FrozenPlanJson, JsonSupport.Options),
     x.StartedAt, x.EndedAt, x.ExitReason
 };
 static object StrategyDto(StrategyEntity x, CycleEntity? cycle) => new { strategyId = x.Id, x.Name, x.StrategyType,
