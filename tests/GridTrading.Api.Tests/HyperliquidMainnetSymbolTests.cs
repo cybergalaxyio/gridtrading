@@ -134,6 +134,38 @@ public sealed partial class HyperliquidMainnetTests
         Assert.Equal(.12m, f.Handler.Position);
     }
 
+    [Fact]
+    public async Task AutomaticCloseAndRestartAllowsAnotherActiveSymbol()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var config = ExampleConfig() with { AutoRestart = true };
+        var workflow = await f.WorkflowAsync(config);
+        var settings = StrategyRequest.Default with
+        {
+            Symbol = config.Symbol, AutoRestart = true, CenterSuggestionMode = "CURRENT_MID",
+            DefaultExecutionEnvironmentId = "hyperliquid-mainnet", DefaultExecutionAccountId = "live"
+        };
+        (await f.Db.Strategies.SingleAsync(Ct)).ConfigurationJson = JsonSerializer.Serialize(settings, JsonSupport.Options);
+        await AddReservedMarketAsync(f, "BTC");
+        var otherOrder = AddLocalOrder(f, "btc-order", "other-cycle", "BTC", "20");
+        var (_, cycle) = await workflow.StartCycleAsync("strategy",
+            new("preview", 100m, new(true, true, "MAINNET")), "start-before-restart", Ct);
+        f.Handler.OtherPosition = 2m;
+        f.Handler.OpenOrders = [VenueOrder("BTC", 20)];
+        await workflow.CommandAsync(cycle.Id, "CLOSE", "BASKET_TAKE_PROFIT", "automatic-close", null, false, Ct, automaticClose: true);
+        var pending = await f.Db.Operations.SingleAsync(x => x.Type == "AUTO_RESTART", Ct);
+        await workflow.ProcessAutoRestartAsync(pending.Id, Ct);
+        Assert.Equal("COMPLETED", pending.Status);
+        Assert.True(cycle.IsTerminal);
+        var next = await f.Db.Cycles.SingleAsync(x => x.StrategyId == "strategy" && !x.IsTerminal, Ct);
+        Assert.NotEqual(cycle.Id, next.Id);
+        Assert.Equal("RUNNING", next.State);
+        Assert.Equal(2m, f.Handler.OtherPosition);
+        Assert.Equal("NEW", otherOrder.Status);
+        Assert.Equal(2, await f.Db.Cycles.CountAsync(x => !x.IsTerminal, Ct));
+        Assert.Empty(await f.Db.RiskAlerts.Where(x => x.Code == "AUTO_RESTART_FAILED").ToListAsync(Ct));
+    }
+
     private static object VenueOrder(string coin, int oid) => new { coin, oid, side = "B", sz = "0.12", cloid = (string?)null };
 
     private static async Task AddReservedMarketAsync(Fixture f, string symbol, string account = "live",

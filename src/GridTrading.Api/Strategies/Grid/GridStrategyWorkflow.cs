@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace GridTrading.Api.Strategies.Grid;
 
-public sealed class GridStrategyWorkflow(
+public sealed partial class GridStrategyWorkflow(
     TradingDbContext db,
     MarketState market,
     PreviewStore previews,
@@ -214,6 +214,8 @@ public sealed class GridStrategyWorkflow(
             ExitReason = "", StartedAt = now, LastReconciledAt = now
         };
         db.Cycles.Add(cycle);
+        // Persist the cycle identity before any exchange action, including an interrupted automatic start.
+        operation.ResourceId = cycle.Id;
         await db.SaveChangesAsync(ct);
 
         var reservations = new List<ActiveOrderReservation>();
@@ -269,7 +271,7 @@ public sealed class GridStrategyWorkflow(
     }
 
     public async Task<OperationEntity> CommandAsync(string cycleId, string command, string reason, string key,
-        long? expectedVersion, bool emergencyConfirmed, CancellationToken ct)
+        long? expectedVersion, bool emergencyConfirmed, CancellationToken ct, bool automaticClose = false)
     {
         var cycle = await db.Cycles.FindAsync([cycleId], ct)
             ?? throw Problem(404, "CYCLE_NOT_FOUND", "Cycle was not found.");
@@ -281,6 +283,8 @@ public sealed class GridStrategyWorkflow(
         var config = JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
         var selection = new ExecutionSelection(cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId);
         var adapter = environments.Adapter(selection.EnvironmentId);
+        var restartAfterClose = automaticClose && command == "CLOSE" && config.AutoRestart &&
+            IsBasketClose(reason) && !cycle.IsOperatorPaused && !cycle.OperatorResetRequired && cycle.State != "FAULT";
         switch (command)
         {
             case "PAUSE_ENTRIES":
@@ -292,6 +296,7 @@ public sealed class GridStrategyWorkflow(
                 if (command == "EMERGENCY_FLATTEN" && !emergencyConfirmed)
                     throw Problem(422, "EMERGENCY_CONFIRMATION_REQUIRED", "All emergency confirmations are required.");
                 await lifecycle.BeginClosingAsync(cycle, expectedVersion, ct);
+                restartAfterClose = restartAfterClose && !cycle.OperatorPaused && !cycle.OperatorResetRequired;
                 await lifecycle.ReconcileAsync(cycle, ct);
                 var residual = await adapter.FlattenAsync(selection, cycle, config, ct);
                 if (residual != 0m)
@@ -316,6 +321,8 @@ public sealed class GridStrategyWorkflow(
                 cycle.OperatorResetRequired = command == "EMERGENCY_FLATTEN";
                 cycle.ExitReason = command == "EMERGENCY_FLATTEN" ? "EMERGENCY_FLATTEN" :
                     string.IsNullOrWhiteSpace(reason) ? "OPERATOR_CLOSE" : reason;
+                if (restartAfterClose)
+                    await NewOperationAsync("AUTO_RESTART", cycle.Id, AutoRestartKey(cycle.Id), new { cycleId = cycle.Id }, ct);
                 break;
             case "RECONCILE":
                 if (cycle.IsTerminal) throw InvalidState(cycle, command);
@@ -486,8 +493,8 @@ public sealed class GridStrategyWorkflow(
         ValidateCenterMode(request.CenterSuggestionMode);
         if (request.CenterSuggestionMode == "MANUAL" && !(request.ManualCenterPrice > 0m))
             throw Problem(422, "CENTER_PRICE", "Manual mode requires a positive center price.");
-        if (request.AutoRestart || !request.IncludeFunding)
-            throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires autoRestart=false and includeFunding=true.");
+        if (!request.IncludeFunding)
+            throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires includeFunding=true.");
         if (request.FaultExposureThresholdUsdt < 0m)
             throw Problem(422, "FAULT_THRESHOLD_INVALID", "Entry risk pause exposure threshold must be zero or greater.");
     }

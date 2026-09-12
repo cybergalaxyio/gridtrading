@@ -44,6 +44,7 @@ builder.Services.AddScoped<GridStrategyWorkflow>();
 builder.Services.AddHostedService<HyperliquidAccountBootstrap>();
 builder.Services.AddHostedService<HyperliquidFillWebSocketService>();
 builder.Services.AddHostedService<GridReconciliationService>();
+builder.Services.AddHostedService<GridAutoRestartService>();
 builder.Services.AddScoped<TradingService>();
 builder.Services.AddHostedService<MarketBroadcastService>();
 builder.Services.AddHostedService<PaperExecutionService>();
@@ -109,7 +110,7 @@ api.MapGet("/system/status", async (TradingDbContext db, CancellationToken ct) =
 api.MapGet("/system/capabilities", () => new
 {
     gridModes = new[] { "BUY_ONLY", "SELL_ONLY", "TWO_WAY" }, executionEnvironments = new[] { "REPLAY", "PAPER", "TESTNET", "MAINNET" },
-    liveTradingEnabled = true, autoRestartSupported = false, takeProfitModes = new[] { "POINTS" },
+    liveTradingEnabled = true, autoRestartSupported = true, takeProfitModes = new[] { "POINTS" },
     automaticRegimeGateSupported = false
 });
 api.MapGet("/execution-environments", (ExecutionEnvironmentRegistry registry) => registry.Environments);

@@ -54,7 +54,7 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
             {
                 var reason = takeProfitTriggered ? "BASKET_TAKE_PROFIT" : "BASKET_STOP_LOSS";
                 await trading.Command(cycle.Id, "CLOSE", reason,
-                    $"basket-{cycle.Id}-{cycle.StateVersion}", null, false, ct);
+                    $"basket-{cycle.Id}-{cycle.StateVersion}", null, false, ct, automaticClose: true);
             }
         }
     }

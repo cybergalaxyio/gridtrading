@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { Layout, type Route } from './components/Layout'
 import { Modal } from './components/Modal'
@@ -22,11 +22,23 @@ export default function App() {
   const [error, setError] = useState<string>('')
   const [dashboardEnvironmentId, setDashboardEnvironmentId] = useState('')
 
-  const reload = useCallback(async () => {
-    try { setStrategies(await api.strategies()); setError('') }
-    catch (e) { setError(e instanceof Error ? e.message : '无法连接后端') }
+  const reloadSequence = useRef(0)
+  const reload = useCallback(async (background = false) => {
+    const sequence = ++reloadSequence.current
+    try {
+      const latest = await api.strategies()
+      if (sequence !== reloadSequence.current) return
+      setStrategies(latest)
+      if (!background) setError('')
+    } catch (e) {
+      if (!background && sequence === reloadSequence.current) setError(e instanceof Error ? e.message : '无法连接后端')
+    }
   }, [])
-  useEffect(() => { void reload() }, [reload])
+  useEffect(() => {
+    void reload()
+    const timer = setInterval(() => void reload(true), 3000)
+    return () => { clearInterval(timer); reloadSequence.current++ }
+  }, [reload])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timer) }, [toast])
   const preferredStrategy = useMemo(() => strategies.find(x => x.strategyId === loadedStrategyId)
     ?? strategies.find(x => x.activeCycle)

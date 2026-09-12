@@ -27,7 +27,7 @@ public sealed record StrategyRequest(
         Symbol = Symbol, GridMode = GridMode,
         EntryFillLimitEnabled = EntryFillLimitEnabled, EntryFillWindowMinutes = EntryFillWindowMinutes,
         MaxEntryFillsPerSide = MaxEntryFillsPerSide,
-        CenterSuggestionMode = CenterSuggestionMode,
+        CenterSuggestionMode = CenterSuggestionMode, AutoRestart = AutoRestart,
         CenterPrice = CenterSuggestionMode == "MANUAL" ? ManualCenterPrice ?? 0m : centerPrice,
         MaxLevelsPerSide = MaxLevelsPerSide,
         WorkingEntriesPerSide = WorkingEntriesPerSide, InitialGapPoints = InitialGapPoints,

@@ -19,7 +19,7 @@ Exchange minimum notionals and quantity/price precision still apply. The account
 
 ## Pause, close and restart
 
-**Pause Entry** cancels entries while maintaining take profits. **Exit** cancels tracked cycle orders, checks for remaining orders in the selected market, and closes that market's actual position with a reduce-only IOC order. The cycle completes only after that symbol's position is confirmed flat. Unexpected external orders on the same symbol must be resolved before closing can continue. Other symbols' positions and orders do not block startup or closing, and are left untouched.
+**Pause Entry** cancels entries while maintaining take profits. **Exit** cancels tracked cycle orders, checks for remaining orders in the selected market, and closes that market's actual position with a reduce-only IOC order. The cycle completes only after that symbol's position is confirmed flat. Unexpected external orders on the same symbol must be resolved before closing can continue. Other symbols' positions and orders do not block startup, closing or automatic restart, and are left untouched.
 
 Your configured basket thresholds are evaluated during backend reconciliation. Existing nonterminal cycles resume reconciliation after a backend restart. Starting the service does not create a new cycle. Keep the service running while it manages a cycle.
 

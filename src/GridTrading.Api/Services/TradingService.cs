@@ -26,8 +26,8 @@ public sealed class TradingService(GridStrategyWorkflow grid)
         string strategyId, StartCycleRequest request, string key, CancellationToken ct) =>
         grid.StartCycleAsync(strategyId, request, key, ct);
     public Task<OperationEntity> Command(string cycleId, string command, string reason, string key,
-        long? expectedVersion, bool emergencyConfirmed, CancellationToken ct) =>
-        grid.CommandAsync(cycleId, command, reason, key, expectedVersion, emergencyConfirmed, ct);
+        long? expectedVersion, bool emergencyConfirmed, CancellationToken ct, bool automaticClose = false) =>
+        grid.CommandAsync(cycleId, command, reason, key, expectedVersion, emergencyConfirmed, ct, automaticClose);
     public object Snapshot(CycleEntity cycle) => grid.Snapshot(cycle);
 
     public static StrategyRequest DeserializeStrategy(StrategyEntity entity) =>

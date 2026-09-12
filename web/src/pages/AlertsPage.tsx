@@ -26,6 +26,7 @@ function action(code: string) {
   if (code === 'ENTRY_RISK_RECOVERED') return '已解除风险暂停；如有人工暂停则继续保留'
   if (code === 'OPERATOR_ENTRY_CANCEL_PENDING') return '人工暂停保持生效；继续重试撤销 Entry，同时维护 TP'
   if (code === 'RISK_ENTRY_CANCEL_PENDING') return '继续重试撤销 Entry，同时维护 TP'
+  if (code === 'AUTO_RESTART_FAILED') return '自动重启已停止；核对仓位和挂单后手动 Start'
   if (code === 'START_FAILED') return '已尽力撤销初始挂单；Cycle 已终止'
   if (code === 'PROTECTIVE_ORDER_BELOW_FAULT_THRESHOLD') return '影响低于 USD 阈值；仅告警，策略继续运行'
   if (code === 'PROTECTIVE_ORDER_REJECTED') return '已停止新 Entry 并撤销活动 Entry；请核对仓位与 TP'
