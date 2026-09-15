@@ -12,6 +12,9 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     strategyType: initialStrategy.strategyType, defaultExecutionEnvironmentId: initialStrategy.defaultExecutionEnvironmentId,
     defaultExecutionAccountId: initialStrategy.defaultExecutionAccountId, exchangeAccountId: initialStrategy.defaultExecutionAccountId,
     symbol: initialStrategy.symbol, workingEntriesPerSide: 1,
+    singleModeMoveDistancePoints: initialStrategy.configuration.singleModeMoveDistancePoints ??
+      (initialStrategy.configuration.gridMode !== 'TWO_WAY' ? initialStrategy.configuration.gridSpacingPoints : null),
+    singleModeMoveIntervalSeconds: initialStrategy.configuration.singleModeMoveIntervalSeconds ?? 30,
   } : { ...defaultConfig })
   const [environment, setEnvironment] = useState(() => initialStrategy?.defaultExecutionEnvironmentId ?? defaultConfig.defaultExecutionEnvironmentId)
   const [center, setCenter] = useState(initialStrategy?.configuration.manualCenterPrice ?? '')
@@ -68,6 +71,8 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
   const [step, setStep] = useState(1)
   const totalLevels = plannedLevelCount(config)
   const previewRows = useMemo(() => preview?.levels.filter((_, i) => i < 12) ?? [], [preview])
+  const isSingleMode = config.gridMode === 'BUY_ONLY' || config.gridMode === 'SELL_ONLY'
+  const moveDistance = config.singleModeMoveDistancePoints ?? config.gridSpacingPoints
   const isManual = config.centerSuggestionMode === 'MANUAL'
   const displayCenter = isManual ? center : preview?.confirmedCenterPrice ?? ''
   const gridPreview = useMemo(() => isManual
@@ -75,7 +80,15 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     : (preview?.levels.map(level => ({ side: level.side as 'BUY' | 'SELL', level: level.levelIndex, price: +level.entryPrice, quantity: +level.plannedQuantity })) ?? []),
     [config, center, instrument, isManual, preview])
 
-  function set<K extends keyof StrategyConfig>(key: K, value: StrategyConfig[K]) { setConfig(x => ({ ...x, [key]: value })); setPreview(null) }
+  function set<K extends keyof StrategyConfig>(key: K, value: StrategyConfig[K]) {
+    setConfig(current => {
+      const next = { ...current, [key]: value }
+      if (next.gridMode !== 'TWO_WAY' && next.singleModeMoveDistancePoints == null && +next.gridSpacingPoints > 0)
+        next.singleModeMoveDistancePoints = next.gridSpacingPoints
+      return next
+    })
+    setPreview(null)
+  }
   function toggleEntryFillLimit(enabled: boolean) {
     setConfig(current => ({
       ...current, entryFillLimitEnabled: enabled,
@@ -99,6 +112,12 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
     if (!config.defaultExecutionAccountId) { setStep(1); reportError('请选择执行账户'); return false }
     if (isManual && (!center.trim() || !Number.isFinite(Number(center)) || Number(center) <= 0)) {
       setStep(2); reportError('Manual 模式需要填写大于 0 的中心价格'); return false
+    }
+    if (isSingleMode && (!String(moveDistance).trim() || !Number.isFinite(+moveDistance) || +moveDistance <= 0)) {
+      setStep(1); reportError('移动触发距离必须大于 0 pts'); return false
+    }
+    if (isSingleMode && !isPositiveInt32(config.singleModeMoveIntervalSeconds ?? 30)) {
+      setStep(1); reportError('移动最短等待时间必须为正整数秒（最大 2147483647）'); return false
     }
     const numericFields: [keyof StrategyConfig, string, number][] = [
       ['maxLevelsPerSide', '单侧最大层数', 2], ['initialGapPoints', 'Initial Gap', 2],
@@ -151,16 +170,23 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <Field label="默认执行账户"><select value={config.defaultExecutionAccountId} onChange={e => changeAccount(e.target.value)}>{accounts.map(account => <option key={account.id} value={account.id}>{account.displayName}</option>)}{accounts.length === 0 && <option value="">该环境尚未配置账户</option>}</select></Field>
           <Field label="Symbol"><select value={config.symbol} disabled={symbols.length === 0} onChange={e => set('symbol', e.target.value)}>{!symbols.includes(config.symbol) && config.symbol && <option value={config.symbol}>{config.symbol}</option>}{symbols.map(symbol => <option key={symbol} value={symbol}>{displaySymbol(symbol, environment)}</option>)}</select></Field>
           <Field label="网格模式"><select value={config.gridMode ?? 'TWO_WAY'} onChange={e => set('gridMode', e.target.value as StrategyConfig['gridMode'])}><option value="BUY_ONLY">Buy Only（只下半边买单）</option><option value="SELL_ONLY">Sell Only（只下上半边卖单）</option><option value="TWO_WAY">Two-Way（双向网格）</option></select></Field>
+          {isSingleMode && <div id="single-mode-move-fields" style={{ gridColumn: '1 / -1' }}>
+            <div className="form-grid">
+              <NumberField label="移动触发距离" value={moveDistance} min={0} step="any" onChange={v => set('singleModeMoveDistancePoints', v)} suffix="pts" hint={pointHint(moveDistance, instrument)} />
+              <NumberField label="移动最短等待时间" value={config.singleModeMoveIntervalSeconds ?? 30} min={1} step={1} onChange={v => set('singleModeMoveIntervalSeconds', +v)} suffix="秒" />
+            </div>
+            <p>仅空仓时跟随；价格偏离达到设置距离，且当前挂单已等待设置时间，才移动。全部平仓后按实时行情和初始挂单距离，从第一层、基础数量重新开始。</p>
+          </div>}
           <Field label="Tick Size" hint={instrument?.environment ?? ''}><input value={instrumentLoading ? '加载中…' : (instrument?.tickSize ?? instrumentError) || '—'} disabled /></Field>
           <Field label="Quantity Step" hint={instrument ? `szDecimals ${instrument.sizeDecimals}` : ''}><input value={instrumentLoading ? '加载中…' : (instrument?.quantityStep ?? instrumentError) || '—'} disabled /></Field>
         </div><div className="check-row"><label><input type="checkbox" checked={config.autoRestart} onChange={e => set('autoRestart', e.target.checked)} /> 止盈 / 止损关闭后自动开始下一轮</label><span>同一账户和环境；Current Mid 使用新一轮实时 Bid / Ask，Manual 使用保存的中心价。手动关闭、紧急平仓和故障不自动重启。</span></div></>}
         {step === 2 && <><SectionTitle title="网格参数" subtitle={`中心价格与网格距离共同定义计划；当前 Tick Size ${instrument?.tickSize ?? (instrumentLoading ? '加载中…' : '不可用')}。`} /><div className="form-grid">
           <Field label="中心模式"><select value={config.centerSuggestionMode} onChange={e => set('centerSuggestionMode', e.target.value as StrategyConfig['centerSuggestionMode'])}><option value="CURRENT_MID">Current Mid</option><option value="MANUAL">Manual</option></select></Field>
           {isManual ? <Field label="手动中心价格" hint="必填；保存后用于启动 Cycle"><input type="number" min="0" step="any" required value={center} onChange={e => { setCenter(e.target.value); setPreview(null) }} /></Field>
-            : <Field label="启动时使用实时 Bid / Ask" hint="无需输入价格；启动后 Grid 保持固定"><span>Buy0 = Bid − Initial Gap ÷ 2；Sell0 = Ask + Initial Gap ÷ 2（按 Tick Size 换算）</span></Field>}
+            : <Field label="启动时使用实时 Bid / Ask" hint={isSingleMode ? "无需输入价格；空仓时按距离和时间跟随，持仓期间网格固定" : "无需输入价格；启动后 Grid 保持固定"}><span>Buy0 = Bid − Initial Gap ÷ 2；Sell0 = Ask + Initial Gap ÷ 2（按 Tick Size 换算）</span></Field>}
         </div><div className="form-grid three grid-parameter-fields">
           <NumberField label="单侧最大层数" value={config.maxLevelsPerSide} onChange={v => set('maxLevelsPerSide', +v)} suffix="层" />
-          <NumberField label="单侧工作 Entry" value={1} onChange={() => undefined} suffix="单" hint="固定维持 1 张；成交后按当前价格选择下一有效网格层" />
+          <NumberField label="单侧工作 Entry" value={1} onChange={() => undefined} suffix="单" hint={isSingleMode ? "固定维持 1 张；持仓时选择下一有效层，全部平仓后回到第一层、基础数量" : "固定维持 1 张；成交后按当前价格选择下一有效网格层"} />
           <NumberField label="Initial Gap" value={config.initialGapPoints} onChange={v => set('initialGapPoints', v)} suffix="pts" hint={`${+config.initialGapPoints === 0 ? '0 = 使用 Grid Spacing；' : ''}每侧偏移一半：${pointHint(String((+config.initialGapPoints > 0 ? +config.initialGapPoints : +config.gridSpacingPoints) / 2), instrument)}`} />
           <NumberField label="Grid Spacing" value={config.gridSpacingPoints} onChange={v => set('gridSpacingPoints', v)} suffix="pts" hint={pointHint(config.gridSpacingPoints, instrument)} />
           <NumberField label={<span className="label-with-help">Spacing Step <InfoTooltip text="控制网格越往外扩张时，每一层间距增加多少 Points。Level n 与前一层的距离 = Grid Spacing + n × Spacing Step；设为 0 时所有层等距。例如 250 / 10：L1 间距 260 pts，L2 间距 270 pts。" /></span>} value={config.gridSpacingStepPoints} onChange={v => set('gridSpacingStepPoints', v)} suffix="pts" hint={pointHint(config.gridSpacingStepPoints, instrument)} />
@@ -191,7 +217,7 @@ export function CreateStrategyPage({ initialStrategy, onCancel, onSaved, reportE
           <p className="entry-fill-limit-hint">Counts fully filled Entry orders only, separately for Buy and Sell, including prior cycles. At the limit, same-side Entry remainders are cancelled; TP orders remain working.</p>
         </div>}
         <div className="check-row"><label><input type="checkbox" checked={config.includeFunding} onChange={e => set('includeFunding', e.target.checked)} /> Basket PnL 计入资金费</label><span>Maker / Taker Fee 从交易账户自动加载</span></div><div className="safety-note"><Icon name="shield" /><p><b>强制安全规则不可关闭</b><span>陈旧行情、Sync 未完成、仓位/残留单不为零、MaxNetLot 超限都会阻止启动或新建敞口。</span></p></div></>}
-        {step === 4 && <><SectionTitle title="预览确认" subtitle="Preview 不会创建订单；启动时后端仍会重新校验全部前置条件。" />{preview ? <>
+        {step === 4 && <>{isSingleMode && <p>空仓跟随：移动触发距离 {moveDistance} pts；移动最短等待时间 {config.singleModeMoveIntervalSeconds ?? 30} 秒。距离和时间必须同时满足；全部平仓后从第一层、基础数量重新开始。</p>}<SectionTitle title="预览确认" subtitle="Preview 不会创建订单；启动时后端仍会重新校验全部前置条件。" />{preview ? <>
           <div className="preview-stats"><div><small>价格区间</small><b>{(+preview.outermostBuyPrice).toFixed(3)} — {(+preview.outermostSellPrice).toFixed(3)}</b></div><div><small>计划挂单层数</small><b>{totalLevels}</b></div><div><small>单侧计划数量</small><b>{preview.maximumPlannedQuantityPerSide} SOL</b></div><div><small>单侧名义价值</small><b>~ {(+preview.maximumPlannedNotionalPerSide).toFixed(2)} USDC</b></div></div>
           <div className="preview-table table-wrap"><table><thead><tr><th>方向</th><th>Level</th><th>Entry Price</th><th>Lot Size</th><th>Notional</th><th>Cumulative Qty</th></tr></thead><tbody>{previewRows.map(x => <tr key={`${x.side}${x.levelIndex}`}><td className={x.side === 'BUY' ? 'positive' : 'negative'}>{x.side}</td><td>#{x.levelIndex}</td><td>{(+x.entryPrice).toFixed(3)}</td><td>{x.plannedQuantity}</td><td>{(+x.orderNotional).toFixed(2)}</td><td>{x.cumulativeQuantity}</td></tr>)}</tbody></table></div>
           <p className="preview-expiry">{!isManual && 'Current Mid 预览仅供参考；启动时按最新 Bid / Ask 重新生成。'}此预览于 {new Date(preview.expiresAt).toLocaleTimeString('zh-CN', { hour12: false })} 过期 · 当前仅保存策略，不会自动启动</p>

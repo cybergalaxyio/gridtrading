@@ -87,6 +87,13 @@ public sealed class CycleEntity
         (IsOperatorPaused ? new[] { "OPERATOR" } : Array.Empty<string>())
         .Concat(RiskPaused ? new[] { "UNPROTECTED_EXPOSURE" } : Array.Empty<string>()).ToArray();
     public decimal FixedCenterPrice { get; set; }
+    public decimal EntryGridPriceOffset { get; set; }
+    // Durable cancellation intent: never replace an entry before its venue state resolves.
+    public string? EntryGridMovePendingOrderId { get; set; }
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public GridTrading.Domain.GridPlan EffectivePlan => GridTrading.Domain.SingleModeEntryRules.ShiftPlan(
+        System.Text.Json.JsonSerializer.Deserialize<GridTrading.Domain.GridPlan>(FrozenPlanJson,
+            GridTrading.Api.Infrastructure.JsonSupport.Options)!, EntryGridPriceOffset);
     public decimal ActualNetQuantity { get; set; }
     public decimal ReconstructedNetQuantity { get; set; }
     public decimal RealisedCyclePnl { get; set; }

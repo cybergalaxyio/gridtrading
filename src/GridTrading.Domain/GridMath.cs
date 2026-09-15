@@ -152,6 +152,7 @@ public static class GridMath
     {
         if (config.CenterPrice <= 0m) throw new GridValidationException("CENTER_PRICE", "Center price must be positive.");
         if (!Enum.IsDefined(config.GridMode)) throw new GridValidationException("GRID_MODE", "Grid mode is invalid.");
+        SingleModeEntryRules.Validate(config);
         if (config.MaxLevelsPerSide is < 1 or > 200) throw new GridValidationException("MAX_LEVELS", "Max levels must be between 1 and 200.");
         if (config.WorkingEntriesPerSide != 1)
             throw new GridValidationException("WORKING_ENTRIES", "This grid version maintains exactly one active Entry per side.");

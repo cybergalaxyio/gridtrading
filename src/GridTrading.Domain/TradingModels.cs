@@ -19,6 +19,8 @@ public sealed record GridConfiguration
 {
     public required string Symbol { get; init; }
     public GridMode GridMode { get; init; } = GridMode.TwoWay;
+    public decimal? SingleModeMoveDistancePoints { get; init; }
+    public int SingleModeMoveIntervalSeconds { get; init; } = 30;
     public decimal TickSize { get; init; }
     public decimal QuantityStep { get; init; }
     public decimal MinOrderQuantity { get; init; }

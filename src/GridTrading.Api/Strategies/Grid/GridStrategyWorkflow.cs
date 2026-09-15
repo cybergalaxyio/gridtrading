@@ -99,6 +99,8 @@ public sealed partial class GridStrategyWorkflow(
             configuration = new GridConfiguration
             {
                 Symbol = candidate.Symbol, GridMode = candidate.GridMode, CenterPrice = request.ConfirmedCenterPrice,
+                SingleModeMoveDistancePoints = candidate.SingleModeMoveDistancePoints,
+                SingleModeMoveIntervalSeconds = candidate.SingleModeMoveIntervalSeconds,
                 CenterSuggestionMode = candidate.CenterSuggestionMode,
                 EntryFillLimitEnabled = candidate.EntryFillLimitEnabled,
                 EntryFillWindowMinutes = candidate.EntryFillWindowMinutes,
@@ -366,7 +368,8 @@ public sealed partial class GridStrategyWorkflow(
                 cycleId = cycle.Id, cycle.StrategyId, cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId,
                 state = cycle.State, cycle.StateVersion, cycle.IsTerminal, cycle.OperatorResetRequired,
                 cycle.RiskPaused, operatorPaused = cycle.IsOperatorPaused, cycle.EntryPauseReasons, cycle.RiskRecoveryChecks,
-                cycle.StartedAt, fixedCenterPrice = cycle.FixedCenterPrice
+                cycle.StartedAt, fixedCenterPrice = cycle.FixedCenterPrice,
+                cycle.EntryGridPriceOffset, effectivePlan = cycle.EffectivePlan
             },
             market = quote,
             orders = new

@@ -45,6 +45,24 @@ public sealed class StrategyCompatibilityTests
     }
 
     [Fact]
+    public void MissingMoveSettingsUseOwnSpacingAndThirtySeconds()
+    {
+        var json = JsonNode.Parse(JsonSerializer.Serialize(StrategyRequest.Default with
+        {
+            GridMode = GridMode.SellOnly, GridSpacingPoints = 75m
+        }, JsonSupport.Options))!.AsObject();
+        json.Remove("singleModeMoveDistancePoints");
+        json.Remove("singleModeMoveIntervalSeconds");
+        var strategy = JsonSerializer.Deserialize<StrategyRequest>(json.ToJsonString(), JsonSupport.Options)!;
+        var frozen = JsonSerializer.Deserialize<GridConfiguration>(json.ToJsonString(), JsonSupport.Options)!;
+        foreach (var config in new[] { strategy.ToConfiguration(), frozen })
+        {
+            Assert.Equal(75m, config.SingleModeMoveDistancePoints ?? config.GridSpacingPoints);
+            Assert.Equal(30, config.SingleModeMoveIntervalSeconds);
+        }
+    }
+
+    [Fact]
     public void NewStrategyIdsUseTheShortFormat()
     {
         var first = Ids.NewStrategy();

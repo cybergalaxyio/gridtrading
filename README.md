@@ -70,6 +70,8 @@ dotnet run --project src/GridTrading.Api/GridTrading.Api.csproj --urls http://lo
 
 打开 <http://localhost:5050>。前端生产构建会输出到 `src/GridTrading.Api/wwwroot`，由 API 同源托管。
 
+使用 `./run-mainnet.sh` 或 `./run-testnet.sh` 时，脚本会先重新构建前端，再启动后端；构建失败时停止启动，避免继续加载旧页面。首次使用前仍需在 `web` 目录安装依赖。Mainnet 页面地址为 <http://127.0.0.1:5051>。
+
 前后端分离开发：
 
 ```bash

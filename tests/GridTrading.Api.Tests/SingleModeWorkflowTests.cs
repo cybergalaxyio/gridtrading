@@ -29,6 +29,8 @@ public sealed class SingleModeWorkflowTests
         using var json = JsonDocument.Parse(f.Strategy.ConfigurationJson);
         Assert.Equal(wireMode, json.RootElement.GetProperty("gridMode").GetString());
         Assert.Equal(mode, f.Config.GridMode);
+        Assert.Equal(75m, f.Config.SingleModeMoveDistancePoints);
+        Assert.Equal(90, f.Config.SingleModeMoveIntervalSeconds);
         Assert.Equal(3, f.Plan.Levels.Count);
         Assert.All(f.Plan.Levels, level => Assert.Equal(entrySide, level.Side.ToString().ToUpperInvariant()));
         var entry = Assert.Single(f.ActiveEntries());
@@ -38,10 +40,14 @@ public sealed class SingleModeWorkflowTests
         // Editing the template must not change an already running cycle's direction.
         await f.Workflow.UpdateStrategyAsync(f.Strategy.Id, f.Request with
         {
-            GridMode = mode == GridMode.BuyOnly ? GridMode.SellOnly : GridMode.BuyOnly
+            GridMode = mode == GridMode.BuyOnly ? GridMode.SellOnly : GridMode.BuyOnly,
+            SingleModeMoveDistancePoints = 200m, SingleModeMoveIntervalSeconds = 120
         }, Ct);
         Assert.Equal(mode, JsonSerializer.Deserialize<GridConfiguration>(
             f.Cycle.FrozenConfigurationJson, JsonSupport.Options)!.GridMode);
+        var frozen = JsonSerializer.Deserialize<GridConfiguration>(f.Cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+        Assert.Equal(75m, frozen.SingleModeMoveDistancePoints);
+        Assert.Equal(90, frozen.SingleModeMoveIntervalSeconds);
 
         var partial = f.Fill(entry, .1m);
         Assert.Equal(1, await f.Lifecycle.ProcessFillsAsync(PaperExecutionAdapter.AccountId, [partial], Ct));
@@ -133,19 +139,17 @@ public sealed class SingleModeWorkflowTests
     [Theory]
     [InlineData(GridMode.BuyOnly)]
     [InlineData(GridMode.SellOnly)]
-    public async Task GridBoundaryRemovesEntryAndReturningPriceRestoresSelectedSide(GridMode mode)
+    public async Task ReboundBeyondOriginalBoundaryKeepsRestingEntry(GridMode mode)
     {
         await using var f = await Fixture.CreateAsync(mode);
         var original = Assert.Single(f.ActiveEntries());
         var boundary = mode == GridMode.BuyOnly ? f.Plan.OutermostBuyPrice : f.Plan.OutermostSellPrice;
         await f.Lifecycle.MaintainEntryOrdersAsync(f.Cycle, f.Config,
             new ExecutionQuote(boundary - .001m, boundary + .001m, boundary, DateTimeOffset.UtcNow), Ct);
-        Assert.Equal("CANCELLED", original.Status);
-        Assert.Empty(f.ActiveEntries());
+        Assert.Equal("NEW", original.Status);
+        Assert.Same(original, Assert.Single(f.ActiveEntries()));
         await f.Lifecycle.MaintainEntryOrdersAsync(f.Cycle, f.Config, null, Ct);
-        var restored = Assert.Single(f.ActiveEntries());
-        Assert.Equal(original.Side, restored.Side);
-        Assert.Equal(0, restored.GridLevel);
+        Assert.Same(original, Assert.Single(f.ActiveEntries()));
     }
 
     [Theory]
@@ -179,15 +183,59 @@ public sealed class SingleModeWorkflowTests
             request.MaxLevelsPerSide, request.WorkingEntriesPerSide, request.InitialGapPoints,
             request.GridSpacingPoints, request.GridSpacingStepPoints, request.TakeProfitPoints,
             request.BaseLotSize, request.LotSizeIncreasePercent, request.MaxTradeLot, request.MaxNetLot,
-            request.DefaultExecutionEnvironmentId, request.DefaultExecutionAccountId);
+            request.DefaultExecutionEnvironmentId, request.DefaultExecutionAccountId,
+            SingleModeMoveDistancePoints: request.SingleModeMoveDistancePoints,
+            SingleModeMoveIntervalSeconds: request.SingleModeMoveIntervalSeconds);
         var payload = JsonSerializer.Serialize(new PreviewRequest(null, null, f.Config.CenterPrice,
             candidate, null), JsonSupport.Options);
         var preview = await f.Workflow.CreatePreviewAsync(
             JsonSerializer.Deserialize<PreviewRequest>(payload, JsonSupport.Options)!, Ct);
         Assert.Equal(mode, preview.Configuration.GridMode);
+        Assert.Equal(f.Config.SingleModeMoveDistancePoints, preview.Configuration.SingleModeMoveDistancePoints);
+        Assert.Equal(f.Config.SingleModeMoveIntervalSeconds, preview.Configuration.SingleModeMoveIntervalSeconds);
         Assert.Equal(f.Plan.Levels.ToArray(), preview.Plan.Levels.ToArray());
         Assert.Equal(f.Plan.OutermostBuyPrice, preview.Plan.OutermostBuyPrice);
         Assert.Equal(f.Plan.OutermostSellPrice, preview.Plan.OutermostSellPrice);
+    }
+
+    [Theory]
+    [InlineData(GridMode.BuyOnly, -1)]
+    [InlineData(GridMode.SellOnly, 1)]
+    public async Task PaperMovesAnAgedFlatEntryAndRestoresFromPersistedGrid(GridMode mode, int sign)
+    {
+        await using var f = await Fixture.CreateAsync(mode);
+        var entry = Assert.Single(f.ActiveEntries());
+        // Start farther from the simulator's market, without changing its live quotes.
+        f.Cycle.FrozenPlanJson = JsonSerializer.Serialize(SingleModeEntryRules.ShiftPlan(f.Plan, sign * 2m), JsonSupport.Options);
+        entry.Price += sign * 2m;
+        entry.CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        await f.Db.SaveChangesAsync(Ct);
+        await f.Lifecycle.MaintainEntryOrdersAsync(f.Cycle, f.Config, null, Ct);
+        var moved = Assert.Single(f.ActiveEntries());
+        Assert.NotEqual(entry.Id, moved.Id);
+        Assert.Equal("CANCELLED", entry.Status);
+        Assert.True(sign * f.Cycle.EntryGridPriceOffset < 0m);
+        Assert.Equal(f.Cycle.EffectivePlan.Levels[0].EntryPrice, moved.Price);
+        var offset = f.Cycle.EntryGridPriceOffset;
+        await f.CommandAsync("PAUSE_ENTRIES");
+        await f.CommandAsync("RESUME_ENTRIES");
+        Assert.Equal(offset, f.Cycle.EntryGridPriceOffset);
+        Assert.Equal(moved.Price, Assert.Single(f.ActiveEntries()).Price);
+    }
+
+    [Theory]
+    [InlineData(0, 30)]
+    [InlineData(-1, 30)]
+    [InlineData(75, 0)]
+    [InlineData(75, -1)]
+    public async Task InvalidMoveSettingsCannotBeSaved(int distance, int seconds)
+    {
+        await using var f = await Fixture.CreateAsync(GridMode.SellOnly);
+        var json = f.Strategy.ConfigurationJson;
+        var error = await Assert.ThrowsAsync<GridValidationException>(() => f.Workflow.UpdateStrategyAsync(f.Strategy.Id,
+            f.Request with { SingleModeMoveDistancePoints = distance, SingleModeMoveIntervalSeconds = seconds }, Ct));
+        Assert.Equal("SINGLE_MODE_MOVE_INVALID", error.Code);
+        Assert.Equal(json, f.Strategy.ConfigurationJson);
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -220,7 +268,7 @@ public sealed class SingleModeWorkflowTests
                 GridMode = mode, MaxLevelsPerSide = 3, BaseLotSize = .2m, MaxTradeLot = 0m,
                 MaxNetLot = maxNetLot, LotSizeIncreasePercent = 50m,
                 InitialGapPoints = 100m, GridSpacingPoints = 100m, GridSpacingStepPoints = 0m,
-                TakeProfitPoints = 50m
+                TakeProfitPoints = 50m, SingleModeMoveDistancePoints = 75m, SingleModeMoveIntervalSeconds = 90
             };
             // Exercise the same string-enum contract used by the browser.
             var request = JsonSerializer.Deserialize<StrategyRequest>(

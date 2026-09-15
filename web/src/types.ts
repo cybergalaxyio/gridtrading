@@ -1,5 +1,6 @@
 export type StrategyConfig = {
   strategyType: 'GRID'; defaultExecutionEnvironmentId: string; defaultExecutionAccountId: string;
+  singleModeMoveDistancePoints?: string | null; singleModeMoveIntervalSeconds?: number;
   entryFillLimitEnabled: boolean; entryFillWindowMinutes: number; maxEntryFillsPerSide: number;
   name: string; exchangeAccountId: string; symbol: string; gridMode: 'BUY_ONLY' | 'SELL_ONLY' | 'TWO_WAY';
   centerSuggestionMode: 'CURRENT_MID' | 'MANUAL'; manualCenterPrice?: string | null; autoRestart: boolean;
@@ -22,6 +23,7 @@ export type Cycle = {
   executionEnvironmentId: string; executionAccountId: string;
   frozenConfiguration?: StrategyConfig | null;
   frozenPlan?: { levels: GridLevel[] } | null;
+  entryGridPriceOffset?: string; effectivePlan?: { centerPrice: string; levels: GridLevel[] } | null;
 }
 
 export type Strategy = {

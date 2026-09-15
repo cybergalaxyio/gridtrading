@@ -2,6 +2,16 @@ import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig,
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
+// Hidden single-mode fields must not block a two-way request after invalid input.
+function moveSettings(config: StrategyConfig) {
+  const distance = config.singleModeMoveDistancePoints ?? config.gridSpacingPoints
+  const seconds = config.singleModeMoveIntervalSeconds ?? 30
+  return {
+    singleModeMoveDistancePoints: config.gridMode === 'TWO_WAY' && !(Number.isFinite(+distance) && +distance > 0) ? null : distance,
+    singleModeMoveIntervalSeconds: config.gridMode === 'TWO_WAY' && !(Number.isInteger(seconds) && seconds > 0 && seconds <= 2147483647) ? 30 : seconds,
+  }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, init)
   if (response.status === 204) return null as T
@@ -25,8 +35,8 @@ export const api = {
   hyperliquidOrderHistory: (id: string, environment = "hyperliquid-testnet") => call<HyperliquidHistoricalOrder[]>(`/${environment}/accounts/${id}/order-history`),
   instrumentRules: (accountId: string, symbol: string, referencePrice?: string) => call<ExchangeInstrumentRules>(`/exchange-accounts/${encodeURIComponent(accountId)}/instruments/${encodeURIComponent(symbol)}${referencePrice ? `?referencePrice=${encodeURIComponent(referencePrice)}` : ''}`),
   strategies: () => call<Strategy[]>('/strategies'),
-  createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
-  updateStrategy: (strategyId: string, body: StrategyConfig) => call<Strategy>(`/strategies/${encodeURIComponent(strategyId)}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ...body, ...moveSettings(body) }) }),
+  updateStrategy: (strategyId: string, body: StrategyConfig) => call<Strategy>(`/strategies/${encodeURIComponent(strategyId)}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ ...body, ...moveSettings(body) }) }),
   activeCycle: (strategyId: string) => call(`/strategies/${strategyId}/active-cycle`),
   candles: () => call<Candle[]>('/market-data/acct_paper_01/SOLUSDT/candles'),
   snapshot: (cycleId: string) => call<Snapshot>(`/cycles/${cycleId}/snapshot`),
@@ -50,6 +60,7 @@ export const api = {
         exchangeAccountId: config.defaultExecutionAccountId, executionEnvironmentId: config.defaultExecutionEnvironmentId,
         executionAccountId: config.defaultExecutionAccountId, symbol: config.symbol, gridMode: config.gridMode, maxLevelsPerSide: config.maxLevelsPerSide,
         centerSuggestionMode: config.centerSuggestionMode,
+        ...moveSettings(config),
         entryFillLimitEnabled: config.entryFillLimitEnabled,
         entryFillWindowMinutes: config.entryFillWindowMinutes,
         maxEntryFillsPerSide: config.maxEntryFillsPerSide,
@@ -78,6 +89,7 @@ export const defaultConfig: StrategyConfig = {
   initialGapPoints: '0', gridSpacingPoints: '', gridSpacingStepPoints: '', takeProfitPoints: '',
   baseLotSize: '', lotSizeIncreasePercent: '', maxTradeLot: '', maxNetLot: '',
   basketTakeProfitUsdt: '', basketStopLossUsdt: '', makerFeeRate: '0.0002', takerFeeRate: '0.00055',
+  singleModeMoveDistancePoints: null, singleModeMoveIntervalSeconds: 30,
   faultExposureThresholdUsdt: '10',
   entryFillLimitEnabled: false, entryFillWindowMinutes: 60, maxEntryFillsPerSide: 3,
   estimatedExitSlippagePct: '0.10', includeFunding: true, postOnlyEntries: true, postOnlyTakeProfits: true,

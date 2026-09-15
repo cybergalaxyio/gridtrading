@@ -1,4 +1,3 @@
-using System.Text.Json;
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
 using GridTrading.Api.Services;
@@ -18,7 +17,8 @@ public sealed partial class GridOrderLifecycle
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
         quote ??= await adapter.GetQuoteAsync(selection, config.Symbol, ct);
-        var plan = JsonSerializer.Deserialize<GridPlan>(cycle.FrozenPlanJson, JsonSupport.Options)!;
+        if (config.GridMode != GridMode.TwoWay && await MaintainSingleModeMoveAsync(cycle, config, quote, ct)) return;
+        var plan = cycle.EffectivePlan;
         var active = await ActiveOrdersAsync(cycle.Id, ct);
         var openLots = await db.VirtualLots.Where(x => x.CycleId == cycle.Id && x.Status != "CLOSED").ToListAsync(ct);
         var created = new List<OrderEntity>();
@@ -29,6 +29,7 @@ public sealed partial class GridOrderLifecycle
                 (config.GridMode == GridMode.SellOnly && side == OrderSide.Buy)) continue;
             // Enforce the limit even when resting entries do not need a replacement.
             if (!await CanPlaceNewEntryOrderAsync(cycle, config, side, ct)) continue;
+            if (!FreshEntryQuote(config, quote)) continue;
             var sideName = side.ToString().ToUpperInvariant();
             var currentEntries = active.Where(x => x.Kind == "ENTRY" && x.Side == sideName).ToList();
             var occupiedLevels = GridOrderRules.OccupiedLevels(side, openLots.Select(x =>
@@ -38,7 +39,8 @@ public sealed partial class GridOrderLifecycle
             if (currentEntries.Count > 0)
             {
                 if (currentEntries.Any(x => !GridOrderRules.CanMoveEntry(x.Status, x.FilledQuantity))) continue;
-                if (level is not null && currentEntries.Count == 1 && currentEntries[0].GridLevel == level.LevelIndex) continue;
+                if (level is not null && currentEntries.Count == 1 && currentEntries[0].GridLevel == level.LevelIndex &&
+                    (config.GridMode == GridMode.TwoWay || currentEntries[0].Price == level.EntryPrice)) continue;
                 await adapter.CancelOrdersAsync(selection, currentEntries, ct);
                 active.RemoveAll(currentEntries.Contains);
             }
@@ -50,6 +52,7 @@ public sealed partial class GridOrderLifecycle
                 reservations, config.MaxNetLot, TradingService.RulesFor(config));
             if (quantity <= 0m) continue;
             var order = CreateEntry(cycle, config.Symbol, level, quantity);
+            order.CreatedAt = order.UpdatedAt = clock.GetUtcNow();
             db.Orders.Add(order);
             active.Add(order);
             created.Add(order);
@@ -58,6 +61,13 @@ public sealed partial class GridOrderLifecycle
         if (created.Count == 0) return;
         await db.SaveChangesAsync(ct);
         await PlaceNewEntryOrdersAsync(cycle, config, created, ct);
+    }
+
+    private bool FreshEntryQuote(GridConfiguration config, ExecutionQuote quote)
+    {
+        var now = clock.GetUtcNow();
+        return quote.Bid > 0m && quote.Ask >= quote.Bid && quote.Mid >= quote.Bid && quote.Mid <= quote.Ask &&
+            quote.AsOf <= now && now - quote.AsOf <= TimeSpan.FromSeconds(config.MarketDataStaleSeconds);
     }
 
     private async Task CreateOrAmendTakeProfitAsync(CycleEntity cycle, GridConfiguration config, OrderEntity entry,

@@ -390,7 +390,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       </section>
       <aside className="metric-stack">
         <MetricCard title="Overview" rows={[
-          ['固定中心', snapshot ? format(snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${plannedLevelCount(strategy)} 层` : '—'],
+          ['当前网格中心', snapshot ? format(snapshot.cycle.effectivePlan?.centerPrice ?? snapshot.cycle.fixedCenterPrice, 3) : '—'], ['计划层数', strategy ? `${plannedLevelCount(strategy)} 层` : '—'],
           ['Pending Entry/ TP', snapshot ? `${snapshot.orders.activeEntryCount} / ${snapshot.orders.activeTakeProfitCount}` : '—'],
           ['Filled Entry/TP', cycle ? `${filledEntryCount} / ${filledTakeProfitCount}` : '—'],
           ['状态版本', cycle ? `#${cycle.stateVersion}` : '—'],

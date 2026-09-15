@@ -69,6 +69,7 @@ public sealed partial class GridOrderLifecycle
                 tp.Quantity - tp.FilledQuantity != lot.RemainingQuantity || tp.Price != lot.TakeProfitPrice);
         }
         await db.SaveChangesAsync(ct);
+        await ConfirmMoveAuditsAsync(cycle, ct);
     }
 
     private static string VenueOrderId(ExecutionEntity fill, OrderEntity order)

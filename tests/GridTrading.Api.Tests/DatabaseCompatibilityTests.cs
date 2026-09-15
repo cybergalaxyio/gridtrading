@@ -42,6 +42,13 @@ public sealed class DatabaseCompatibilityTests
         }
 
 
+        await using (var offsetCommand = connection.CreateCommand())
+        {
+            offsetCommand.CommandText = "SELECT EntryGridPriceOffset FROM Cycles WHERE Id = 'paper-cycle'";
+            Assert.Equal("0", await offsetCommand.ExecuteScalarAsync(ct));
+            offsetCommand.CommandText = "UPDATE Cycles SET EntryGridPriceOffset = '-2.5', EntryGridMovePendingOrderId = 'moving' WHERE Id = 'hl-cycle'";
+            await offsetCommand.ExecuteNonQueryAsync(ct);
+        }
         Assert.Equal(("GRID", "paper-local"), await StrategyBindingAsync(connection, "paper-strategy", ct));
         Assert.Equal(("GRID", "hyperliquid-testnet"), await StrategyBindingAsync(connection, "hl-strategy", ct));
         Assert.Equal(("paper-local", "acct_paper_01"), await CycleBindingAsync(connection, "paper-cycle", ct));
@@ -65,6 +72,8 @@ public sealed class DatabaseCompatibilityTests
         Assert.Equal(1L, await pendingCommand.ExecuteScalarAsync(ct));
         pendingCommand.CommandText = "SELECT OperatorPaused + RiskPaused + RiskRecoveryChecks FROM Cycles WHERE Id = 'hl-cycle'";
         Assert.Equal(3L, await pendingCommand.ExecuteScalarAsync(ct));
+        pendingCommand.CommandText = "SELECT EntryGridPriceOffset || ':' || EntryGridMovePendingOrderId FROM Cycles WHERE Id = 'hl-cycle'";
+        Assert.Equal("-2.5:moving", await pendingCommand.ExecuteScalarAsync(ct));
     }
 
     private static async Task<(string Type, string Environment)> StrategyBindingAsync(

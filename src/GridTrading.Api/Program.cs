@@ -234,9 +234,9 @@ api.MapGet("/cycles/{id}", async (string id, TradingDbContext db, CancellationTo
 api.MapGet("/cycles/{id}/snapshot", async (string id, TradingDbContext db, TradingService service, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } cycle ? Results.Ok(service.Snapshot(cycle)) : Results.NotFound());
 api.MapGet("/cycles/{id}/plan", async (string id, TradingDbContext db, CancellationToken ct) =>
-    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(JsonSerializer.Deserialize<GridPlan>(c.FrozenPlanJson, JsonSupport.Options)) : Results.NotFound());
+    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(c.EffectivePlan) : Results.NotFound());
 api.MapGet("/cycles/{id}/levels", async (string id, TradingDbContext db, CancellationToken ct) =>
-    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(JsonSerializer.Deserialize<GridPlan>(c.FrozenPlanJson, JsonSupport.Options)!.Levels) : Results.NotFound());
+    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(c.EffectivePlan.Levels) : Results.NotFound());
 api.MapGet("/cycles/{id}/lots", async (string id, TradingDbContext db, CancellationToken ct) => await db.VirtualLots.Where(x => x.CycleId == id).ToListAsync(ct));
 api.MapGet("/cycles/{id}/position", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { actualNetQuantity = c.ActualNetQuantity, reconstructedNetQuantity = c.ReconstructedNetQuantity, inSync = c.ActualNetQuantity == c.ReconstructedNetQuantity }) : Results.NotFound());
@@ -323,6 +323,7 @@ static object CycleDto(CycleEntity x) => new
     x.ExecutionEnvironmentId, x.ExecutionAccountId, x.FixedCenterPrice,
     frozenConfiguration = JsonSerializer.Deserialize<GridConfiguration>(x.FrozenConfigurationJson, JsonSupport.Options),
     frozenPlan = JsonSerializer.Deserialize<GridPlan>(x.FrozenPlanJson, JsonSupport.Options),
+    x.EntryGridPriceOffset, effectivePlan = x.EffectivePlan,
     x.StartedAt, x.EndedAt, x.ExitReason
 };
 static object StrategyDto(StrategyEntity x, CycleEntity? cycle) => new { strategyId = x.Id, x.Name, x.StrategyType,

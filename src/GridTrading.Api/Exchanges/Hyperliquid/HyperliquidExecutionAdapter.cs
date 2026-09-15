@@ -242,6 +242,11 @@ public sealed class HyperliquidExecutionAdapter(
     {
         await AccountAsync(selection, ct);
         var fillStart = cycle.LastReconciledAt.AddSeconds(-5);
+        if (cycle.EntryGridMovePendingOrderId is not null)
+        {
+            var movingEntry = await db.Orders.SingleAsync(x => x.Id == cycle.EntryGridMovePendingOrderId, ct);
+            if (movingEntry.CreatedAt.AddSeconds(-5) < fillStart) fillStart = movingEntry.CreatedAt.AddSeconds(-5);
+        }
         var unresolved = await (from lot in db.VirtualLots
             join order in db.Orders on lot.TakeProfitOrderId equals order.Id
             where lot.CycleId == cycle.Id && lot.ProtectionPending && lot.RemainingQuantity > 0m
@@ -276,7 +281,7 @@ public sealed class HyperliquidExecutionAdapter(
         // Missing active orders require a terminal observation, not an assumed cancel.
         // History also resolves the new OID after an acknowledged or timed-out amendment.
         if (local.Any(x => !observed.ContainsKey(x.ClientOrderId) &&
-            (IsActive(x) || x.Status == "PENDING_EXCHANGE" || (x.Kind == "ENTRY" && x.Status == "FILLED" && x.FilledAt == null))))
+            (IsActive(x) || x.Id == cycle.EntryGridMovePendingOrderId || x.Status == "PENDING_EXCHANGE" || (x.Kind == "ENTRY" && x.Status == "FILLED" && x.FilledAt == null))))
         {
             using var history = await client.GetHistoricalOrdersAsync(selection.AccountId, ct);
             foreach (var group in history.RootElement.EnumerateArray()

@@ -9,6 +9,10 @@ if [[ ! -f "$env_file" ]]; then
   exit 1
 fi
 
+# Refresh the frontend served by the API before loading account credentials.
+echo "Building frontend..."
+npm --prefix "$project_dir/web" run build
+
 set -a
 # shellcheck disable=SC1090
 source "$env_file"

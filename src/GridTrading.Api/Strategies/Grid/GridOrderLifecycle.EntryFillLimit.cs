@@ -12,6 +12,7 @@ public sealed partial class GridOrderLifecycle
     public async Task PlaceNewEntryOrdersAsync(CycleEntity cycle, GridConfiguration config,
         IEnumerable<OrderEntity> orders, CancellationToken ct)
     {
+        if (cycle.EntryGridMovePendingOrderId is not null) return;
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
         foreach (var order in orders.ToArray())
@@ -20,8 +21,17 @@ public sealed partial class GridOrderLifecycle
             var side = Enum.Parse<OrderSide>(order.Side, true);
             if ((config.GridMode == GridMode.BuyOnly && side == OrderSide.Sell) ||
                 (config.GridMode == GridMode.SellOnly && side == OrderSide.Buy)) continue;
-            if (await CanPlaceNewEntryOrderAsync(cycle, config, side, ct))
-                await adapter.PlaceOrdersAsync(selection, config, [order], ct);
+            if (!await CanPlaceNewEntryOrderAsync(cycle, config, side, ct)) continue;
+            // An unsent deeper entry from the previous holding round must be
+            // reset by maintenance before it can reach the venue after going flat.
+            if (config.GridMode != GridMode.TwoWay && order.GridLevel != 0 &&
+                await IsFlatForMoveAsync(cycle, ct)) continue;
+            // Recheck immediately before each submission, including persisted intents
+            // recovered after a restart. TP placement does not use this entry-only gate.
+            var quote = await adapter.GetQuoteAsync(selection, config.Symbol, ct);
+            if (!FreshEntryQuote(config, quote)) continue;
+            await adapter.PlaceOrdersAsync(selection, config, [order], ct);
+            await ConfirmMoveAuditsAsync(cycle, ct);
         }
     }
 

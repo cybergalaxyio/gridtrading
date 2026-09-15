@@ -215,6 +215,26 @@ public sealed class HyperliquidAmendmentRecoveryTests
         Assert.Single(await verified.Executions.ToListAsync(ct));
     }
 
+    [Fact]
+    public async Task PendingGridMoveQueriesCancelledEntryHistoryAndRewindsFillWindow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var f = await Fixture.CreateAsync(.36m, "confirmed", ct);
+        var entry = await f.Db.Orders.SingleAsync(ct);
+        entry.Status = "CANCELLED";
+        entry.CreatedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        f.Cycle.EntryGridMovePendingOrderId = entry.Id;
+        f.Cycle.State = "FAULT"; // Read-only reconciliation exercises the actual HTTP adapter.
+        f.Cycle.LastReconciledAt = DateTimeOffset.UtcNow;
+        await f.Db.SaveChangesAsync(ct);
+        await f.Lifecycle.ReconcileAsync(f.Cycle, ct);
+        Assert.Contains(f.Handler.InfoRequests, x => x.GetProperty("type").GetString() == "historicalOrders");
+        var request = Assert.Single(f.Handler.InfoRequests, x => x.GetProperty("type").GetString() == "userFillsByTime");
+        Assert.Equal(entry.CreatedAt.AddSeconds(-5).ToUnixTimeMilliseconds(), request.GetProperty("startTime").GetInt64());
+        Assert.Equal(0, f.Handler.Placements);
+        Assert.Equal(0, f.Handler.Cancellations);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required SqliteConnection Connection { get; init; }
@@ -288,6 +308,7 @@ public sealed class HyperliquidAmendmentRecoveryTests
         public int Modifications { get; private set; }
         public int Cancellations { get; private set; }
         public List<object> ExtraOpenOrders { get; } = [];
+        public List<JsonElement> InfoRequests { get; } = [];
         public void SetCurrentOriginalQuantity(decimal quantity) => _quantity = quantity;
         private string _cloid = "";
         private long _oid = 8001;
@@ -299,6 +320,7 @@ public sealed class HyperliquidAmendmentRecoveryTests
             using var doc = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
             if (request.RequestUri!.AbsolutePath == "/info")
             {
+                InfoRequests.Add(doc.RootElement.Clone());
                 var type = doc.RootElement.GetProperty("type").GetString();
                 return type switch
                 {

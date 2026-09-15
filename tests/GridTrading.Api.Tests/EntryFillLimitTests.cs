@@ -318,7 +318,7 @@ public sealed class EntryFillLimitTests
             f.Db = new(new DbContextOptionsBuilder<TradingDbContext>().UseSqlite(f.Connection).Options);
             await f.Db.Database.EnsureCreatedAsync(Ct);
             var market = new MarketState();
-            f.Adapter = new(new PaperExecutionAdapter(market, f.Db));
+            f.Adapter = new(new PaperExecutionAdapter(market, f.Db), f.Clock);
             var registry = new ExecutionEnvironmentRegistry([f.Adapter]);
             var gate = new ExecutionAccountOperationGate();
             f.Lifecycle = new(f.Db, registry, gate, f.Clock);
@@ -383,12 +383,12 @@ public sealed class EntryFillLimitTests
         public async ValueTask DisposeAsync() { await Db.DisposeAsync(); await Connection.DisposeAsync(); await services.DisposeAsync(); }
     }
 
-    private sealed class RecordingAdapter(PaperExecutionAdapter paper) : IExecutionAdapter, IOrderAmendmentAdapter
+    private sealed class RecordingAdapter(PaperExecutionAdapter paper, TimeProvider clock) : IExecutionAdapter, IOrderAmendmentAdapter
     {
         public List<string> Placed { get; } = [];
         public List<string> Cancelled { get; } = [];
         public bool FailCancellation { get; set; }
-        public ExecutionQuote Quote { get; } = new(99.99m, 100.01m, 100m, DateTimeOffset.UtcNow);
+        public ExecutionQuote Quote => new(99.99m, 100.01m, 100m, clock.GetUtcNow());
         public ExecutionEnvironmentDescriptor Environment => paper.Environment;
         public Task<IReadOnlyList<ExecutionAccountDescriptor>> GetAccountsAsync(CancellationToken ct) => paper.GetAccountsAsync(ct);
         public Task<ExecutionInstrument> GetInstrumentAsync(ExecutionSelection selection, string symbol, decimal? referencePrice, CancellationToken ct) => paper.GetInstrumentAsync(selection, symbol, referencePrice, ct);

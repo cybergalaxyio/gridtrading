@@ -13,6 +13,8 @@ public sealed record StrategyRequest(
     int PartialFillCancelAfterMinutes = 10, decimal FaultExposureThresholdUsdt = 10m)
 {
     public string StrategyType { get; init; } = "GRID";
+    public decimal? SingleModeMoveDistancePoints { get; init; }
+    public int SingleModeMoveIntervalSeconds { get; init; } = 30;
     public decimal? ManualCenterPrice { get; init; }
     public bool EntryFillLimitEnabled { get; init; }
     public int EntryFillWindowMinutes { get; init; } = 60;
@@ -25,6 +27,8 @@ public sealed record StrategyRequest(
     public GridConfiguration ToConfiguration(decimal centerPrice = 0m) => new()
     {
         Symbol = Symbol, GridMode = GridMode,
+        SingleModeMoveDistancePoints = SingleModeMoveDistancePoints,
+        SingleModeMoveIntervalSeconds = SingleModeMoveIntervalSeconds,
         EntryFillLimitEnabled = EntryFillLimitEnabled, EntryFillWindowMinutes = EntryFillWindowMinutes,
         MaxEntryFillsPerSide = MaxEntryFillsPerSide,
         CenterSuggestionMode = CenterSuggestionMode, AutoRestart = AutoRestart,
@@ -58,7 +62,8 @@ public sealed record CandidateConfiguration(
     decimal MaxTradeLot, decimal MaxNetLot,
     string? ExecutionEnvironmentId = null, string? ExecutionAccountId = null,
     string CenterSuggestionMode = "CURRENT_MID",
-    bool EntryFillLimitEnabled = false, int EntryFillWindowMinutes = 60, int MaxEntryFillsPerSide = 3);
+    bool EntryFillLimitEnabled = false, int EntryFillWindowMinutes = 60, int MaxEntryFillsPerSide = 3,
+    decimal? SingleModeMoveDistancePoints = null, int SingleModeMoveIntervalSeconds = 30);
 
 public sealed record PreviewRequest(string? StrategyId, int? StrategyVersion, decimal ConfirmedCenterPrice,
     CandidateConfiguration? CandidateConfiguration, object? ParameterOverrides,
