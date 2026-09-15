@@ -41,7 +41,8 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
         foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(x => x.GetProperties()).Where(x => x.ClrType == typeof(decimal)))
             property.SetValueConverter(new Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<decimal, string>(
                 value => value.ToString("G29", System.Globalization.CultureInfo.InvariantCulture),
-                value => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture)));
+                value => decimal.Parse(value, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture)));
     }
 }
 
