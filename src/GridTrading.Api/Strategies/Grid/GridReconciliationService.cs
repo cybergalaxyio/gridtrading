@@ -1,6 +1,6 @@
-using System.Text.Json;
 using GridTrading.Api.Data;
 using GridTrading.Api.Services;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 using Microsoft.EntityFrameworkCore;
 
@@ -32,7 +32,7 @@ public sealed class GridReconciliationService(
 
         foreach (var cycle in cycles)
         {
-            var config = JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+            var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
             if (DateTimeOffset.UtcNow - cycle.LastReconciledAt <
                 TimeSpan.FromSeconds(Math.Max(2, config.ReconcileIntervalSeconds))) continue;
             try

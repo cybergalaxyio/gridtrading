@@ -1,7 +1,7 @@
-using System.Text.Json;
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
 using GridTrading.Api.Strategies.Grid;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 using Microsoft.EntityFrameworkCore;
 
@@ -31,7 +31,7 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
 
         foreach (var cycle in cycles)
         {
-            var config = JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+            var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
             var quote = market.Snapshot(config.Symbol);
             if (quote.IsStale) continue;
             var active = await db.Orders.Where(x => x.CycleId == cycle.Id && x.Status == "NEW").ToListAsync(ct);

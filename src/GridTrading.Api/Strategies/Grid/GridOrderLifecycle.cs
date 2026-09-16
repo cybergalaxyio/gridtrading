@@ -1,6 +1,6 @@
-using System.Text.Json;
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 using GridTrading.Domain.Strategies.Grid;
 using Microsoft.EntityFrameworkCore;
@@ -272,7 +272,7 @@ public sealed partial class GridOrderLifecycle(
     }
 
     private static GridConfiguration DeserializeConfig(CycleEntity cycle) =>
-        JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+        GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
     private static ExecutionSelection Selection(CycleEntity cycle) =>
         new(cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId);
 

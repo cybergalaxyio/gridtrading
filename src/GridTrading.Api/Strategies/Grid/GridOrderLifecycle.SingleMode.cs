@@ -1,6 +1,5 @@
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
-using GridTrading.Api.Services;
 using GridTrading.Domain;
 using GridTrading.Domain.Strategies.Grid;
 using Microsoft.EntityFrameworkCore;
@@ -89,7 +88,7 @@ public sealed partial class GridOrderLifecycle
         if (shifted.CenterPrice <= 0m || shifted.Levels.Any(x =>
             !ValidMoveQuantity(cycle, config, x.Side, x.EntryPrice, x.PlannedQuantity))) return null;
         var quantity = GridMath.AllowedOrderQuantity(side, first.PlannedQuantity, 0m, [],
-            config.MaxNetLot, TradingService.RulesFor(config));
+            config.MaxNetLot, GridInstrumentRules.FromConfiguration(config));
         if (!ValidMoveQuantity(cycle, config, side, price.Value, quantity)) return null;
         return new(shifted.CenterPrice,
             shifted.Levels.Single(x => x.Side == side && x.LevelIndex == 0), quantity);
@@ -98,7 +97,7 @@ public sealed partial class GridOrderLifecycle
     private static bool ValidMoveQuantity(CycleEntity cycle, GridConfiguration config, OrderSide side,
         decimal price, decimal quantity)
     {
-        var rules = TradingService.RulesFor(config);
+        var rules = GridInstrumentRules.FromConfiguration(config);
         var tp = GridMath.TakeProfitPrice(side, price, config.TakeProfitPoints, rules.TickSize);
         return price > 0m && tp > 0m && MeetsProtectiveMinimum(cycle, rules, price, quantity) &&
             MeetsProtectiveMinimum(cycle, rules, tp, quantity);

@@ -1,6 +1,5 @@
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
-using GridTrading.Api.Services;
 using GridTrading.Domain;
 using GridTrading.Domain.Strategies.Grid;
 using Microsoft.EntityFrameworkCore;
@@ -50,7 +49,7 @@ public sealed partial class GridOrderLifecycle
             var reservations = active.Select(x => new ActiveOrderReservation(
                 Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
             var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, cycle.ActualNetQuantity,
-                reservations, config.MaxNetLot, TradingService.RulesFor(config));
+                reservations, config.MaxNetLot, GridInstrumentRules.FromConfiguration(config));
             if (quantity <= 0m) continue;
             var order = CreateEntry(cycle, config.Symbol, level, quantity);
             order.CreatedAt = order.UpdatedAt = clock.GetUtcNow();
@@ -95,7 +94,7 @@ public sealed partial class GridOrderLifecycle
             lot.EntryFee += execution.Fee;
         }
         lot.TakeProfitPrice = GridMath.TakeProfitPrice(entrySide, lot.EntryFillPrice,
-            config.TakeProfitPoints, TradingService.RulesFor(config).TickSize);
+            config.TakeProfitPoints, GridInstrumentRules.FromConfiguration(config).TickSize);
         lot.ProtectionPending = true;
         // Commit the execution, lot, and protection intent together BEFORE external I/O.
         await db.SaveChangesAsync(ct);
@@ -111,7 +110,7 @@ public sealed partial class GridOrderLifecycle
             lot.ProtectionPending = false;
             return;
         }
-        var rules = TradingService.RulesFor(config);
+        var rules = GridInstrumentRules.FromConfiguration(config);
         var tp = lot.TakeProfitOrderId is null ? null : await db.Orders.SingleAsync(x => x.Id == lot.TakeProfitOrderId, ct);
         if (tp is not null && tp.Status is "NEW" or "PARTIALLY_FILLED" &&
             tp.Quantity - tp.FilledQuantity == lot.RemainingQuantity && tp.Price == lot.TakeProfitPrice)

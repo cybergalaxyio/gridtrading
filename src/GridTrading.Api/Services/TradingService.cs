@@ -1,20 +1,17 @@
 using GridTrading.Api.Contracts;
 using GridTrading.Api.Data;
 using GridTrading.Api.Strategies.Grid;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 
 namespace GridTrading.Api.Services;
 
 public sealed class TradingService(GridStrategyWorkflow grid)
 {
-    public static readonly InstrumentRules SolRules = new("SOLUSDT", .001m, .1m, .1m, 5m, 500);
+    public static readonly InstrumentRules SolRules = GridInstrumentRules.LegacyDefaults;
 
-    public static InstrumentRules RulesFor(GridConfiguration config) => new(config.Symbol,
-        config.TickSize > 0m ? config.TickSize : SolRules.TickSize,
-        config.QuantityStep > 0m ? config.QuantityStep : SolRules.QuantityStep,
-        config.MinOrderQuantity > 0m ? config.MinOrderQuantity : SolRules.MinOrderQuantity,
-        config.MinOrderNotional > 0m ? config.MinOrderNotional : SolRules.MinOrderNotional,
-        config.MaxActiveOrders > 0 ? config.MaxActiveOrders : SolRules.MaxActiveOrders);
+    public static InstrumentRules RulesFor(GridConfiguration config) =>
+        GridInstrumentRules.FromConfiguration(config);
 
     public Task<StrategyEntity> CreateStrategy(StrategyRequest request, CancellationToken ct) =>
         grid.CreateStrategyAsync(request, ct);
@@ -31,5 +28,5 @@ public sealed class TradingService(GridStrategyWorkflow grid)
     public object Snapshot(CycleEntity cycle) => grid.Snapshot(cycle);
 
     public static StrategyRequest DeserializeStrategy(StrategyEntity entity) =>
-        GridStrategyWorkflow.DeserializeStrategy(entity);
+        GridConfigurationCodec.ReadStrategy(entity.ConfigurationJson);
 }

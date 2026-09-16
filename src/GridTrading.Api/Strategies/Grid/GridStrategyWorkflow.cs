@@ -6,6 +6,7 @@ using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
 using GridTrading.Api.Hubs;
 using GridTrading.Api.Services;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -18,13 +19,16 @@ public sealed partial class GridStrategyWorkflow(
     PreviewStore previews,
     ExecutionEnvironmentRegistry environments,
     GridOrderLifecycle lifecycle,
-    IHubContext<TradingHub> hub, ExecutionAccountOperationGate? startGate = null)
+    IHubContext<TradingHub> hub, ExecutionAccountOperationGate? startGate = null,
+    GridConfigurationService? configurationService = null)
 {
+    private readonly GridConfigurationService configurations = configurationService ?? new(environments);
+
     public async Task<StrategyEntity> CreateStrategyAsync(StrategyRequest request, CancellationToken ct)
     {
-        ValidateStrategy(request);
+        GridConfigurationService.ValidateRequest(request);
         var selection = await ResolveDefaultsAsync(request, ct);
-        await ValidateStrategyPlanAsync(request, selection, ct);
+        await configurations.ValidateSavedStrategyAsync(request, selection, ct);
         var now = DateTimeOffset.UtcNow;
         var entity = new StrategyEntity
         {
@@ -32,12 +36,12 @@ public sealed partial class GridStrategyWorkflow(
             DefaultExecutionEnvironmentId = selection.EnvironmentId,
             DefaultExecutionAccountId = selection.AccountId,
             Symbol = request.Symbol.ToUpperInvariant(),
-            ConfigurationJson = JsonSerializer.Serialize(request with
+            ConfigurationJson = GridConfigurationCodec.WriteStrategy(request with
             {
                 StrategyType = "GRID",
                 DefaultExecutionEnvironmentId = selection.EnvironmentId,
                 DefaultExecutionAccountId = selection.AccountId
-            }, JsonSupport.Options),
+            }),
             CreatedAt = now, UpdatedAt = now
         };
         db.Strategies.Add(entity);
@@ -48,25 +52,25 @@ public sealed partial class GridStrategyWorkflow(
 
     public async Task<StrategyEntity?> UpdateStrategyAsync(string id, StrategyRequest request, CancellationToken ct)
     {
-        ValidateStrategy(request);
+        GridConfigurationService.ValidateRequest(request);
         var selection = await ResolveDefaultsAsync(request, ct);
         var entity = await db.Strategies.FindAsync([id], ct);
         if (entity is null || entity.Archived) return null;
         if (!entity.StrategyType.Equals("GRID", StringComparison.OrdinalIgnoreCase))
             throw Problem(422, "STRATEGY_TYPE_UNSUPPORTED", $"Strategy type '{entity.StrategyType}' is not supported.");
 
-        await ValidateStrategyPlanAsync(request, selection, ct);
+        await configurations.ValidateSavedStrategyAsync(request, selection, ct);
 
         entity.Name = request.Name.Trim();
         entity.DefaultExecutionEnvironmentId = selection.EnvironmentId;
         entity.DefaultExecutionAccountId = selection.AccountId;
         entity.Symbol = request.Symbol.ToUpperInvariant();
-        entity.ConfigurationJson = JsonSerializer.Serialize(request with
+        entity.ConfigurationJson = GridConfigurationCodec.WriteStrategy(request with
         {
             StrategyType = "GRID",
             DefaultExecutionEnvironmentId = selection.EnvironmentId,
             DefaultExecutionAccountId = selection.AccountId
-        }, JsonSupport.Options);
+        });
         entity.Version++;
         entity.UpdatedAt = DateTimeOffset.UtcNow;
         db.AuditLogs.Add(Audit(id, "STRATEGY_UPDATED", $"Strategy version updated to {entity.Version}."));
@@ -86,7 +90,8 @@ public sealed partial class GridStrategyWorkflow(
             EnsureGrid(strategy);
             if (request.StrategyVersion.HasValue && request.StrategyVersion != strategy.Version)
                 throw Problem(412, "STRATEGY_VERSION_STALE", "Strategy version has changed.");
-            configuration = DeserializeStrategy(strategy).ToConfiguration(request.ConfirmedCenterPrice);
+            configuration = GridConfigurationMapper.FromStrategy(
+                GridConfigurationCodec.ReadStrategy(strategy.ConfigurationJson), request.ConfirmedCenterPrice);
             selection = await environments.ResolveAsync(
                 request.ExecutionEnvironmentId ?? strategy.DefaultExecutionEnvironmentId,
                 request.ExecutionAccountId ?? strategy.DefaultExecutionAccountId, ct);
@@ -96,42 +101,17 @@ public sealed partial class GridStrategyWorkflow(
         {
             var candidate = request.CandidateConfiguration
                 ?? throw Problem(422, "CANDIDATE_REQUIRED", "Candidate configuration is required.");
-            configuration = new GridConfiguration
-            {
-                Symbol = candidate.Symbol, GridMode = candidate.GridMode, CenterPrice = request.ConfirmedCenterPrice,
-                SingleModeMoveDistancePoints = candidate.SingleModeMoveDistancePoints,
-                SingleModeMoveIntervalSeconds = candidate.SingleModeMoveIntervalSeconds,
-                CenterSuggestionMode = candidate.CenterSuggestionMode,
-                EntryFillLimitEnabled = candidate.EntryFillLimitEnabled,
-                EntryFillWindowMinutes = candidate.EntryFillWindowMinutes,
-                MaxEntryFillsPerSide = candidate.MaxEntryFillsPerSide,
-                MaxLevelsPerSide = candidate.MaxLevelsPerSide, WorkingEntriesPerSide = candidate.WorkingEntriesPerSide,
-                InitialGapPoints = candidate.InitialGapPoints, GridSpacingPoints = candidate.GridSpacingPoints,
-                GridSpacingStepPoints = candidate.GridSpacingStepPoints, TakeProfitPoints = candidate.TakeProfitPoints,
-                BaseLotSize = candidate.BaseLotSize, LotSizeIncreasePercent = candidate.LotSizeIncreasePercent,
-                MaxTradeLot = candidate.MaxTradeLot, MaxNetLot = candidate.MaxNetLot
-            };
+            configuration = GridConfigurationMapper.FromCandidate(candidate, request.ConfirmedCenterPrice);
             selection = await environments.ResolveAsync(
                 request.ExecutionEnvironmentId ?? candidate.ExecutionEnvironmentId,
                 request.ExecutionAccountId ?? candidate.ExecutionAccountId ?? candidate.ExchangeAccountId, ct);
         }
 
         EnsureSafeSelection(selection);
-        var adapter = environments.Adapter(selection.EnvironmentId);
-        ValidateCenterMode(configuration.CenterSuggestionMode);
-        if (configuration.CenterSuggestionMode == "CURRENT_MID")
-            configuration = WithStartupQuote(configuration, await adapter.GetQuoteAsync(selection, configuration.Symbol, ct));
-        var instrument = await adapter.GetInstrumentAsync(selection, configuration.Symbol, configuration.CenterPrice, ct);
-        configuration = configuration with
-        {
-            TickSize = instrument.TickSize, QuantityStep = instrument.QuantityStep,
-            MinOrderQuantity = instrument.MinOrderQuantity, MinOrderNotional = instrument.MinOrderNotional,
-            MaxActiveOrders = instrument.MaxActiveOrders, SizeDecimals = instrument.SizeDecimals,
-            MakerFeeRate = instrument.MakerFeeRate, TakerFeeRate = instrument.TakerFeeRate
-        };
+        var prepared = await configurations.PreparePreviewAsync(configuration, selection, ct);
         var item = new PreviewCacheItem(Ids.New("preview"), request.StrategyId, version,
             selection.EnvironmentId, selection.AccountId, DateTimeOffset.UtcNow.AddMinutes(5),
-            configuration, GridMath.BuildPlan(configuration, instrument.Rules));
+            prepared.Configuration, prepared.Plan);
         previews.Items[item.Id] = item;
         return item;
     }
@@ -176,7 +156,7 @@ public sealed partial class GridStrategyWorkflow(
             var coin = HyperliquidTradingClient.ToCoin(preview.Configuration.Symbol);
             // A saved strategy can be edited while running; ownership follows the frozen cycle market.
             if (activeConfigurations.Any(json => HyperliquidTradingClient.ToCoin(
-                    JsonSerializer.Deserialize<GridConfiguration>(json, JsonSupport.Options)!.Symbol) == coin))
+                    GridConfigurationCodec.ReadFrozen(json).Symbol) == coin))
                 throw Problem(409, "MAINNET_SYMBOL_BUSY",
                     $"Only one active strategy is allowed for {coin} on this mainnet account.");
         }
@@ -188,19 +168,8 @@ public sealed partial class GridStrategyWorkflow(
             throw Problem(422, "OPERATOR_CONFIRMATION_REQUIRED", "The preview execution environment, parameters and centre must be confirmed.");
 
         var quote = await adapter.PreflightStartAsync(selection, strategy.Symbol, ct);
-        if (preview.Configuration.CenterSuggestionMode == "CURRENT_MID")
-        {
-            var configuration = WithStartupQuote(preview.Configuration, quote);
-            var instrument = await adapter.GetInstrumentAsync(selection, configuration.Symbol, configuration.CenterPrice, ct);
-            configuration = configuration with
-            {
-                TickSize = instrument.TickSize, QuantityStep = instrument.QuantityStep,
-                MinOrderQuantity = instrument.MinOrderQuantity, MinOrderNotional = instrument.MinOrderNotional,
-                MaxActiveOrders = instrument.MaxActiveOrders, SizeDecimals = instrument.SizeDecimals,
-                MakerFeeRate = instrument.MakerFeeRate, TakerFeeRate = instrument.TakerFeeRate
-            };
-            preview = preview with { Configuration = configuration, Plan = GridMath.BuildPlan(configuration, instrument.Rules) };
-        }
+        var prepared = await configurations.PrepareStartupAsync(new(preview.Configuration, preview.Plan), selection, quote, ct);
+        preview = preview with { Configuration = prepared.Configuration, Plan = prepared.Plan };
         var operation = await NewOperationAsync("START_CYCLE", strategyId, key, request, ct);
         if (operation.Status == "COMPLETED")
             return (operation, await db.Cycles.SingleAsync(x => x.Id == operation.ResourceId, ct));
@@ -211,7 +180,7 @@ public sealed partial class GridStrategyWorkflow(
             Id = Ids.New("cycle"), StrategyId = strategyId,
             ExecutionEnvironmentId = selection.EnvironmentId, ExecutionAccountId = selection.AccountId,
             State = "STARTING", StateVersion = 1, FixedCenterPrice = preview.Plan.CenterPrice,
-            FrozenConfigurationJson = JsonSerializer.Serialize(preview.Configuration, JsonSupport.Options),
+            FrozenConfigurationJson = GridConfigurationCodec.WriteFrozen(preview.Configuration),
             FrozenPlanJson = JsonSerializer.Serialize(preview.Plan, JsonSupport.Options),
             ExitReason = "", StartedAt = now, LastReconciledAt = now
         };
@@ -229,7 +198,7 @@ public sealed partial class GridStrategyWorkflow(
             var level = GridMath.SelectWorkingEntryLevel(preview.Plan, side, quote.Mid, []);
             if (level is null) continue;
             var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, 0m, reservations,
-                preview.Configuration.MaxNetLot, TradingService.RulesFor(preview.Configuration));
+                preview.Configuration.MaxNetLot, GridInstrumentRules.FromConfiguration(preview.Configuration));
             if (quantity <= 0m) continue;
             db.Orders.Add(GridOrderLifecycle.CreateEntry(cycle, strategy.Symbol, level, quantity));
             reservations.Add(new ActiveOrderReservation(side, quantity));
@@ -282,7 +251,7 @@ public sealed partial class GridStrategyWorkflow(
         var operation = await NewOperationAsync(command, cycleId, key, new { command, reason }, ct);
         if (operation.Status == "COMPLETED") return operation;
 
-        var config = JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+        var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
         var selection = new ExecutionSelection(cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId);
         var adapter = environments.Adapter(selection.EnvironmentId);
         var restartAfterClose = automaticClose && command == "CLOSE" && config.AutoRestart &&
@@ -345,7 +314,7 @@ public sealed partial class GridStrategyWorkflow(
 
     public object Snapshot(CycleEntity cycle)
     {
-        var config = JsonSerializer.Deserialize<GridConfiguration>(cycle.FrozenConfigurationJson, JsonSupport.Options)!;
+        var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
         var quote = market.Snapshot(config.Symbol);
         var active = db.Orders.Where(x => x.CycleId == cycle.Id &&
             (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" || x.Status == "UNKNOWN")).ToArray();
@@ -415,7 +384,7 @@ public sealed partial class GridStrategyWorkflow(
     }
 
     public static StrategyRequest DeserializeStrategy(StrategyEntity entity) =>
-        JsonSerializer.Deserialize<StrategyRequest>(entity.ConfigurationJson, JsonSupport.Options)!;
+        GridConfigurationCodec.ReadStrategy(entity.ConfigurationJson);
 
     private async Task<ExecutionSelection> ResolveDefaultsAsync(StrategyRequest request, CancellationToken ct)
     {
@@ -461,46 +430,6 @@ public sealed partial class GridStrategyWorkflow(
             sequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), correlationId = Ids.New("corr"),
             payload = new { state = cycle.State, cycle.StateVersion }
         }, ct);
-
-    private static void ValidateCenterMode(string mode)
-    {
-        if (mode is not ("CURRENT_MID" or "MANUAL"))
-            throw Problem(422, "CENTER_MODE_INVALID", "Choose Current Mid or Manual.");
-    }
-
-    private static GridConfiguration WithStartupQuote(GridConfiguration configuration, ExecutionQuote quote)
-    {
-        if (quote.Bid <= 0m || quote.Ask < quote.Bid ||
-            DateTimeOffset.UtcNow - quote.AsOf > TimeSpan.FromSeconds(configuration.MarketDataStaleSeconds))
-            throw Problem(422, "MARKET_DATA_STALE", "A fresh, valid bid/ask quote is required to build the grid.");
-        return configuration with
-        {
-            CenterPrice = (quote.Bid + quote.Ask) / 2m, InitialBid = quote.Bid, InitialAsk = quote.Ask
-        };
-    }
-
-    private async Task ValidateStrategyPlanAsync(StrategyRequest request, ExecutionSelection selection, CancellationToken ct)
-    {
-        var adapter = environments.Adapter(selection.EnvironmentId);
-        var configuration = request.ToConfiguration();
-        if (configuration.CenterSuggestionMode == "CURRENT_MID")
-            configuration = WithStartupQuote(configuration, await adapter.GetQuoteAsync(selection, configuration.Symbol, ct));
-        var instrument = await adapter.GetInstrumentAsync(selection, configuration.Symbol, configuration.CenterPrice, ct);
-        _ = GridMath.BuildPlan(configuration, instrument.Rules);
-    }
-
-    private static void ValidateStrategy(StrategyRequest request)
-    {
-        if (!request.StrategyType.Equals("GRID", StringComparison.OrdinalIgnoreCase))
-            throw Problem(422, "STRATEGY_TYPE_UNSUPPORTED", $"Strategy type '{request.StrategyType}' is not supported.");
-        ValidateCenterMode(request.CenterSuggestionMode);
-        if (request.CenterSuggestionMode == "MANUAL" && !(request.ManualCenterPrice > 0m))
-            throw Problem(422, "CENTER_PRICE", "Manual mode requires a positive center price.");
-        if (!request.IncludeFunding)
-            throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires includeFunding=true.");
-        if (request.FaultExposureThresholdUsdt < 0m)
-            throw Problem(422, "FAULT_THRESHOLD_INVALID", "Entry risk pause exposure threshold must be zero or greater.");
-    }
 
     private static void EnsureGrid(StrategyEntity strategy)
     {

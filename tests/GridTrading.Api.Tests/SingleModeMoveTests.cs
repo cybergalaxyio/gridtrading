@@ -1,4 +1,6 @@
 using System.Text.Json;
+using GridTrading.Api.Contracts;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
 using GridTrading.Api.Infrastructure;
@@ -562,6 +564,43 @@ public sealed class SingleModeMoveTests
         }
         Assert.Equal(2, f.Adapter.Placements);
         Assert.Equal(1, f.Adapter.Cancels);
+    }
+
+    [Theory]
+    [InlineData(GridMode.SellOnly, -1)]
+    [InlineData(GridMode.BuyOnly, 1)]
+    public async Task EditedStrategyCannotChangeMovedGridSettingsAfterRestart(GridMode mode, int direction)
+    {
+        await using var f = await Fixture.CreateAsync(mode);
+        f.Clock.Advance(60);
+        f.Adapter.SetMarket(100m + direction);
+        await f.Maintain();
+        var moved = Assert.Single(f.ActiveEntries());
+        var frozenConfiguration = f.Cycle.FrozenConfigurationJson;
+        var frozenPlan = f.Cycle.FrozenPlanJson;
+
+        var strategy = await f.Db.Strategies.SingleAsync(Ct);
+        strategy.ConfigurationJson = GridConfigurationCodec.WriteStrategy(StrategyRequest.Default with
+        {
+            GridMode = mode == GridMode.BuyOnly ? GridMode.SellOnly : GridMode.BuyOnly,
+            SingleModeMoveDistancePoints = 1m, SingleModeMoveIntervalSeconds = 1,
+            MakerFeeRate = .5m, MaxNetLot = 100m
+        });
+        strategy.Version++;
+        await f.Db.SaveChangesAsync(Ct);
+        await f.Restart();
+        f.Clock.Advance(60);
+        // This displacement exceeds the edited threshold, but not the frozen one.
+        f.Adapter.SetMarket(100m + direction * 1.2m);
+        await f.Lifecycle.ReconcileAsync(f.Cycle, Ct);
+
+        Assert.Equal(moved.Id, Assert.Single(f.ActiveEntries()).Id);
+        Assert.Equal(1, f.Adapter.Cancels);
+        Assert.Equal(direction, f.Cycle.EntryGridPriceOffset);
+        Assert.Equal(100m + direction, f.Cycle.EffectivePlan.CenterPrice);
+        Assert.Equal(frozenConfiguration, f.Cycle.FrozenConfigurationJson);
+        Assert.Equal(frozenPlan, f.Cycle.FrozenPlanJson);
+        Assert.Equal(f.Config, GridConfigurationCodec.ReadFrozen(f.Cycle.FrozenConfigurationJson));
     }
 
     private sealed class TestClock : TimeProvider

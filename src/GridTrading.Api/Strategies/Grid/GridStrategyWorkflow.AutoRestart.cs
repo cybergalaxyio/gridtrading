@@ -1,8 +1,8 @@
-using System.Text.Json;
 using GridTrading.Api.Contracts;
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
 using GridTrading.Api.Services;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 using Microsoft.EntityFrameworkCore;
 
@@ -37,7 +37,7 @@ public sealed partial class GridStrategyWorkflow
         await db.Entry(previous).ReloadAsync(ct);
         try
         {
-            var frozen = JsonSerializer.Deserialize<GridConfiguration>(previous.FrozenConfigurationJson, JsonSupport.Options)!;
+            var frozen = GridConfigurationCodec.ReadFrozen(previous.FrozenConfigurationJson);
             var strategy = await db.Strategies.SingleOrDefaultAsync(x => x.Id == previous.StrategyId, ct);
             if (strategy is not null) await db.Entry(strategy).ReloadAsync(ct);
             if (!previous.IsTerminal || !IsBasketClose(previous.ExitReason) || previous.OperatorResetRequired ||
@@ -46,7 +46,7 @@ public sealed partial class GridStrategyWorkflow
                 await FinishAutoRestartAsync(operation, "CANCELLED", "RESTART_NOT_ELIGIBLE", ct);
                 return;
             }
-            var settings = DeserializeStrategy(strategy);
+            var settings = GridConfigurationCodec.ReadStrategy(strategy.ConfigurationJson);
             if (!settings.AutoRestart)
             {
                 await FinishAutoRestartAsync(operation, "CANCELLED", "AUTO_RESTART_DISABLED", ct);

@@ -94,7 +94,7 @@ public sealed partial class GridOrderLifecycle
                 if (cycle.State == "PAUSED") await TryCancelPausedEntriesAsync(cycle, ct);
                 else await environments.Adapter(cycle.ExecutionEnvironmentId).CancelOrdersAsync(Selection(cycle), [entry], ct);
             }
-            if (!lot.ProtectionPending || !MeetsProtectiveMinimum(cycle, TradingService.RulesFor(config),
+            if (!lot.ProtectionPending || !MeetsProtectiveMinimum(cycle, GridInstrumentRules.FromConfiguration(config),
                 lot.TakeProfitPrice, lot.RemainingQuantity)) continue;
             await EnsureLotProtectionAsync(cycle, config, entry, lot, ct);
         }

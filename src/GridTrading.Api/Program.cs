@@ -7,6 +7,7 @@ using GridTrading.Api.Exchanges.Hyperliquid;
 using GridTrading.Api.Exchanges.Paper;
 using GridTrading.Api.Infrastructure;
 using GridTrading.Api.Services;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 using GridTrading.Api.Strategies.Grid;
 using Microsoft.EntityFrameworkCore;
@@ -40,6 +41,7 @@ builder.Services.AddScoped<IExecutionAdapter>(sp => new HyperliquidExecutionAdap
     sp.GetRequiredService<HyperliquidInfoClient>(), sp.GetRequiredService<HyperliquidOrderOwnershipService>(), HyperliquidNetwork.Mainnet));
 builder.Services.AddScoped<ExecutionEnvironmentRegistry>();
 builder.Services.AddScoped<GridOrderLifecycle>();
+builder.Services.AddScoped<GridConfigurationService>();
 builder.Services.AddScoped<GridStrategyWorkflow>();
 builder.Services.AddHostedService<HyperliquidAccountBootstrap>();
 builder.Services.AddHostedService<HyperliquidFillWebSocketService>();
@@ -206,9 +208,9 @@ api.MapPost("/strategies/{id}/archive", async (string id, TradingDbContext db, C
     item.Archived = true; await db.SaveChangesAsync(ct); return Results.NoContent();
 });
 api.MapGet("/strategies/{id}/versions", async (string id, TradingDbContext db, CancellationToken ct) =>
-    await db.Strategies.FindAsync([id], ct) is { } item ? Results.Ok(new[] { new { version = item.Version, item.UpdatedAt, configuration = TradingService.DeserializeStrategy(item) } }) : Results.NotFound());
+    await db.Strategies.FindAsync([id], ct) is { } item ? Results.Ok(new[] { new { version = item.Version, item.UpdatedAt, configuration = GridConfigurationCodec.ReadStrategy(item.ConfigurationJson) } }) : Results.NotFound());
 api.MapGet("/strategies/{id}/versions/{version:int}", async (string id, int version, TradingDbContext db, CancellationToken ct) =>
-    await db.Strategies.FindAsync([id], ct) is { } item && item.Version == version ? Results.Ok(new { version, configuration = TradingService.DeserializeStrategy(item) }) : Results.NotFound());
+    await db.Strategies.FindAsync([id], ct) is { } item && item.Version == version ? Results.Ok(new { version, configuration = GridConfigurationCodec.ReadStrategy(item.ConfigurationJson) }) : Results.NotFound());
 api.MapGet("/strategies/{id}/active-cycle", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.SingleOrDefaultAsync(x => x.StrategyId == id && !x.IsTerminal, ct) is { } cycle ? Results.Ok(CycleDto(cycle)) : Results.NoContent());
 
@@ -321,14 +323,14 @@ static object CycleDto(CycleEntity x) => new
     cycleId = x.Id, x.StrategyId, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired,
     x.RiskPaused, operatorPaused = x.IsOperatorPaused, x.EntryPauseReasons, x.RiskRecoveryChecks,
     x.ExecutionEnvironmentId, x.ExecutionAccountId, x.FixedCenterPrice,
-    frozenConfiguration = JsonSerializer.Deserialize<GridConfiguration>(x.FrozenConfigurationJson, JsonSupport.Options),
+    frozenConfiguration = GridConfigurationCodec.ReadFrozen(x.FrozenConfigurationJson),
     frozenPlan = JsonSerializer.Deserialize<GridPlan>(x.FrozenPlanJson, JsonSupport.Options),
     x.EntryGridPriceOffset, effectivePlan = x.EffectivePlan,
     x.StartedAt, x.EndedAt, x.ExitReason
 };
 static object StrategyDto(StrategyEntity x, CycleEntity? cycle) => new { strategyId = x.Id, x.Name, x.StrategyType,
     x.DefaultExecutionEnvironmentId, x.DefaultExecutionAccountId, exchangeAccountId = x.DefaultExecutionAccountId,
-    x.Symbol, x.Version, x.Archived, configuration = TradingService.DeserializeStrategy(x),
+    x.Symbol, x.Version, x.Archived, configuration = GridConfigurationCodec.ReadStrategy(x.ConfigurationJson),
     activeCycle = cycle is null ? null : CycleDto(cycle), x.CreatedAt, x.UpdatedAt };
 static object PreviewDto(PreviewCacheItem x) => new
 {

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using GridTrading.Api.Contracts;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Api.Infrastructure;
 using GridTrading.Domain;
 
@@ -15,7 +16,7 @@ public sealed class StrategyCompatibilityTests
         json.Remove("gridMode");
         json["positionMode"] = "ONE_WAY";
 
-        var strategy = JsonSerializer.Deserialize<StrategyRequest>(json.ToJsonString(), JsonSupport.Options)!;
+        var strategy = GridConfigurationCodec.ReadStrategy(json.ToJsonString());
 
         Assert.Equal(GridMode.TwoWay, strategy.GridMode);
     }
@@ -26,7 +27,7 @@ public sealed class StrategyCompatibilityTests
         var json = JsonNode.Parse(JsonSerializer.Serialize(StrategyRequest.Default, JsonSupport.Options))!.AsObject();
         json.Remove("partialFillCancelAfterMinutes");
 
-        var strategy = JsonSerializer.Deserialize<StrategyRequest>(json.ToJsonString(), JsonSupport.Options)!;
+        var strategy = GridConfigurationCodec.ReadStrategy(json.ToJsonString());
 
         Assert.Equal(10, strategy.PartialFillCancelAfterMinutes);
     }
@@ -37,7 +38,7 @@ public sealed class StrategyCompatibilityTests
         var json = JsonNode.Parse(JsonSerializer.Serialize(StrategyRequest.Default, JsonSupport.Options))!.AsObject();
         json.Remove("faultExposureThresholdUsdt");
 
-        var strategy = JsonSerializer.Deserialize<StrategyRequest>(json.ToJsonString(), JsonSupport.Options)!;
+        var strategy = GridConfigurationCodec.ReadStrategy(json.ToJsonString());
         var configuration = strategy.ToConfiguration();
 
         Assert.Equal(10m, strategy.FaultExposureThresholdUsdt);
@@ -53,8 +54,8 @@ public sealed class StrategyCompatibilityTests
         }, JsonSupport.Options))!.AsObject();
         json.Remove("singleModeMoveDistancePoints");
         json.Remove("singleModeMoveIntervalSeconds");
-        var strategy = JsonSerializer.Deserialize<StrategyRequest>(json.ToJsonString(), JsonSupport.Options)!;
-        var frozen = JsonSerializer.Deserialize<GridConfiguration>(json.ToJsonString(), JsonSupport.Options)!;
+        var strategy = GridConfigurationCodec.ReadStrategy(json.ToJsonString());
+        var frozen = GridConfigurationCodec.ReadFrozen(json.ToJsonString());
         foreach (var config in new[] { strategy.ToConfiguration(), frozen })
         {
             Assert.Equal(75m, config.SingleModeMoveDistancePoints ?? config.GridSpacingPoints);

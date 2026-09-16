@@ -1,3 +1,4 @@
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 
 namespace GridTrading.Api.Contracts;
@@ -24,29 +25,8 @@ public sealed record StrategyRequest(
     [System.Text.Json.Serialization.JsonIgnore]
     public string EffectiveExecutionAccountId => DefaultExecutionAccountId ?? ExchangeAccountId;
 
-    public GridConfiguration ToConfiguration(decimal centerPrice = 0m) => new()
-    {
-        Symbol = Symbol, GridMode = GridMode,
-        SingleModeMoveDistancePoints = SingleModeMoveDistancePoints,
-        SingleModeMoveIntervalSeconds = SingleModeMoveIntervalSeconds,
-        EntryFillLimitEnabled = EntryFillLimitEnabled, EntryFillWindowMinutes = EntryFillWindowMinutes,
-        MaxEntryFillsPerSide = MaxEntryFillsPerSide,
-        CenterSuggestionMode = CenterSuggestionMode, AutoRestart = AutoRestart,
-        CenterPrice = CenterSuggestionMode == "MANUAL" ? ManualCenterPrice ?? 0m : centerPrice,
-        MaxLevelsPerSide = MaxLevelsPerSide,
-        WorkingEntriesPerSide = WorkingEntriesPerSide, InitialGapPoints = InitialGapPoints,
-        GridSpacingPoints = GridSpacingPoints, GridSpacingStepPoints = GridSpacingStepPoints,
-        TakeProfitPoints = TakeProfitPoints, BaseLotSize = BaseLotSize,
-        LotSizeIncreasePercent = LotSizeIncreasePercent, MaxTradeLot = MaxTradeLot,
-        MaxNetLot = MaxNetLot, BasketTakeProfitUsdt = BasketTakeProfitUsdt,
-        BasketStopLossUsdt = BasketStopLossUsdt, MakerFeeRate = MakerFeeRate,
-        FaultExposureThresholdUsdt = FaultExposureThresholdUsdt,
-        TakerFeeRate = TakerFeeRate, EstimatedExitSlippagePct = EstimatedExitSlippagePct,
-        IncludeFunding = IncludeFunding, PostOnlyEntries = PostOnlyEntries,
-        PostOnlyTakeProfits = PostOnlyTakeProfits, ReconcileIntervalSeconds = ReconcileIntervalSeconds,
-        MarketDataStaleSeconds = MarketDataStaleSeconds, OrderCommandTimeoutSeconds = OrderCommandTimeoutSeconds,
-        MaxOrderFrequency = MaxOrderFrequency, PartialFillCancelAfterMinutes = PartialFillCancelAfterMinutes
-    };
+    public GridConfiguration ToConfiguration(decimal centerPrice = 0m) =>
+        GridConfigurationMapper.FromStrategy(this, centerPrice);
 
     public static StrategyRequest Default => new(
         "Weekend SOL Grid", "acct_paper_01", "SOLUSDT", GridMode.TwoWay, "CURRENT_MID", false,
