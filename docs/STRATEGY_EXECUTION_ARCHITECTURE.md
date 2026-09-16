@@ -20,6 +20,8 @@ A strategy describes how to trade. An execution environment describes the venue 
 
 `TradingService` is the API application facade. It dispatches the current `GRID` type to `GridStrategyWorkflow`. The workflow owns preview, start, operator commands and cycle state. `GridOrderLifecycle` owns normalized fills, take-profits, virtual lots, moving entries and reconciliation. Adapters own only venue behavior: instrument metadata, quote/preflight, placement, cancellation, position/flattening and conversion to normalized events.
 
+Single-mode movement stays inside `GridOrderLifecycle`. `SingleMode.cs` contains the maintenance coordinator and the trail/reset/restore decision and target rules; its named result controls whether ordinary entry maintenance continues. `SingleModeMovement.cs` contains the shared `MoveAsync` execution path: synchronize, confirm cancellation when an entry exists, recalculate the destination from a fresh quote, and commit the effective center shift with the replacement entry. Movement continues to use the existing offset and pending-order marker, so interrupted moves resume without a separate persisted state model.
+
 The environment registry is configuration-backed rather than persisted. It currently advertises:
 
 | Environment ID | Venue | Network | Account source |

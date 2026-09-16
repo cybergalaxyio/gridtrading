@@ -17,7 +17,8 @@ public sealed partial class GridOrderLifecycle
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
         quote ??= await adapter.GetQuoteAsync(selection, config.Symbol, ct);
-        if (config.GridMode != GridMode.TwoWay && await MaintainSingleModeMoveAsync(cycle, config, quote, ct)) return;
+        if (config.GridMode != GridMode.TwoWay &&
+            await MaintainSingleModeEntriesAsync(cycle, config, quote, ct) == SingleModeMaintenanceResult.StopEntryMaintenance) return;
         var plan = cycle.EffectivePlan;
         var active = await ActiveOrdersAsync(cycle.Id, ct);
         var openLots = await db.VirtualLots.Where(x => x.CycleId == cycle.Id && x.Status != "CLOSED").ToListAsync(ct);

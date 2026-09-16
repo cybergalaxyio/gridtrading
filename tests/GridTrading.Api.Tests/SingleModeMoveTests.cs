@@ -493,6 +493,77 @@ public sealed class SingleModeMoveTests
         Assert.Equal(-sign * 3m, f.Cycle.EntryGridPriceOffset);
     }
 
+    [Theory]
+    [InlineData(GridMode.SellOnly, -1)]
+    [InlineData(GridMode.BuyOnly, 1)]
+    public async Task MissingUnfilledEntryRestoresStartupGridEvenAfterMarketMoves(GridMode mode, int direction)
+    {
+        await using var f = await Fixture.CreateAsync(mode);
+        var frozen = f.Cycle.FrozenPlanJson;
+        await f.Adapter.CancelOrdersAsync(new(f.Cycle.ExecutionEnvironmentId, "test"), [f.Entry], Ct);
+        f.Adapter.SetMarket(100m + direction * 2m);
+        f.Clock.Advance(60);
+
+        await f.Maintain();
+
+        var restored = Assert.Single(f.ActiveEntries());
+        Assert.NotEqual(f.Entry.Id, restored.Id);
+        Assert.Equal(f.Entry.Price, restored.Price);
+        Assert.Equal(0, restored.GridLevel);
+        Assert.Equal(f.Config.BaseLotSize, restored.Quantity);
+        Assert.Equal(100m, f.Cycle.EffectivePlan.CenterPrice);
+        Assert.Equal(0m, f.Cycle.EntryGridPriceOffset);
+        Assert.Equal(frozen, f.Cycle.FrozenPlanJson);
+        Assert.Equal(f.Clock.GetUtcNow(), restored.CreatedAt);
+        await f.Restart();
+        await f.Maintain();
+        Assert.Equal(restored.Id, Assert.Single(f.ActiveEntries()).Id);
+        Assert.Equal(2, f.Adapter.Placements);
+    }
+
+    [Theory]
+    [InlineData(GridMode.SellOnly, -1, false)]
+    [InlineData(GridMode.BuyOnly, 1, false)]
+    [InlineData(GridMode.SellOnly, -1, true)]
+    [InlineData(GridMode.BuyOnly, 1, true)]
+    public async Task MarketChangeDuringCancellationReevaluatesMoveBeforeCommitting(
+        GridMode mode, int direction, bool rebound)
+    {
+        await using var f = await Fixture.CreateAsync(mode);
+        var frozen = f.Cycle.FrozenPlanJson;
+        f.Clock.Advance(60);
+        f.Adapter.SetMarket(100m + direction);
+        f.Adapter.MarketAfterCancel = rebound ? 100m : 100m + direction * 2m;
+
+        await f.Maintain();
+
+        Assert.Equal("CANCELLED", f.Entry.Status);
+        Assert.Null(f.Cycle.EntryGridMovePendingOrderId);
+        Assert.Equal(frozen, f.Cycle.FrozenPlanJson);
+        if (rebound)
+        {
+            Assert.Empty(f.ActiveEntries());
+            Assert.Equal(0m, f.Cycle.EntryGridPriceOffset);
+            Assert.Equal(1, f.Adapter.Placements);
+            await f.Restart();
+            await f.Maintain();
+            Assert.Equal(f.Entry.Price, Assert.Single(f.ActiveEntries()).Price);
+            Assert.Equal(0m, f.Cycle.EntryGridPriceOffset);
+        }
+        else
+        {
+            var moved = Assert.Single(f.ActiveEntries());
+            Assert.Equal(f.Entry.Price + direction * 2m, moved.Price);
+            Assert.Equal(100m + direction * 2m, f.Cycle.EffectivePlan.CenterPrice);
+            Assert.Equal(direction * 2m, f.Cycle.EntryGridPriceOffset);
+            await f.Restart();
+            await f.Maintain();
+            Assert.Equal(moved.Id, Assert.Single(f.ActiveEntries()).Id);
+        }
+        Assert.Equal(2, f.Adapter.Placements);
+        Assert.Equal(1, f.Adapter.Cancels);
+    }
+
     private sealed class TestClock : TimeProvider
     {
         private DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -568,6 +639,7 @@ public sealed class SingleModeMoveTests
         public string? PlaceFailure;
         public string? CancelFailure;
         public decimal FillOnCancel;
+        public decimal? MarketAfterCancel;
         public bool HideFills, HideCancelled, Stale, StaleAfterCancel, ExpireWhenEntryPending;
         public string? InvalidQuote;
         public ExecutionEnvironmentDescriptor Environment => new(ExecutionEnvironmentIds.HyperliquidTestnet, "HYPERLIQUID", "TESTNET", "Simulated");
@@ -623,6 +695,7 @@ public sealed class SingleModeMoveTests
                 if (failure == "after") throw new HttpRequestException("Cancellation response lost");
                 entry.Status = "CANCELLED";
                 if (StaleAfterCancel) Stale = true;
+                if (MarketAfterCancel.HasValue) market = MarketAfterCancel.Value;
             }
             await Db.SaveChangesAsync(ct);
         }
