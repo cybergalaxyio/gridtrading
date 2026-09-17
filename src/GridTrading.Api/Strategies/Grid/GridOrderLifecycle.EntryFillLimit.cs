@@ -40,7 +40,34 @@ public sealed partial class GridOrderLifecycle
     public async Task<bool> CanPlaceNewEntryOrderAsync(CycleEntity cycle, GridConfiguration config,
         OrderSide side, CancellationToken ct)
     {
-        if (!config.EntryFillLimitEnabled) return true;
+        var status = await ReadEntryFillLimitAsync(cycle, config, side, ct);
+        if (status is null) return true;
+        var sideName = status.Side;
+        if (status.Reason == "HISTORY_NOT_READY")
+        {
+            var code = $"ENTRY_FILL_HISTORY_NOT_READY_{sideName}";
+            if (!await db.RiskAlerts.AnyAsync(x => x.CycleId == cycle.Id && x.Code == code && !x.Acknowledged, ct))
+            {
+                db.RiskAlerts.Add(new RiskAlertEntity
+                {
+                    Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "WARNING", Code = code,
+                    Message = $"{sideName} Entry deferred: completed order history has no verified FilledAt. " +
+                        "Reconcile order history before placing new entries on this side.",
+                    CreatedAt = clock.GetUtcNow()
+                });
+                await db.SaveChangesAsync(ct);
+            }
+            return false;
+        }
+        await CancelEntriesAtFillLimitAsync(cycle, sideName, ct);
+        return false;
+    }
+
+    // Shared with the dashboard: observing a hold never cancels or submits orders.
+    public async Task<EntryHold?> ReadEntryFillLimitAsync(CycleEntity cycle, GridConfiguration config,
+        OrderSide side, CancellationToken ct)
+    {
+        if (!config.EntryFillLimitEnabled) return null;
         if (config.EntryFillWindowMinutes <= 0 || config.MaxEntryFillsPerSide <= 0)
             throw new TradingProblemException(422, "ENTRY_FILL_LIMIT_INVALID",
                 "Lookback Window and Max Filled Entries per Side must be positive integers.");
@@ -63,24 +90,12 @@ public sealed partial class GridOrderLifecycle
         // Decimal comparisons stay in memory: SQLite stores quantities as lossless text.
         if (history.Any(x => x.FilledAt == null &&
             (x.Status == "FILLED" || (x.Quantity > 0m && x.FilledQuantity >= x.Quantity))))
-        {
-            var code = $"ENTRY_FILL_HISTORY_NOT_READY_{sideName}";
-            if (!await db.RiskAlerts.AnyAsync(x => x.CycleId == cycle.Id && x.Code == code && !x.Acknowledged, ct))
-            {
-                db.RiskAlerts.Add(new RiskAlertEntity
-                {
-                    Id = Ids.New("alert"), CycleId = cycle.Id, Severity = "WARNING", Code = code,
-                    Message = $"{sideName} Entry deferred: completed order history has no verified FilledAt. " +
-                        "Reconcile order history before placing new entries on this side.",
-                    CreatedAt = now
-                });
-                await db.SaveChangesAsync(ct);
-            }
-            return false;
-        }
-        if (history.Count(x => x.FilledAt.HasValue) < config.MaxEntryFillsPerSide) return true;
-        await CancelEntriesAtFillLimitAsync(cycle, sideName, ct);
-        return false;
+            return new(sideName, "HISTORY_NOT_READY");
+        var fills = history.Where(x => x.FilledAt.HasValue).Select(x => x.FilledAt!.Value).Order().ToArray();
+        if (fills.Length < config.MaxEntryFillsPerSide) return null;
+        // Enough fills must expire to leave fewer than the maximum, even if already over it.
+        var resumeAt = fills[fills.Length - config.MaxEntryFillsPerSide] + window;
+        return new(sideName, "FILL_LIMIT", resumeAt, fills.Length, config.MaxEntryFillsPerSide);
     }
 
     private async Task CancelEntriesAtFillLimitAsync(CycleEntity cycle, string sideName, CancellationToken ct)

@@ -86,6 +86,11 @@ public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration 
         return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
     }
 
-    private static decimal Decimal(JsonElement value) => decimal.Parse(value.GetString() ?? value.ToString(), CultureInfo.InvariantCulture);
+    private static decimal Decimal(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.Number => value.GetDecimal(),
+        JsonValueKind.String => decimal.Parse(value.GetString()!, CultureInfo.InvariantCulture),
+        _ => throw new JsonException("Expected a numeric market-data value.")
+    };
     private static string ToCoin(string symbol) => HyperliquidTradingClient.ToCoin(symbol);
 }

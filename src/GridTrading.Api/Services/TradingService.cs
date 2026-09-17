@@ -25,7 +25,7 @@ public sealed class TradingService(GridStrategyWorkflow grid)
     public Task<OperationEntity> Command(string cycleId, string command, string reason, string key,
         long? expectedVersion, bool emergencyConfirmed, CancellationToken ct, bool automaticClose = false) =>
         grid.CommandAsync(cycleId, command, reason, key, expectedVersion, emergencyConfirmed, ct, automaticClose);
-    public object Snapshot(CycleEntity cycle) => grid.Snapshot(cycle);
+    public Task<object> SnapshotAsync(CycleEntity cycle, CancellationToken ct) => grid.SnapshotAsync(cycle, ct);
 
     public static StrategyRequest DeserializeStrategy(StrategyEntity entity) =>
         GridConfigurationCodec.ReadStrategy(entity.ConfigurationJson);

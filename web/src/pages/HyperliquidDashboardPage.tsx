@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { api } from '../api'
 import { TradingChart } from '../components/TradingChart'
+import { EntryHolds } from '../components/EntryHolds'
+import { GridSuitability } from '../components/GridSuitability'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import { Modal } from '../components/Modal'
@@ -41,6 +43,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const isHyperliquid = selectedEnvironment === 'hyperliquid-testnet' || isMainnet
   const selectedExecutionAccountId = cycle?.executionAccountId ?? (runAccountId || strategy?.defaultExecutionAccountId || '')
   const [candles, setCandles] = useState<Candle[]>([])
+  const [candleContext, setCandleContext] = useState('')
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
   const [exchangeMid, setExchangeMid] = useState<string | null>(null)
@@ -62,11 +65,16 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     const stored = localStorage.getItem('grid.dashboardTimeframe')
     return TIMEFRAMES.includes(stored as Timeframe) ? stored as Timeframe : '1m'
   })
+  const [showBB, setShowBB] = useState(() => localStorage.getItem('grid.chartBB') !== 'false')
+  const [showATR, setShowATR] = useState(() => localStorage.getItem('grid.chartATR') !== 'false')
+  useEffect(() => { localStorage.setItem('grid.chartBB', String(showBB)) }, [showBB])
+  useEffect(() => { localStorage.setItem('grid.chartATR', String(showATR)) }, [showATR])
   const refreshSequence = useRef(0)
   const historyRefreshSequence = useRef(0)
   const lastMarketTickAt = useRef(0)
   const marketSymbol = symbol || strategy?.symbol || (isHyperliquid ? 'SOL' : 'SOLUSDT')
   const strategyMatchesMarket = sameCoin(strategy?.symbol, marketSymbol)
+  const chartContext = `${selectedEnvironment}:${marketSymbol}:${timeframe}`
 
   useEffect(() => {
     void api.executionEnvironments().then(setRunEnvironments).catch(() => setRunEnvironments([]))
@@ -255,7 +263,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     const sequence = ++refreshSequence.current
     setMarketLoading(true)
     try {
-      const chartRequest = isHyperliquid ? api.hyperliquidCandles(marketSymbol, timeframe, 180, selectedEnvironment) : api.candles()
+      const chartRequest = isHyperliquid ? api.hyperliquidCandles(marketSymbol, timeframe, 300, selectedEnvironment) : api.candles()
       const bookRequest = isHyperliquid ? api.hyperliquidBook(marketSymbol, selectedEnvironment) : Promise.resolve(null)
       const accountRequest = isHyperliquid && strategy
         ? api.hyperliquidAccountState(selectedExecutionAccountId, marketSymbol, selectedEnvironment) : Promise.resolve(null)
@@ -267,7 +275,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         accountRequest,
       ])
       if (sequence !== refreshSequence.current) return
-      setCandles(isHyperliquid ? chart : aggregateCandles(chart, timeframe)); setSnapshot(snap); setOrders(orderRows)
+      setCandles(isHyperliquid ? chart : aggregateCandles(chart, timeframe)); setCandleContext(`${selectedEnvironment}:${marketSymbol}:${timeframe}`); setSnapshot(snap); setOrders(orderRows)
       if (!isHyperliquid || Date.now() - lastMarketTickAt.current > 3_000) setExchangeMid(book?.mid ?? null)
       setAccountState(actualAccount)
     } catch (e) {
@@ -279,7 +287,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
 
   useEffect(() => {
     void refresh(); const timer = setInterval(() => void refresh(), isHyperliquid ? 10_000 : 5_000)
-    return () => clearInterval(timer)
+    return () => { clearInterval(timer); ++refreshSequence.current }
   }, [cycle?.cycleId, strategy?.strategyId, strategy ? selectedExecutionAccountId : undefined, marketSymbol, timeframe, isHyperliquid, selectedEnvironment])
 
   const entryOrderLines = useMemo(() => strategyMatchesMarket
@@ -343,7 +351,6 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       onEnvironmentChange={value => { setRunEnvironmentId(value); setRunAccountId(''); onExecutionEnvironmentChange(value) }}
       onAccountChange={setRunAccountId}
     />}
-    {isMainnet && <div className="mainnet-banner"><b>MAINNET · REAL FUNDS</b><span>Orders use your strategy settings and real funds.</span></div>}
     <section className="instrument-bar">
       <div className="instrument-summary"><div className="instrument-heading"><h1><SymbolPicker value={marketSymbol} options={instruments}
         formatLabel={item => displaySymbol(item, isHyperliquid)}
@@ -363,12 +370,13 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
               </span><span>{fundingRate !== null ? fundingCountdown(now) : '—'}</span></dd>
             </div>
           </dl>
+          {strategyMatchesMarket && snapshot?.cycle.cycleId === cycle?.cycleId &&
+            <EntryHolds holds={snapshot?.entryHolds ?? []} now={now} formatDate={dateTime} />}
         </div>
         <div className="instrument-meta">
           <span className={`cycle-state-display ${currentCycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {riskPaused ? (operatorPaused ? '风险暂停 + 人工暂停' : '风险暂停开仓') : currentCycle?.state ?? 'IDLE'}</span>
           <span className="instrument-timing" title="Local time">Start: {dateTime(cycle?.startedAt)}</span>
           <span className="instrument-timing" title="Days, hours, minutes">Runs: {runningTime(cycle?.startedAt, cycle?.endedAt, now)}</span>
-          <span className="instrument-timing" title="Local time">Last Update: {dateTime(isHyperliquid ? accountState?.asOf : snapshot?.health.lastReconciledAt ?? snapshot?.market.asOf)}</span>
         </div>
       </div>
       {riskPaused && <span className="warning-text">继续维护 TP；连续两次对账确认风险解除后恢复开仓{operatorPaused ? '（人工暂停仍保留）' : ''}</span>}
@@ -381,10 +389,11 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>Exit</button>}
       </div>
     </section>
+    <GridSuitability environmentId={selectedEnvironment} accountId={selectedExecutionAccountId} symbol={marketSymbol} strategy={strategy} />
     <div className="dashboard-grid">
       <section className="chart-panel panel">
-        <div className="chart-tools"><div className="timeframe-picker" role="group" aria-label="K 线周期">{TIMEFRAMES.map(item => <button key={item} type="button" className={timeframe === item ? 'active' : ''} aria-pressed={timeframe === item} onClick={() => { setTimeframe(item); setCandles([]) }}>{item === '1d' ? 'D' : item}</button>)}</div><i /><span>{isHyperliquid ? 'Hyperliquid candleSnapshot' : 'Paper candles'}</span><Icon name="settings" size={16} /></div>
-        <TradingChart candles={candles} entryOrders={entryOrderLines}
+        <div className="chart-tools"><div className="timeframe-picker" role="group" aria-label="K 线周期">{TIMEFRAMES.map(item => <button key={item} type="button" className={timeframe === item ? 'active' : ''} aria-pressed={timeframe === item} onClick={() => { setTimeframe(item); setCandles([]) }}>{item === '1d' ? 'D' : item}</button>)}</div><i /><div className="chart-indicator-toggles"><button type="button" aria-pressed={showBB} title="Bollinger Bands (20, 2)" onClick={() => setShowBB(x => !x)}>BB</button><button type="button" aria-pressed={showATR} title="Average True Range (14)" onClick={() => setShowATR(x => !x)}>ATR</button></div><span className="chart-source">{isHyperliquid ? 'Hyperliquid candleSnapshot' : 'Paper candles'}</span></div>
+        <TradingChart candles={candleContext === chartContext ? candles : []} entryOrders={entryOrderLines} contextKey={chartContext} timeframe={timeframe} showBB={showBB} showATR={showATR}
           livePrice={isHyperliquid && Number.isFinite(latest) ? latest : undefined} />
         {marketLoading && <div className="chart-loading">正在加载 {instrument} · {timeframe}</div>}
       </section>
@@ -449,12 +458,12 @@ function TopbarExecutionSelectors({ environments, accounts, environmentId, accou
   const accountKnown = accounts.some(item => item.id === accountId)
   return createPortal(
     <>
-      <select className="topbar-context-select environment" value={environmentId} disabled={locked || busy} aria-label="本次 Cycle 执行环境"
+      <select className={`topbar-context-select environment${environmentId === 'hyperliquid-mainnet' ? ' mainnet-highlight' : ''}`} value={environmentId} disabled={locked || busy} aria-label="本次 Cycle 执行环境"
         onChange={event => onEnvironmentChange(event.target.value)}>
-        {environmentId && !environmentKnown && <option value={environmentId}>{environmentId}</option>}
-        {environments.map(item => <option key={item.id} value={item.id}>{item.displayName}</option>)}
+        {environmentId && !environmentKnown && <option value={environmentId}>{environmentId === 'hyperliquid-mainnet' ? 'MAINNET · REAL FUNDS' : environmentId}</option>}
+        {environments.map(item => <option key={item.id} value={item.id}>{item.id === 'hyperliquid-mainnet' ? 'MAINNET · REAL FUNDS' : item.displayName}</option>)}
       </select>
-      <select className="topbar-context-select account" value={accountId} disabled={locked || busy || accounts.length <= 1} aria-label="本次 Cycle 执行账户"
+      <select className={`topbar-context-select account${environmentId === 'hyperliquid-mainnet' ? ' mainnet-highlight' : ''}`} value={accountId} disabled={locked || busy || accounts.length <= 1} aria-label="本次 Cycle 执行账户"
         onChange={event => onAccountChange(event.target.value)}>
         {accountId && !accountKnown && <option value={accountId}>{accountId}</option>}
         {accounts.map(item => <option key={item.id} value={item.id}>{item.displayName}</option>)}

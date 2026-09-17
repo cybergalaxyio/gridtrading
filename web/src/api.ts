@@ -1,4 +1,4 @@
-import type { Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, TelegramSettings, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
+import type { GridAdvisoryResponse, Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, TelegramSettings, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -21,6 +21,12 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  gridAdvisory: (environmentId: string, symbol: string, accountId?: string, strategyId?: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ environmentId, symbol })
+    if (accountId) query.set('accountId', accountId)
+    if (strategyId) query.set('strategyId', strategyId)
+    return call<GridAdvisoryResponse>(`/grid-advisory?${query}`, { signal })
+  },
   executionEnvironments: () => call<ExecutionEnvironment[]>('/execution-environments'),
   executionAccounts: (environmentId: string) => call<ExecutionAccount[]>(`/execution-environments/${encodeURIComponent(environmentId)}/accounts`),
   hyperliquidAccounts: (environment = "hyperliquid-testnet") => call<HyperliquidAccount[]>(`/${environment}/accounts`),

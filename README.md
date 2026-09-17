@@ -101,3 +101,20 @@ cd web && npm test && npm run build
 ## 安全边界
 
 Paper 撮合仅用于开发验证。Hyperliquid 交易适配器按账户网络锁定官方 HTTPS 端点。Mainnet 支持用户选择的永续合约市场，不设试运行金额、层数或杠杆限制。API Wallet 私钥不会通过 HTTP 接收；V1 的 HTTP 写操作还会拒绝非 loopback 来源。部署时应保护后端环境变量与 `GRID_TRADING_CREDENTIAL_KEY`。Testnet 仍可能产生不可逆的测试资金损失，启动和关闭前请核对实际账户仓位与挂单。
+
+## Grid Suitability 与图表指标
+
+Dashboard 的 Symbol 控制条下方提供只读 **Grid Suitability**。展开 **View analysis** 可查看 15m、1h、4h、1d 的 ADX/DI、ATR、Bollinger Bands 与 RSI，以及网格间距、费用、资金费和敞口情景。15m 用于入场和间距比较；较大周期的强趋势不会被短周期的震荡读数抵消。
+
+- 评估使用最新保存的策略参数；运行中显示 **New-cycle suitability**，不修改已有 Cycle 的冻结参数，不影响 Start、暂停、退出或自动重启。
+- 仅分析匹配的交易对与账户。Paper、历史不足、数据过期或必要输入缺失时显示 **Insufficient data**。每个周期需要至少 200 根有效且连续的已收盘 K 线；新上市交易对可能缺少足够的日线历史。
+- 页面可见时每 30 秒刷新。刷新失败会标明旧数据；90 秒无成功刷新后不再显示有效结论。分析周期与图表周期独立。
+- 默认显示 **BB(20, 2)** 价格叠加线与独立 **ATR(14)** 面板。工具栏 BB / ATR 开关分别保存，指标跟随图表周期。图表未收盘指标标记为 provisional，建议只使用已收盘 K 线。
+- ATR 采用 Wilder 平滑，首个 ATR 是前 14 个 True Range 的均值，首根 TR 为 High − Low；BB 使用 20 根收盘价的 SMA 与总体标准差。前后端共用参考测试数据。
+- 费用计算考虑 TP 回退为普通 Limit 时可能产生的 Taker 费用；资金费按当前费率及最大计划敞口展示 4/24/72 小时情景，并非预测。
+- 1/2 ATR 的逆向移动情景从空仓开始，按经过的层级成交并受 MaxNetLot 限制，计入开仓费、估计 Taker 退出费和滑点，不假设止损能够限制最终亏损，也不包含资金费或清算估算。
+- 所有阈值为 `grid-advisory-v1` 初始启发式规则，不代表已验证的盈利概率。完整计算说明见展开的各项检查。
+
+只读接口：`GET /api/v1/grid-advisory?environmentId=hyperliquid-mainnet&symbol=SOL&accountId=...&strategyId=...`。不创建 Preview、订单或 Cycle，无数据库迁移。
+
+Mainnet 不再显示全宽横幅；顶部环境与账户选择框改为琥珀色高亮，环境标签显示 **MAINNET · REAL FUNDS**，锁定选择框时仍然清晰可见。

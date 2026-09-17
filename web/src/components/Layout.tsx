@@ -34,7 +34,7 @@ export function Layout({ route, environment, emergencyBusy, onRoute, onEmergency
     </aside>
     <div className="workspace">
       <header className="topbar">
-        <div className="brand">GRID TRADING</div><div id="execution-context-slot" className="execution-context-slot">{route !== 'dashboard' && <span className="env">{environment}</span>}</div>
+        <div className="brand">GRID TRADING</div><div id="execution-context-slot" className="execution-context-slot">{route !== 'dashboard' && <span className={`env${environment === 'MAINNET' ? ' mainnet-highlight' : ''}`}>{environment === 'MAINNET' ? 'MAINNET · REAL FUNDS' : environment}</span>}</div>
         <span className="connection"><i />{isHyperliquid ? `Hyperliquid ${environment}` : '本地模拟 · 已连接'}</span><span className="latency">{isHyperliquid ? '官方行情 · 10s 刷新' : '行情延迟 < 10ms'}</span>
         <time>UTC {clock.toISOString().slice(11, 19)}</time>
         <button className="danger-outline" disabled={emergencyBusy} aria-busy={emergencyBusy} onClick={onEmergency}>{emergencyBusy ? 'Stopping…' : 'Shutdown'}</button>

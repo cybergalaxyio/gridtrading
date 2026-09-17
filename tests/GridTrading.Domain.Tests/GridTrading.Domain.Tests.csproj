@@ -12,4 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/GridTrading.Domain/GridTrading.Domain.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../fixtures/technical-indicators.json" Link="technical-indicators.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

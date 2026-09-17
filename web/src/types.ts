@@ -43,7 +43,13 @@ export type Preview = { previewId: string; executionEnvironmentId: string; execu
   outermostBuyPrice: string; outermostSellPrice: string; coverageBelowPct: string; coverageAbovePct: string;
   maximumPlannedQuantityPerSide: string; maximumPlannedNotionalPerSide: string; startEligible: boolean; levels: GridLevel[] }
 
+export type EntryHold = {
+  side: 'BUY' | 'SELL'; reason: string; resumeAt: string | null;
+  filledCount: number | null; fillLimit: number | null;
+}
+
 export type Snapshot = {
+  entryHolds?: EntryHold[];
   cycle: Cycle & { fixedCenterPrice: string };
   market: { bid: string; ask: string; mid: string; asOf: string; isStale: boolean };
   orders: { activeEntryCount: number; activeTakeProfitCount: number; unknownCount: number };
@@ -106,4 +112,17 @@ export type TelegramSettings = {
   botUsername?: string | null; verifiedAt?: string | null; enabledAt?: string | null;
   lastTestedAt?: string | null; lastTestError?: string | null; lastDeliveryAt?: string | null;
   lastDeliveryStatus?: 'SUCCEEDED' | 'FAILED' | null; lastDeliveryError?: string | null;
+}
+
+
+export type AdvisoryStatus = 'FAVORABLE' | 'CAUTION' | 'UNFAVORABLE' | 'INSUFFICIENT_DATA'
+export type AdvisoryCheck = { id: string; title: string; status: AdvisoryStatus; reasons: string[]; metrics: { label: string; value: string }[]; consideration: string }
+export type AdvisoryFrame = { interval: string; closedAt: number | null; close: string | null; error: string | null; atrRatio: number | null;
+  indicators: { atr: number | null; adx: number | null; plusDi: number | null; minusDi: number | null; rsi: number | null;
+    middle: number | null; upper: number | null; lower: number | null; bandwidth: number | null } | null }
+export type GridAdvisoryResponse = {
+  environmentId: string; symbol: string; accountId: string | null; strategyId: string | null; strategyVersion: number | null;
+  strategyName: string | null; gridMode: StrategyConfig['gridMode'] | null; strategyMatchesSymbol: boolean; ruleVersion: string;
+  asOf: string; quoteAsOf: string | null; frames: AdvisoryFrame[]; status: AdvisoryStatus; checks: AdvisoryCheck[];
+  scenarios: { interval: string; atrMultiple: number; loss: string; filledQuantity: string; side: string }[]; notice: string | null;
 }

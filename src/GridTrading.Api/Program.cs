@@ -19,6 +19,8 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<GridTrading.Api.Hubs.HyperliquidMarketSubscriptionRegistry>();
 builder.Services.AddSingleton<MarketState>();
 builder.Services.AddSingleton<PreviewStore>();
+builder.Services.AddMemoryCache();
+builder.Services.AddScoped<GridAdvisoryService>();
 builder.Services.AddSingleton<ReplayStore>();
 builder.Services.AddSingleton<ReplayService>();
 builder.Services.AddHttpClient<HyperliquidInfoClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -102,6 +104,7 @@ app.Use(async (context, next) =>
 await InitializeDatabase(app.Services, connectionString);
 
 var api = app.MapGroup("/api/v1");
+app.MapGridAdvisoryEndpoints();
 
 api.MapGet("/system/status", async (TradingDbContext db, CancellationToken ct) => new
 {
@@ -234,7 +237,7 @@ api.MapGet("/cycles", async (string? strategyId, string? state, TradingDbContext
 api.MapGet("/cycles/{id}", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } cycle ? Results.Ok(CycleDto(cycle)) : Results.NotFound());
 api.MapGet("/cycles/{id}/snapshot", async (string id, TradingDbContext db, TradingService service, CancellationToken ct) =>
-    await db.Cycles.FindAsync([id], ct) is { } cycle ? Results.Ok(service.Snapshot(cycle)) : Results.NotFound());
+    await db.Cycles.FindAsync([id], ct) is { } cycle ? Results.Ok(await service.SnapshotAsync(cycle, ct)) : Results.NotFound());
 api.MapGet("/cycles/{id}/plan", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(c.EffectivePlan) : Results.NotFound());
 api.MapGet("/cycles/{id}/levels", async (string id, TradingDbContext db, CancellationToken ct) =>

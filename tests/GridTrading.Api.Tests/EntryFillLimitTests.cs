@@ -291,6 +291,79 @@ public sealed class EntryFillLimitTests
         Assert.True(JsonSerializer.Deserialize<GridConfiguration>(f.Cycle.FrozenConfigurationJson, JsonSupport.Options)!.EntryFillLimitEnabled);
     }
 
+    [Fact]
+    public async Task HoldReportsExactResumeTimeAcrossCyclesWithoutMutatingOrders()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.StartAsync();
+        foreach (var age in new[] { -59, -58, -30, -1 }) await f.AddHistoryAsync("SELL", age);
+        var placed = f.Adapter.Placed.Count;
+        var active = f.ActiveEntries().Select(x => x.Id).ToArray();
+        var holds = await f.Lifecycle.ReadEntryHoldsAsync(f.Cycle, f.Config, Ct);
+        var hold = Assert.Single(holds);
+        Assert.Equal("SELL", hold.Side);
+        Assert.Equal("FILL_LIMIT", hold.Reason);
+        Assert.Equal(4, hold.FilledCount);
+        Assert.Equal(3, hold.FillLimit);
+        Assert.Equal(f.Clock.Now.AddMinutes(2), hold.ResumeAt);
+        Assert.Equal(active, f.ActiveEntries().Select(x => x.Id).ToArray());
+        Assert.Equal(placed, f.Adapter.Placed.Count);
+        Assert.Empty(f.Adapter.Cancelled);
+        Assert.Empty(await f.Db.RiskAlerts.ToListAsync(Ct));
+        f.Clock.Now = f.Clock.Now.AddMinutes(2);
+        Assert.Empty(await f.Lifecycle.ReadEntryHoldsAsync(f.Cycle, f.Config, Ct));
+    }
+
+    [Fact]
+    public async Task MissingHistoryHasNoInventedResumeTimeOrReadSideEffects()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.StartAsync();
+        var order = await f.AddHistoryAsync("SELL", -1);
+        order.FilledAt = null;
+        await f.Db.SaveChangesAsync(Ct);
+        Assert.Empty(await f.Lifecycle.ReadEntryHoldsAsync(f.Cycle, f.Config, Ct));
+        Assert.Empty(await f.Db.RiskAlerts.ToListAsync(Ct));
+        Assert.Empty(f.Adapter.Cancelled);
+    }
+
+    [Theory]
+    [InlineData("SELL", 110)]
+    [InlineData("BUY", 90)]
+    public async Task OutsideGridDoesNotShowFillRestriction(string side, decimal mid)
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.StartAsync();
+        f.ActiveEntries().Single(x => x.Side == side).Status = "CANCELLED";
+        await f.Db.SaveChangesAsync(Ct);
+        f.Adapter.Mid = mid;
+        Assert.Empty(await f.Lifecycle.ReadEntryHoldsAsync(f.Cycle, f.Config, Ct));
+    }
+
+    [Fact]
+    public async Task UnavailableQuoteAndManualPauseDoNotShowFillRestriction()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.StartAsync();
+        f.ActiveEntries().Single(x => x.Side == "SELL").Status = "CANCELLED";
+        await f.Db.SaveChangesAsync(Ct);
+        f.Adapter.FailQuote = true;
+        f.Cycle.State = "PAUSED";
+        f.Cycle.OperatorPaused = true;
+        var snapshot = JsonSerializer.SerializeToElement(await f.Workflow.SnapshotAsync(f.Cycle, Ct), JsonSupport.Options);
+        Assert.Empty(snapshot.GetProperty("entryHolds").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task BuyFillRestrictionDoesNotShowSellIndicator()
+    {
+        await using var f = await Fixture.CreateAsync();
+        for (var age = -3; age < 0; age++) await f.AddHistoryAsync("BUY", age);
+        await f.StartAsync();
+        Assert.Empty(await f.Lifecycle.ReadEntryHoldsAsync(f.Cycle, f.Config, Ct));
+        Assert.False(await f.CanPlaceAsync("BUY"));
+    }
+
     private sealed class TestClock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = new(2026, 9, 12, 12, 0, 0, TimeSpan.Zero);
@@ -388,11 +461,14 @@ public sealed class EntryFillLimitTests
         public List<string> Placed { get; } = [];
         public List<string> Cancelled { get; } = [];
         public bool FailCancellation { get; set; }
-        public ExecutionQuote Quote => new(99.99m, 100.01m, 100m, clock.GetUtcNow());
+        public decimal Mid { get; set; } = 100m;
+        public bool FailQuote { get; set; }
+        public ExecutionQuote Quote => new(Mid - .01m, Mid + .01m, Mid, clock.GetUtcNow());
         public ExecutionEnvironmentDescriptor Environment => paper.Environment;
         public Task<IReadOnlyList<ExecutionAccountDescriptor>> GetAccountsAsync(CancellationToken ct) => paper.GetAccountsAsync(ct);
         public Task<ExecutionInstrument> GetInstrumentAsync(ExecutionSelection selection, string symbol, decimal? referencePrice, CancellationToken ct) => paper.GetInstrumentAsync(selection, symbol, referencePrice, ct);
-        public Task<ExecutionQuote> GetQuoteAsync(ExecutionSelection selection, string symbol, CancellationToken ct) => Task.FromResult(Quote);
+        public Task<ExecutionQuote> GetQuoteAsync(ExecutionSelection selection, string symbol, CancellationToken ct) => FailQuote
+            ? Task.FromException<ExecutionQuote>(new HttpRequestException("Synthetic quote failure")) : Task.FromResult(Quote);
         public Task<ExecutionQuote> PreflightStartAsync(ExecutionSelection selection, string symbol, CancellationToken ct) => Task.FromResult(Quote);
         public async Task PlaceOrdersAsync(ExecutionSelection selection, GridConfiguration config, IEnumerable<OrderEntity> orders, CancellationToken ct)
         {

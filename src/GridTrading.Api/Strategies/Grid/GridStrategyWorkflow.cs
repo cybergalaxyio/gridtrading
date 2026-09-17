@@ -312,7 +312,7 @@ public sealed partial class GridStrategyWorkflow(
         return operation;
     }
 
-    public object Snapshot(CycleEntity cycle)
+    public async Task<object> SnapshotAsync(CycleEntity cycle, CancellationToken ct)
     {
         var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
         var quote = market.Snapshot(config.Symbol);
@@ -340,6 +340,7 @@ public sealed partial class GridStrategyWorkflow(
                 cycle.StartedAt, fixedCenterPrice = cycle.FixedCenterPrice,
                 cycle.EntryGridPriceOffset, effectivePlan = cycle.EffectivePlan
             },
+            entryHolds = await lifecycle.ReadEntryHoldsAsync(cycle, config, ct),
             market = quote,
             orders = new
             {
