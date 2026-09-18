@@ -5,9 +5,9 @@ Mainnet uses the `hyperliquid-mainnet` execution environment, with separate API 
 ## Setup
 
 1. Authorize an API wallet on Hyperliquid Mainnet. Use the main account public address and the API wallet private key. Vault/subaccount routing through `VaultAddress` is not supported. Configure your leverage on the exchange; the application does not change it.
-2. Copy `.env.mainnet.example` to `.env.mainnet` and fill in the credentials locally. For a new installation, generate an encryption key with `openssl rand -base64 32`. `GRID_TRADING_CREDENTIAL_KEY` encrypts the API wallet key stored in the database. Keep an existing encryption key unchanged so saved credentials remain readable.
-3. Run `./run-mainnet.sh`, then open `http://127.0.0.1:5051`. This loads `.env.mainnet` and uses `data/grid-trading-mainnet.db`, independently of the Testnet instance on port 5050. Use one backend process per database/API wallet.
-4. Check the Mainnet account, API wallet approval and balances in Settings.
+2. Set a stable `GRID_TRADING_CREDENTIAL_KEY` in the process environment or `.env.mainnet`. For a new installation, generate it with `openssl rand -base64 32`; keep an existing key unchanged.
+3. Run `./run-mainnet.sh`, then open `http://127.0.0.1:5051`. The script keeps `data/grid-trading-mainnet.db`, independently of the Testnet instance on port 5050. Use one backend process per database; do not share an API wallet between running instances.
+4. In **Settings → Exchange Accounts**, add a Mainnet account using its public address and approved API wallet private key. Save, then **Test and enable**. Repeat for additional accounts; no restart is required. See [Account management](ACCOUNTS.md) for credential replacement, disabling, and migration from environment files.
 5. Create a strategy, choose **Hyperliquid Mainnet · LIVE**, select the account and perpetual market, then enter your parameters. New installations do not create sample strategies, and there is no preset button. Existing saved strategies remain available.
 6. Save the strategy, open its dashboard, review your settings and center price, then click **Start**. Start generates a fresh preview and submits the initial orders. Saving a strategy does not place orders.
 
@@ -25,4 +25,4 @@ Your configured basket thresholds are evaluated during backend reconciliation. E
 
 ## Implementation checks
 
-Network endpoints and signing are separated between Mainnet and Testnet. Credentials stay in the backend and are encrypted at rest. No transfer or withdrawal action is implemented. Tests use isolated databases and synthetic exchange responses; they do not place live orders.
+Network endpoints and signing are separated between Mainnet and Testnet. Credentials are submitted once through the local settings form and encrypted at rest; reads never return private keys or ciphertext. No transfer or withdrawal action is implemented. Tests use isolated databases and synthetic exchange responses; they do not place live orders.

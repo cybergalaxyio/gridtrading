@@ -98,6 +98,7 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         db.Orders.Add(order);
         db.Executions.Add(new ExecutionEntity
         {
+            ExecutionAccountId = cycle.ExecutionAccountId,
             Id = Ids.New("execution"), ExchangeExecutionId = Ids.New("paper_fill"), CycleId = cycle.Id,
             OrderId = order.Id, Side = side, Price = price, Quantity = quantity, Fee = fee, OccurredAt = now
         });

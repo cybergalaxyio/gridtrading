@@ -17,7 +17,7 @@ export type StrategyConfig = {
 }
 
 export type Cycle = {
-  cycleId: string; strategyId: string; state: string; stateVersion: number; isTerminal: boolean;
+  cycleId: string; strategyId: string; symbol?: string; state: string; stateVersion: number; isTerminal: boolean;
   riskPaused?: boolean; operatorPaused?: boolean; entryPauseReasons?: string[]; riskRecoveryChecks?: number;
   operatorResetRequired: boolean; fixedCenterPrice: string; startedAt: string; endedAt?: string;
   executionEnvironmentId: string; executionAccountId: string;
@@ -65,7 +65,11 @@ export type Snapshot = {
 export type ExecutionEnvironment = { id: string; venueType: 'PAPER' | 'HYPERLIQUID'; network: string; displayName: string }
 export type ExecutionAccount = { id: string; environmentId: string; displayName: string; enabled: boolean }
 
-export type HyperliquidAccount = { accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET" | "MAINNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
+export type CreateAccountRequest = { name: string; accountAddress: string; agentPrivateKey: string }
+export type RenameAccountRequest = { name: string }
+export type ReplaceAccountCredentialsRequest = { agentPrivateKey: string }
+export type AccountBlocker = { strategyId: string; strategyName: string; cycleId: string; reason: 'ACTIVE_CYCLE' | 'AUTO_RESTART_PENDING' }
+export type HyperliquidAccount = { activeCycleCount: number; blockers: AccountBlocker[]; accountId: string; name: string; exchange: "HYPERLIQUID"; environment: "TESTNET" | "MAINNET"; accountAddress: string; agentAddress: string; enabled: boolean; signingKeyStored: boolean }
 export type HyperliquidHealth = HyperliquidAccount & { agentApproved: boolean; agentRole: string; accountMode: string; tradingEquity: string; availableBalance: string; perpAccountValue: string; netPosition: string; openOrderCount: number; tradingReady: boolean; asOf: string }
 export type HyperliquidBook = { bid: string; ask: string; mid: string; asOf: string }
 export type HyperliquidMidPriceTick = { environment: "TESTNET" | "MAINNET"; symbol: string; mid: string; asOf: string }

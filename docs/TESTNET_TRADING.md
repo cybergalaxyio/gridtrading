@@ -6,40 +6,16 @@
 
 1. 在 Hyperliquid Testnet 创建或导入主账户并领取测试资金。
 2. 在 Testnet 的 API Wallet 页面创建并授权 Agent Wallet。
-3. 保存主账户公开地址和 Agent Wallet 私钥。不要把私钥写入项目文件、浏览器或聊天记录。
+3. 保存主账户公开地址和 Agent Wallet 私钥。仅在本机门户的账户表单中输入 API Wallet 私钥；不要写入代码或聊天记录。
 
 ## 2. 启动后端
-项目根目录已提供 git-ignored `.env` 和 `run-testnet.sh`。在本机编辑 `.env`，填写主账户公开地址和 API Wallet 私钥后运行：
+后端只需配置固定的 `GRID_TRADING_CREDENTIAL_KEY`（base64 编码的 32 字节密钥）。新安装可用 `openssl rand -base64 32` 生成；已有安装必须保留原值。
 
-```bash
-./run-testnet.sh
-```
+可在 `.env` 中配置加密密钥，也可从进程环境传入，然后运行 `./run-testnet.sh`，打开 <http://localhost:5050>。地址和 API Wallet 私钥无需写入环境文件。
 
-脚本会把 `.env` 加载到后端进程，并在仍有占位值时拒绝启动。下面仍保留手动配置环境变量的方式。
+在 **设置 → 交易所账户 → 添加账户** 选择 Testnet，填写名称、主账户公开地址和已授权的 API Wallet 私钥。保存后账户默认禁用；点击“测试连接”检查授权和余额，再点击“测试并启用”。可重复添加多个账户，并同时运行不同账户的策略。
 
-生成用于本地静态加密的 32-byte master key：
-
-```bash
-openssl rand -base64 32
-```
-
-在启动后端的同一个终端设置环境变量：
-
-```bash
-export GRID_TRADING_CREDENTIAL_KEY='<上一步生成的 base64 值>'
-export GRID_TRADING_HL_TESTNET_ACCOUNT_ADDRESS='0x主账户公开地址'
-export GRID_TRADING_HL_TESTNET_AGENT_PRIVATE_KEY='0xAPI_WALLET_PRIVATE_KEY'
-
-dotnet run --project src/GridTrading.Api/GridTrading.Api.csproj --urls http://localhost:5050
-```
-
-使用 Vault 时还可以设置：
-
-```bash
-export GRID_TRADING_HL_TESTNET_VAULT_ADDRESS='0xVault地址'
-```
-
-后端会派生 Agent 公共地址，将私钥用 AES-256-GCM 加密后保存到 SQLite。API 与前端只返回公开地址。更换 `GRID_TRADING_CREDENTIAL_KEY` 前，应先保留旧值或删除并重新建立本地 Testnet 数据库，否则旧密文无法解密。
+密钥只在保存时发送至本机后端，以 AES-256-GCM 加密存入 SQLite；读取账户不会返回私钥或密文。旧环境变量只用于一次性导入缺失账户，不再覆盖网页配置。操作和迁移详情见 [多账户配置](ACCOUNTS.md)。此版本不增加 Vault / 子账户的网页配置入口，已有历史配置保留。
 
 ## 3. 用户操作
 
@@ -56,9 +32,9 @@ export GRID_TRADING_HL_TESTNET_VAULT_ADDRESS='0xVault地址'
 
 - nonce 由后端按 API Wallet 签名地址串行生成并先持久化，值为 `max(当前毫秒时间, 上次 nonce + 1)`；用户无需在界面填写。
 - 每个请求使用稳定 CLOID，成交按交易所 execution identity 去重。
-- WebSocket 每 30 秒发送官方应用层 ping，断线后按指数退避自动重连；重连 snapshot 与 REST Sync 都通过相同 execution identity 去重。
+- WebSocket 每 30 秒发送官方应用层 ping，每个账户独立断线重连；重连 snapshot 与 REST Sync 都通过相同 execution identity 去重。
 - `allMids` 行情在后端按 Dashboard 当前选中的 Symbol 转发；标题价格与当前 K 线实时更新，REST book/candle snapshot 仍作为首屏和断线兜底。
 - REST Sync（默认 10 秒）继续校验 fills、Open Orders 和实际持仓，用于启动/断线恢复及漏消息兜底，不是实时成交的主路径。
 - 签名域、Info、Exchange URL 都固定为官方 Testnet；配置成其他主机或 Mainnet 会被拒绝。
-- 项目不会接收“通过浏览器提交 API 私钥”的请求；Mainnet 使用独立配置，由用户点击 Start 启动。
+- 本机账户写入接口要求 loopback 来源、可信 Host / Origin 和 JSON 请求；Mainnet 仍由用户点击 Start 启动。
 - V1 没有远程用户登录体系，因此所有 HTTP 写操作只接受 loopback 来源；远程部署前必须另行设计认证与授权。

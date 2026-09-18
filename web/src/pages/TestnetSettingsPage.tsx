@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icon'
-import type { HyperliquidAccount, HyperliquidHealth, TelegramSettings } from '../types'
+import { AccountsPanel } from '../components/AccountsPanel'
+import type { TelegramSettings } from '../types'
 
 type SettingsSection = 'accounts' | 'notifications'
 
@@ -11,9 +12,6 @@ const emptyTelegram: TelegramSettings = {
 
 export function SettingsPage() {
   const [section, setSection] = useState<SettingsSection>('accounts')
-  const [accounts, setAccounts] = useState<HyperliquidAccount[]>([])
-  const [health, setHealth] = useState<Record<string, HyperliquidHealth>>({})
-  const [accountError, setAccountError] = useState('')
   const [telegram, setTelegram] = useState<TelegramSettings>(emptyTelegram)
   const [botToken, setBotToken] = useState('')
   const [chatId, setChatId] = useState('')
@@ -23,19 +21,12 @@ export function SettingsPage() {
   const [confirmRemove, setConfirmRemove] = useState(false)
 
   useEffect(() => {
-    void Promise.all([api.hyperliquidAccounts(), api.hyperliquidAccounts('hyperliquid-mainnet')]).then(rows => rows.flat()).then(async rows => {
-      setAccounts(rows)
-      const checks = await Promise.allSettled(rows.map(async row => [row.accountId, await api.hyperliquidHealth(row.accountId, row.environment === 'MAINNET' ? 'hyperliquid-mainnet' : 'hyperliquid-testnet')] as const))
-      setHealth(Object.fromEntries(checks.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])))
-      if (checks.some(result => result.status === 'rejected')) setAccountError('Some account checks failed. Verify credentials and network connectivity.')
-    }).catch(e => setAccountError(message(e, 'Hyperliquid 状态读取失败')))
     void api.telegramSettings().then(value => {
       setTelegram(value)
       setChatId(value.chatId)
     }).catch(e => setTelegramError(message(e, 'Telegram 设置读取失败')))
   }, [])
 
-  const ready = accounts.some(x => health[x.accountId]?.tradingReady)
 
   async function saveTelegram(testAndEnable = false) {
     if (telegramBusy) return
@@ -123,7 +114,7 @@ export function SettingsPage() {
       <button disabled><Icon name="alert" size={18} />审计与监控</button>
     </aside>
     {section === 'accounts'
-      ? <AccountsPanel accounts={accounts} health={health} ready={ready} error={accountError} />
+      ? <AccountsPanel />
       : <div className="settings-content telegram-settings">
           <div className="page-title"><div><h1>Telegram 通知</h1><p>将新产生的风险告警推送到一个私聊、群组或频道。</p></div></div>
           <div className="system-cards">
@@ -161,20 +152,6 @@ export function SettingsPage() {
   </div>
 }
 
-function AccountsPanel({ accounts, health, ready, error }: { accounts: HyperliquidAccount[]; health: Record<string, HyperliquidHealth>; ready: boolean; error: string }) {
-  return <div className="settings-content"><div className="page-title"><div><h1>交易所账户</h1><p>API Wallet 按账户网络签名；查询始终使用主账户公开地址。</p></div></div>
-    <div className="system-cards"><SystemMetric label="Hyperliquid 交易" value={ready ? 'READY' : 'NOT CONFIGURED'} caption={ready ? 'API Wallet 已授权' : '等待后端环境变量'} /><SystemMetric label="密钥入口" value="BACKEND ONLY" caption="不会经过浏览器" /><SystemMetric label="网络边界" value="TESTNET / MAINNET" caption="按账户网络执行" /></div>
-    <section className="panel accounts"><h2>交易所账户</h2><div className="account-row"><div className="account-logo">P</div><div><b>Weekend Paper</b><span>acct_paper_01</span></div><span className="env-badge">PAPER</span><span>无需凭证</span><strong className="positive">✓ 检查通过</strong></div>
-      {accounts.map(account => { const check = health[account.accountId]; return <div className="account-row" key={account.accountId}><div className="account-logo">H</div><div><b>{account.name}</b><span>{short(account.accountAddress)} 查询 · {short(account.agentAddress)} 签名</span></div><span className="env-badge">{account.environment}</span><span>{check ? accountMode(check.accountMode) + ' · Trading Equity ' + check.tradingEquity + ' USDC · 可用 ' + check.availableBalance + ' USDC · 持仓 ' + check.netPosition : '检查中…'}</span><strong className={check?.tradingReady ? 'positive' : 'warning-text'}>{check?.tradingReady ? '✓ 可交易' : '未就绪'}</strong></div> })}
-      {accounts.length === 0 && <div className="account-row"><div className="account-logo">H</div><div><b>Hyperliquid Testnet</b><span>请在启动后端前设置 3 个环境变量</span></div><span className="env-badge">TESTNET</span><span>未配置 API Wallet</span><strong className="dim">禁用</strong></div>}
-    </section>
-    <section className="panel service-table"><h2>安全配置方式</h2><p className="dim">设置 <code>GRID_TRADING_CREDENTIAL_KEY</code>、<code>GRID_TRADING_HL_TESTNET_ACCOUNT_ADDRESS</code> 和 <code>GRID_TRADING_HL_TESTNET_AGENT_PRIVATE_KEY</code>（Mainnet 使用对应的 MAINNET 变量） 后重启后端。私钥经 AES-GCM 加密后存入 SQLite；前端与账户 API 只返回公开地址。</p>{error && <p className="warning-text">{error}</p>}</section>
-    <section className="safety-banner"><Icon name="shield" /><div><b>Mainnet · 真实资金</b><p>Mainnet 使用独立 API Wallet、官方主机与签名域。按你保存的策略参数执行；点击 Start 才会启动新的交易 Cycle。</p></div></section>
-  </div>
-}
-
 function SystemMetric({ label, value, caption }: { label: string; value: string; caption: string }) { return <section className="panel"><small>{label.toUpperCase()}</small><b>{value}</b><span>{caption}</span></section> }
-function short(value: string) { return value.length > 14 ? value.slice(0, 8) + '…' + value.slice(-4) : value }
-function accountMode(value: string) { return value === 'unifiedAccount' ? 'Unified Account' : value === 'portfolioMargin' ? 'Portfolio Margin' : 'Standard Account' }
 function formatTime(value: string) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
 function message(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback }

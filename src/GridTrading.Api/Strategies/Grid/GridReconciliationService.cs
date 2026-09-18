@@ -10,28 +10,44 @@ public sealed class GridReconciliationService(
     IServiceScopeFactory scopeFactory,
     ILogger<GridReconciliationService> logger) : BackgroundService
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
-        while (await timer.WaitForNextTickAsync(stoppingToken))
-        {
-            try { await TickAsync(stoppingToken); }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
-            catch (Exception ex) { logger.LogWarning(ex, "GRID reconciliation tick failed."); }
-        }
-    }
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => DynamicWorkerSupervisor.RunAsync(
+        ActiveAccountsAsync, RunAccountAsync, logger, stoppingToken);
 
-    private async Task TickAsync(CancellationToken ct)
+    private async Task<IReadOnlyCollection<string>> ActiveAccountsAsync(CancellationToken ct)
     {
         using var scope = scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
-        var lifecycle = scope.ServiceProvider.GetRequiredService<GridOrderLifecycle>();
-        var trading = scope.ServiceProvider.GetRequiredService<TradingService>();
-        var cycles = await db.Cycles.Where(x => !x.IsTerminal &&
-            (x.State == "RUNNING" || x.State == "PAUSED" || x.State == "CLOSING" || x.State == "FAULT")).ToListAsync(ct);
+        return await scope.ServiceProvider.GetRequiredService<TradingDbContext>().Cycles.AsNoTracking()
+            .Where(x => !x.IsTerminal).Select(x => x.ExecutionAccountId).Distinct().ToArrayAsync(ct);
+    }
 
-        foreach (var cycle in cycles)
+    private async Task RunAccountAsync(string accountId, CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        do
         {
+            try { await TickAccountAsync(accountId, ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (Exception ex) { logger.LogWarning(ex, "GRID reconciliation failed for account {AccountId}.", accountId); }
+        } while (await timer.WaitForNextTickAsync(ct));
+    }
+
+    public async Task TickAccountAsync(string accountId, CancellationToken ct)
+    {
+        string[] cycles;
+        using (var scope = scopeFactory.CreateScope())
+            cycles = await scope.ServiceProvider.GetRequiredService<TradingDbContext>().Cycles.AsNoTracking()
+                .Where(x => x.ExecutionAccountId == accountId && !x.IsTerminal &&
+                    (x.State == "RUNNING" || x.State == "PAUSED" || x.State == "CLOSING" || x.State == "FAULT"))
+                .Select(x => x.Id).ToArrayAsync(ct);
+
+        foreach (var cycleId in cycles)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var lifecycle = scope.ServiceProvider.GetRequiredService<GridOrderLifecycle>();
+            var trading = scope.ServiceProvider.GetRequiredService<TradingService>();
+            var cycle = await db.Cycles.SingleAsync(x => x.Id == cycleId, ct);
+            if (cycle.IsTerminal) continue;
             var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
             if (DateTimeOffset.UtcNow - cycle.LastReconciledAt <
                 TimeSpan.FromSeconds(Math.Max(2, config.ReconcileIntervalSeconds))) continue;
@@ -47,9 +63,10 @@ public sealed class GridReconciliationService(
                         $"basket-{cycle.Id}-{cycle.StateVersion}", null, false, ct, automaticClose: true);
                 }
             }
-            catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
             {
-                logger.LogError(ex, "GRID cycle {CycleId} encountered a protective order rejection.", cycle.Id);
+                logger.LogWarning(ex, "GRID reconciliation failed for cycle {CycleId} on account {AccountId}.", cycle.Id, accountId);
             }
         }
     }

@@ -142,24 +142,9 @@ public sealed partial class GridStrategyWorkflow(
         EnsureGrid(strategy);
         if (strategy.Version != preview.StrategyVersion)
             throw Problem(412, "STRATEGY_VERSION_STALE", "Strategy changed after preview.");
-        if (await db.Cycles.AnyAsync(x => x.StrategyId == strategyId && !x.IsTerminal, ct))
-            throw Problem(409, "ACTIVE_CYCLE_EXISTS", "Only one active cycle is allowed per strategy.");
-
         var selection = await environments.ResolveAsync(preview.ExecutionEnvironmentId, preview.ExecutionAccountId, ct);
         var adapter = environments.Adapter(selection.EnvironmentId);
-        if (selection.EnvironmentId == ExecutionEnvironmentIds.HyperliquidMainnet)
-        {
-            var activeConfigurations = await db.Cycles.AsNoTracking()
-                .Where(x => x.ExecutionEnvironmentId == selection.EnvironmentId &&
-                    x.ExecutionAccountId == selection.AccountId && !x.IsTerminal)
-                .Select(x => x.FrozenConfigurationJson).ToListAsync(ct);
-            var coin = HyperliquidTradingClient.ToCoin(preview.Configuration.Symbol);
-            // A saved strategy can be edited while running; ownership follows the frozen cycle market.
-            if (activeConfigurations.Any(json => HyperliquidTradingClient.ToCoin(
-                    GridConfigurationCodec.ReadFrozen(json).Symbol) == coin))
-                throw Problem(409, "MAINNET_SYMBOL_BUSY",
-                    $"Only one active strategy is allowed for {coin} on this mainnet account.");
-        }
+        await EnsureMarketAvailableAsync(strategyId, selection, preview.Configuration.Symbol, ct);
         var confirmation = request.OperatorConfirmation;
         var environmentConfirmed = confirmation.EnvironmentConfirmed.Equals(selection.EnvironmentId, StringComparison.OrdinalIgnoreCase) ||
             confirmation.EnvironmentConfirmed.Equals(adapter.Environment.Network, StringComparison.OrdinalIgnoreCase) ||
@@ -167,27 +152,35 @@ public sealed partial class GridStrategyWorkflow(
         if (!confirmation.ParametersReviewed || !confirmation.CenterConfirmed || !environmentConfirmed)
             throw Problem(422, "OPERATOR_CONFIRMATION_REQUIRED", "The preview execution environment, parameters and centre must be confirmed.");
 
-        var quote = await adapter.PreflightStartAsync(selection, strategy.Symbol, ct);
+        var quote = await adapter.PreflightStartAsync(selection, preview.Configuration.Symbol, ct);
         var prepared = await configurations.PrepareStartupAsync(new(preview.Configuration, preview.Plan), selection, quote, ct);
         preview = preview with { Configuration = prepared.Configuration, Plan = prepared.Plan };
-        var operation = await NewOperationAsync("START_CYCLE", strategyId, key, request, ct);
-        if (operation.Status == "COMPLETED")
-            return (operation, await db.Cycles.SingleAsync(x => x.Id == operation.ResourceId, ct));
-
-        var now = DateTimeOffset.UtcNow;
-        var cycle = new CycleEntity
+        OperationEntity operation;
+        CycleEntity cycle;
+        // SQLite's serializable transaction acquires the write reservation before the final
+        // check. Separate processes therefore cannot both reserve this market. Keep venue
+        // requests outside the transaction and persist STARTING before placing any orders.
+        await using (var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct))
         {
-            Id = Ids.New("cycle"), StrategyId = strategyId,
-            ExecutionEnvironmentId = selection.EnvironmentId, ExecutionAccountId = selection.AccountId,
-            State = "STARTING", StateVersion = 1, FixedCenterPrice = preview.Plan.CenterPrice,
-            FrozenConfigurationJson = GridConfigurationCodec.WriteFrozen(preview.Configuration),
-            FrozenPlanJson = JsonSerializer.Serialize(preview.Plan, JsonSupport.Options),
-            ExitReason = "", StartedAt = now, LastReconciledAt = now
-        };
-        db.Cycles.Add(cycle);
-        // Persist the cycle identity before any exchange action, including an interrupted automatic start.
-        operation.ResourceId = cycle.Id;
-        await db.SaveChangesAsync(ct);
+            await EnsureMarketAvailableAsync(strategyId, selection, preview.Configuration.Symbol, ct);
+            operation = await NewOperationAsync("START_CYCLE", strategyId, key, request, ct);
+            if (operation.Status == "COMPLETED")
+                return (operation, await db.Cycles.SingleAsync(x => x.Id == operation.ResourceId, ct));
+            var now = DateTimeOffset.UtcNow;
+            cycle = new CycleEntity
+            {
+                Id = Ids.New("cycle"), StrategyId = strategyId,
+                ExecutionEnvironmentId = selection.EnvironmentId, ExecutionAccountId = selection.AccountId,
+                State = "STARTING", StateVersion = 1, FixedCenterPrice = preview.Plan.CenterPrice,
+                FrozenConfigurationJson = GridConfigurationCodec.WriteFrozen(preview.Configuration),
+                FrozenPlanJson = JsonSerializer.Serialize(preview.Plan, JsonSupport.Options),
+                ExitReason = "", StartedAt = now, LastReconciledAt = now
+            };
+            db.Cycles.Add(cycle);
+            operation.ResourceId = cycle.Id;
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+        }
 
         var reservations = new List<ActiveOrderReservation>();
         foreach (var side in new[] { OrderSide.Buy, OrderSide.Sell })
@@ -200,7 +193,7 @@ public sealed partial class GridStrategyWorkflow(
             var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, 0m, reservations,
                 preview.Configuration.MaxNetLot, GridInstrumentRules.FromConfiguration(preview.Configuration));
             if (quantity <= 0m) continue;
-            db.Orders.Add(GridOrderLifecycle.CreateEntry(cycle, strategy.Symbol, level, quantity));
+            db.Orders.Add(GridOrderLifecycle.CreateEntry(cycle, preview.Configuration.Symbol, level, quantity));
             reservations.Add(new ActiveOrderReservation(side, quantity));
         }
         await db.SaveChangesAsync(ct);
@@ -239,6 +232,22 @@ public sealed partial class GridStrategyWorkflow(
         await db.SaveChangesAsync(ct);
         await BroadcastAsync(cycle, ct);
         return (operation, cycle);
+    }
+
+    private async Task EnsureMarketAvailableAsync(string strategyId, ExecutionSelection selection, string symbol, CancellationToken ct)
+    {
+        if (await db.Cycles.AnyAsync(x => x.StrategyId == strategyId && !x.IsTerminal, ct))
+            throw Problem(409, "ACTIVE_CYCLE_EXISTS", "Only one active cycle is allowed per strategy.");
+
+        var configurations = await db.Cycles.AsNoTracking()
+            .Where(x => x.ExecutionEnvironmentId == selection.EnvironmentId &&
+                x.ExecutionAccountId == selection.AccountId && !x.IsTerminal)
+            .Select(x => x.FrozenConfigurationJson).ToListAsync(ct);
+        var coin = HyperliquidTradingClient.ToCoin(symbol);
+        if (configurations.Any(json => HyperliquidTradingClient.ToCoin(GridConfigurationCodec.ReadFrozen(json).Symbol) == coin))
+            throw Problem(409, selection.EnvironmentId == ExecutionEnvironmentIds.HyperliquidMainnet
+                ? "MAINNET_SYMBOL_BUSY" : "ACCOUNT_SYMBOL_BUSY",
+                $"Only one active cycle is allowed for {coin} on account {selection.AccountId} ({selection.EnvironmentId}).");
     }
 
     public async Task<OperationEntity> CommandAsync(string cycleId, string command, string reason, string key,
@@ -334,7 +343,7 @@ public sealed partial class GridStrategyWorkflow(
         {
             cycle = new
             {
-                cycleId = cycle.Id, cycle.StrategyId, cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId,
+                cycleId = cycle.Id, cycle.StrategyId, symbol = config.Symbol, cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId,
                 state = cycle.State, cycle.StateVersion, cycle.IsTerminal, cycle.OperatorResetRequired,
                 cycle.RiskPaused, operatorPaused = cycle.IsOperatorPaused, cycle.EntryPauseReasons, cycle.RiskRecoveryChecks,
                 cycle.StartedAt, fixedCenterPrice = cycle.FixedCenterPrice,

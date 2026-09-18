@@ -8,7 +8,7 @@
 - Lightweight Charts K 线、成交量、固定中心和网格价格线。
 - ASP.NET Core Web API、SignalR 增量事件和后台 Paper 撮合服务。
 - Hyperliquid Testnet API Wallet：官方 EIP-712 签名、持久化单调 nonce、稳定 CLOID、真实挂撤单、成交对账、普通 Limit TP；Mainnet 使用 reduce-only 清仓。
-- API Wallet 私钥仅从后端环境变量注入，并以 AES-256-GCM 加密保存；浏览器和账户 API 只看到公开地址。
+- 在本机网页配置多个 Mainnet / Testnet 账户，支持并行交易。API Wallet 私钥仅在保存时发送到本机后端，以 AES-256-GCM 加密保存；账户读取接口只返回公开信息。
 - SQLite 持久化，启用 WAL、Foreign Keys 和 Busy Timeout；金额和数量使用 `decimal` 并无损保存为文本。
 - Strategy / Frozen Cycle 分离、异步命令、幂等键、`If-Match` 状态版本和审计记录。
 - 固定中心、递增间距、几何层级仓位、保守 Tick/Quantity 取整、滚动双向 Entry、独立 TP、同层重入。
@@ -51,6 +51,10 @@
 4. 打开 **Settings → 通知设置**，填写 Bot Token 和 Chat ID，点击“测试并启用”。只有测试消息成功后才会启用自动推送；读取设置时后端不会返回 Token 或密文。
 
 启用后，系统会推送新产生的 INFO、WARNING 和 CRITICAL 风险告警，内容包含级别、代码、Cycle（如有）、UTC 时间与消息。启用前及禁用期间的历史告警不会补发。每条告警只尝试一次；Telegram 超时、限流或拒绝时会在设置页记录失败，但不会阻塞交易或自动重试。禁用操作无法撤回已在发送中的请求。
+
+## 多账户管理
+
+在 **Settings → 交易所账户** 添加账户，保存后先测试并启用，再选择账户创建策略。支持重命名、替换 API Wallet 和禁用，保留交易历史。存在活动 Cycle 或待执行自动重启时会阻止禁用及替换密钥。只需在后端保留固定的 `GRID_TRADING_CREDENTIAL_KEY`，无需为每个账户编辑环境文件或重启。完整说明见 [多账户配置](docs/ACCOUNTS.md)。
 
 ## Hyperliquid Testnet
 
@@ -100,7 +104,7 @@ cd web && npm test && npm run build
 
 ## 安全边界
 
-Paper 撮合仅用于开发验证。Hyperliquid 交易适配器按账户网络锁定官方 HTTPS 端点。Mainnet 支持用户选择的永续合约市场，不设试运行金额、层数或杠杆限制。API Wallet 私钥不会通过 HTTP 接收；V1 的 HTTP 写操作还会拒绝非 loopback 来源。部署时应保护后端环境变量与 `GRID_TRADING_CREDENTIAL_KEY`。Testnet 仍可能产生不可逆的测试资金损失，启动和关闭前请核对实际账户仓位与挂单。
+Paper 撮合仅用于开发验证。Hyperliquid 交易适配器按账户网络锁定官方 HTTPS 端点。Mainnet 支持用户选择的永续合约市场，不设试运行金额、层数或杠杆限制。API Wallet 私钥只通过受限的本机账户设置接口接收；账户写操作校验 loopback 来源、Host、Origin 和 JSON 内容类型。部署时应保护后端环境变量与 `GRID_TRADING_CREDENTIAL_KEY`。Testnet 仍可能产生不可逆的测试资金损失，启动和关闭前请核对实际账户仓位与挂单。
 
 ## Grid Suitability 与图表指标
 

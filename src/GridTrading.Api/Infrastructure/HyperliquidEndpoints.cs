@@ -1,4 +1,5 @@
 using GridTrading.Api.Services;
+using GridTrading.Api.Contracts;
 using Microsoft.EntityFrameworkCore;
 
 namespace GridTrading.Api.Infrastructure;
@@ -16,6 +17,10 @@ public static class HyperliquidEndpoints
         var api = app.MapGroup($"/api/v1/{HyperliquidNetwork.EnvironmentId(network)}");
         api.AddEndpointFilter(async (context, next) =>
         {
+            if ((context.HttpContext.Request.Method is "POST" or "PATCH" or "PUT" or "DELETE") &&
+                !LocalAccountRequestPolicy.IsAllowed(context.HttpContext))
+                return Results.Problem(statusCode: 403, title: "Trusted local portal required",
+                    detail: "Account changes require a local portal origin and an application/json request.");
             if (context.HttpContext.Request.RouteValues.TryGetValue("id", out var id))
             {
                 var db = context.HttpContext.RequestServices.GetRequiredService<Data.TradingDbContext>();
@@ -27,10 +32,21 @@ public static class HyperliquidEndpoints
         });
         api.MapGet("/instruments", async (HyperliquidInfoClient client, CancellationToken ct) =>
             Results.Ok(await client.GetPerpetualMetadata(ct, network)));
-        api.MapGet("/accounts", async (Data.TradingDbContext db, CancellationToken ct) =>
-            (await db.HyperliquidAccounts.Where(x => x.Environment == network).OrderBy(x => x.Name).ToListAsync(ct)).Select(HyperliquidAccountStatusService.Public));
-        api.MapGet("/accounts/{id}", async (string id, Data.TradingDbContext db, CancellationToken ct) =>
-            await db.HyperliquidAccounts.FindAsync([id], ct) is { } account ? Results.Ok(HyperliquidAccountStatusService.Public(account)) : Results.NotFound());
+        api.MapGet("/accounts", (HyperliquidAccountManagementService service, CancellationToken ct) => service.ListAsync(network, ct));
+        api.MapGet("/accounts/{id}", (string id, HyperliquidAccountManagementService service, CancellationToken ct) => service.GetAsync(network, id, ct));
+        api.MapPost("/accounts", async (CreateAccountRequest request, HyperliquidAccountManagementService service, CancellationToken ct) =>
+        {
+            var account = await service.CreateAsync(network, request, ct);
+            return Results.Created($"/api/v1/{HyperliquidNetwork.EnvironmentId(network)}/accounts/{account.AccountId}", account);
+        });
+        api.MapPatch("/accounts/{id}", (string id, RenameAccountRequest request, HyperliquidAccountManagementService service, CancellationToken ct) =>
+            service.RenameAsync(network, id, request, ct));
+        api.MapPut("/accounts/{id}/credentials", (string id, ReplaceAccountCredentialsRequest request, HyperliquidAccountManagementService service, CancellationToken ct) =>
+            service.ReplaceCredentialsAsync(network, id, request, ct));
+        api.MapPost("/accounts/{id}/test-and-enable", (string id, HyperliquidAccountManagementService service, CancellationToken ct) =>
+            service.EnableAsync(network, id, ct));
+        api.MapPost("/accounts/{id}/disable", (string id, HyperliquidAccountManagementService service, CancellationToken ct) =>
+            service.DisableAsync(network, id, ct));
         api.MapGet("/accounts/{id}/health", async (string id, HyperliquidAccountStatusService service, CancellationToken ct) =>
             Results.Ok(await service.HealthAsync(id, ct)));
         api.MapGet("/market/{symbol}", async (string symbol, HyperliquidTradingClient client, CancellationToken ct) =>

@@ -1,7 +1,9 @@
+import { useAccounts } from '../context/AccountsContext'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { api } from '../api'
+import { marketCycles, selectedCycle, normalizeSymbol, type ActiveCycleRegistry, type CycleSelection } from '../lib/activeCycles'
 import { TradingChart } from '../components/TradingChart'
 import { EntryHolds } from '../components/EntryHolds'
 import { GridSuitability } from '../components/GridSuitability'
@@ -16,15 +18,11 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
 type AccountPanelTab = 'balances' | 'positions' | 'orders' | 'history' | 'events' | 'alerts'
 
-export function DashboardPage({ strategies, loadedStrategyId, reload, notify, reportError, onExecutionEnvironmentChange }: {
+export function DashboardPage({ strategies, loadedStrategyId, reload, notify, reportError, cycleRegistry, selection, onSelectionChange }: {
   strategies: Strategy[]; loadedStrategyId?: string | null; reload: () => Promise<void>; notify: (message: string) => void; reportError: (message: string) => void
-  onExecutionEnvironmentChange: (environmentId: string) => void
+  cycleRegistry: ActiveCycleRegistry; selection: CycleSelection; onSelectionChange: (selection: CycleSelection) => void
 }) {
-  const strategy = strategies.find(x => x.strategyId === loadedStrategyId)
-    ?? strategies.find(x => x.activeCycle)
-    ?? strategies.find(x => x.defaultExecutionEnvironmentId === 'hyperliquid-testnet')
-    ?? strategies[0]
-  const cycle = strategy?.activeCycle
+  const { revision: accountRevision } = useAccounts()
   const [now, setNow] = useState(Date.now)
 
   useEffect(() => {
@@ -34,18 +32,16 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   }, [])
 
   const [runEnvironments, setRunEnvironments] = useState<ExecutionEnvironment[]>([])
-  const [runEnvironmentId, setRunEnvironmentId] = useState('')
   const [runAccounts, setRunAccounts] = useState<ExecutionAccount[]>([])
-  const [runAccountId, setRunAccountId] = useState('')
-  const selectedEnvironment = cycle?.executionEnvironmentId ?? (runEnvironmentId || strategy?.defaultExecutionEnvironmentId || 'paper-local')
+  const selectedEnvironment = selection.environmentId
   const isMainnet = selectedEnvironment === 'hyperliquid-mainnet'
   const network = isMainnet ? 'MAINNET' : 'TESTNET'
   const isHyperliquid = selectedEnvironment === 'hyperliquid-testnet' || isMainnet
-  const selectedExecutionAccountId = cycle?.executionAccountId ?? (runAccountId || strategy?.defaultExecutionAccountId || '')
+  const selectedExecutionAccountId = selection.accountId
   const [candles, setCandles] = useState<Candle[]>([])
   const [candleContext, setCandleContext] = useState('')
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
-  const [orders, setOrders] = useState<Order[]>([])
+  const [cycleSnapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [cycleOrders, setOrders] = useState<Order[]>([])
   const [exchangeMid, setExchangeMid] = useState<string | null>(null)
   const [accountState, setAccountState] = useState<HyperliquidAccountState | null>(null)
   const [clearinghouseState, setClearinghouseState] = useState<HyperliquidClearinghouseState | null>(null)
@@ -60,7 +56,6 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const [marketContexts, setMarketContexts] = useState<HyperliquidInstrument[]>([])
   const [instrumentRules, setInstrumentRules] = useState<ExchangeInstrumentRules | null>(null)
   const [, setMarketStreamConnected] = useState(false)
-  const [symbol, setSymbol] = useState(() => localStorage.getItem('grid.dashboardSymbol') ?? '')
   const [timeframe, setTimeframe] = useState<Timeframe>(() => {
     const stored = localStorage.getItem('grid.dashboardTimeframe')
     return TIMEFRAMES.includes(stored as Timeframe) ? stored as Timeframe : '1m'
@@ -72,33 +67,38 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const refreshSequence = useRef(0)
   const historyRefreshSequence = useRef(0)
   const lastMarketTickAt = useRef(0)
-  const marketSymbol = symbol || strategy?.symbol || (isHyperliquid ? 'SOL' : 'SOLUSDT')
-  const strategyMatchesMarket = sameCoin(strategy?.symbol, marketSymbol)
+  const marketSymbol = selection.symbol
+  const cycles = marketCycles(cycleRegistry, selection)
+  const cycle = selectedCycle(cycleRegistry, selection)
+  const cycleConflict = cycles.length > 1
+  const idleStrategies = strategies.filter(item => !item.archived && sameCoin(item.symbol, marketSymbol)
+    && !item.activeCycle)
+  const owner = cycle ? strategies.find(item => item.strategyId === cycle.strategyId) : undefined
+  const strategy = cycle
+    ? owner ? { ...owner, activeCycle: cycle } : undefined
+    : cycles.length ? undefined : idleStrategies.find(item => item.strategyId === loadedStrategyId) ?? idleStrategies[0]
+  const strategyMatchesMarket = !!cycle || !!strategy
+  // Ignore data from the previous market while the new cycle is being fetched.
+  const snapshot = cycle && cycleSnapshot?.cycle.cycleId === cycle.cycleId ? cycleSnapshot : null
+  const orders = useMemo(() => cycleOrders.filter(item => item.cycleId === cycle?.cycleId), [cycleOrders, cycle?.cycleId])
   const chartContext = `${selectedEnvironment}:${marketSymbol}:${timeframe}`
+  const refreshContext = JSON.stringify([chartContext, selectedExecutionAccountId, cycle?.cycleId])
+  const currentRefreshContext = useRef(refreshContext)
+  currentRefreshContext.current = refreshContext
 
   useEffect(() => {
     void api.executionEnvironments().then(setRunEnvironments).catch(() => setRunEnvironments([]))
   }, [])
   useEffect(() => {
-    if (!strategy) { onExecutionEnvironmentChange(''); return }
-    const environmentId = cycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId
-    setRunEnvironmentId(environmentId)
-    setRunAccountId(cycle?.executionAccountId ?? strategy.defaultExecutionAccountId)
-    onExecutionEnvironmentChange(environmentId)
-  }, [strategy?.strategyId, cycle?.cycleId, onExecutionEnvironmentChange])
-  useEffect(() => {
-    if (!runEnvironmentId) { setRunAccounts([]); setRunAccountId(''); return }
     let active = true
-    void api.executionAccounts(runEnvironmentId).then(items => {
+    void api.executionAccounts(selectedEnvironment).then(items => {
       if (!active) return
       setRunAccounts(items)
-      setRunAccountId(current => {
-        const selected = cycle?.executionAccountId ?? current
-        return items.some(x => x.id === selected) ? selected : items[0]?.id ?? ''
-      })
-    }).catch(() => { if (active) { setRunAccounts([]); setRunAccountId(cycle?.executionAccountId ?? '') } })
+      if (!selectedExecutionAccountId && items.length)
+        onSelectionChange({ ...selection, accountId: items[0]?.id ?? '', cycleId: null })
+    }).catch(() => { if (active) setRunAccounts([]) })
     return () => { active = false }
-  }, [runEnvironmentId, cycle?.executionAccountId])
+  }, [selectedEnvironment, selectedExecutionAccountId, marketSymbol, selection.cycleId, onSelectionChange, accountRevision])
 
   useEffect(() => {
     ++refreshSequence.current; ++historyRefreshSequence.current
@@ -108,7 +108,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   }, [selectedEnvironment, selectedExecutionAccountId])
 
   const refreshOrderHistory = useCallback(async (showLoading = true) => {
-    if (!isHyperliquid || !strategy) return
+    if (!isHyperliquid || !selectedExecutionAccountId) return
     const sequence = ++historyRefreshSequence.current
     if (showLoading) setHistoryRefreshing(true)
     try {
@@ -120,11 +120,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     } finally {
       if (showLoading && sequence === historyRefreshSequence.current) setHistoryRefreshing(false)
     }
-  }, [selectedEnvironment, isHyperliquid, strategy ? selectedExecutionAccountId : undefined, reportError])
-
-  useEffect(() => {
-    if (strategy?.symbol) setSymbol(strategy.symbol)
-  }, [strategy?.strategyId])
+  }, [selectedEnvironment, isHyperliquid, selectedExecutionAccountId, reportError])
 
   useEffect(() => {
     localStorage.setItem('grid.dashboardSymbol', marketSymbol)
@@ -226,7 +222,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   }, [selectedEnvironment, isHyperliquid, strategy?.symbol])
 
   useEffect(() => {
-    if (!strategy) { setInstrumentRules(null); return }
+    if (!selectedExecutionAccountId) { setInstrumentRules(null); return }
     let active = true
     setInstrumentRules(null)
     void api.instrumentRules(selectedExecutionAccountId, marketSymbol).then(value => {
@@ -235,10 +231,10 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       if (active) setInstrumentRules(null)
     })
     return () => { active = false }
-  }, [strategy ? selectedExecutionAccountId : undefined, marketSymbol])
+  }, [selectedExecutionAccountId, marketSymbol])
 
   useEffect(() => {
-    if (!isHyperliquid || !strategy) {
+    if (!isHyperliquid || !selectedExecutionAccountId) {
       setClearinghouseState(null); setExchangeOpenOrders(null); setExchangeOrderHistory(null); return
     }
     let active = true
@@ -257,15 +253,16 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     void refreshLiveAccount(); void refreshOrderHistory(false)
     const timer = setInterval(() => void refreshLiveAccount(), 10_000)
     return () => { active = false; clearInterval(timer) }
-  }, [selectedEnvironment, isHyperliquid, strategy ? selectedExecutionAccountId : undefined, refreshOrderHistory])
+  }, [selectedEnvironment, isHyperliquid, selectedExecutionAccountId, refreshOrderHistory])
 
   async function refresh() {
+    if (currentRefreshContext.current !== refreshContext) return
     const sequence = ++refreshSequence.current
     setMarketLoading(true)
     try {
       const chartRequest = isHyperliquid ? api.hyperliquidCandles(marketSymbol, timeframe, 300, selectedEnvironment) : api.candles()
       const bookRequest = isHyperliquid ? api.hyperliquidBook(marketSymbol, selectedEnvironment) : Promise.resolve(null)
-      const accountRequest = isHyperliquid && strategy
+      const accountRequest = isHyperliquid && selectedExecutionAccountId
         ? api.hyperliquidAccountState(selectedExecutionAccountId, marketSymbol, selectedEnvironment) : Promise.resolve(null)
       const [chart, snap, orderRows, book, actualAccount] = await Promise.all([
         chartRequest,
@@ -274,21 +271,21 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         bookRequest,
         accountRequest,
       ])
-      if (sequence !== refreshSequence.current) return
+      if (sequence !== refreshSequence.current || currentRefreshContext.current !== refreshContext) return
       setCandles(isHyperliquid ? chart : aggregateCandles(chart, timeframe)); setCandleContext(`${selectedEnvironment}:${marketSymbol}:${timeframe}`); setSnapshot(snap); setOrders(orderRows)
       if (!isHyperliquid || Date.now() - lastMarketTickAt.current > 3_000) setExchangeMid(book?.mid ?? null)
       setAccountState(actualAccount)
     } catch (e) {
-      if (sequence === refreshSequence.current) reportError(e instanceof Error ? e.message : '控制台数据加载失败')
+      if (sequence === refreshSequence.current && currentRefreshContext.current === refreshContext) reportError(e instanceof Error ? e.message : '控制台数据加载失败')
     } finally {
-      if (sequence === refreshSequence.current) setMarketLoading(false)
+      if (sequence === refreshSequence.current && currentRefreshContext.current === refreshContext) setMarketLoading(false)
     }
   }
 
   useEffect(() => {
     void refresh(); const timer = setInterval(() => void refresh(), isHyperliquid ? 10_000 : 5_000)
     return () => { clearInterval(timer); ++refreshSequence.current }
-  }, [cycle?.cycleId, strategy?.strategyId, strategy ? selectedExecutionAccountId : undefined, marketSymbol, timeframe, isHyperliquid, selectedEnvironment])
+  }, [cycle?.cycleId, strategy?.strategyId, selectedExecutionAccountId, marketSymbol, timeframe, isHyperliquid, selectedEnvironment])
 
   const entryOrderLines = useMemo(() => strategyMatchesMarket
     ? orders
@@ -297,12 +294,12 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     : [], [orders, strategyMatchesMarket])
 
   async function startCycle() {
-    if (!strategy) return
+    if (!strategy || cycles.length || strategy.activeCycle) return
     setBusy(true)
     try {
       const center = strategy.configuration.centerSuggestionMode === 'MANUAL'
         ? strategy.configuration.manualCenterPrice ?? '0' : '0'
-      const preview = await api.preview(strategy.strategyId, strategy.version, center, runEnvironmentId, runAccountId)
+      const preview = await api.preview(strategy.strategyId, strategy.version, center, selectedEnvironment, selectedExecutionAccountId)
       await api.start(strategy.strategyId, preview.previewId, preview.confirmedCenterPrice, preview.executionEnvironmentId)
       notify('Cycle 已启动，中心和网格计划已冻结'); await reload(); await refresh()
     } catch (e) { reportError(e instanceof Error ? e.message : '启动失败') } finally { setBusy(false) }
@@ -329,7 +326,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const fees = snapshot?.basketPnl.paidFees ?? '0'
   const funding = snapshot?.basketPnl.accruedFunding ?? '0'
   const liquidation = String(+realised + +unrealized - +fees - +funding)
-  const maxNetLot = +(strategy?.configuration.maxNetLot ?? 0)
+  const maxNetLot = +(cycle?.frozenConfiguration?.maxNetLot ?? strategy?.configuration.maxNetLot ?? 0)
   const maxNetUsage = maxNetLot > 0 ? Math.abs(+netPosition) / maxNetLot * 100 : 0
   const unprotectedExposure = +(snapshot?.risk.unprotectedExposureNotionalUsdt ?? 0)
   const faultExposureThreshold = +(snapshot?.risk.faultExposureThresholdUsdt ?? strategy?.configuration.faultExposureThresholdUsdt ?? 10)
@@ -346,15 +343,25 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const exchangePnl = String(exchangePositions?.reduce((total, position) => total + +position.unrealizedPnl, 0) ?? 0)
 
   return <div className="dashboard-page">
-    {strategy && <TopbarExecutionSelectors environments={runEnvironments} accounts={runAccounts}
-      environmentId={runEnvironmentId} accountId={runAccountId} locked={!!cycle} busy={busy}
-      onEnvironmentChange={value => { setRunEnvironmentId(value); setRunAccountId(''); onExecutionEnvironmentChange(value) }}
-      onAccountChange={setRunAccountId}
-    />}
+    <TopbarExecutionSelectors environments={runEnvironments} accounts={runAccounts}
+      environmentId={selectedEnvironment} accountId={selectedExecutionAccountId} locked={false} busy={busy}
+      onEnvironmentChange={value => onSelectionChange({ ...selection, environmentId: value, accountId: '', cycleId: null })}
+      onAccountChange={value => onSelectionChange({ ...selection, accountId: value, cycleId: null })}
+    />
+    {cycleConflict && <div className="cycle-conflict" role="alert">
+      <span>此账户的 {marketSymbol} 存在 {cycles.length} 个活动 Cycle。已有 Cycle 继续运行，禁止新启动；请选择要查看和操作的 Cycle。</span>
+      <select aria-label="活动 Cycle" value={cycle?.cycleId ?? ''}
+        onChange={event => onSelectionChange({ ...selection, cycleId: event.target.value || null })}>
+        <option value="">请选择 Cycle</option>
+        {cycles.map(item => <option key={item.cycleId} value={item.cycleId}>
+          {strategies.find(strategy => strategy.strategyId === item.strategyId)?.name ?? item.strategyId} · {item.cycleId} · {item.state}
+        </option>)}
+      </select>
+    </div>}
     <section className="instrument-bar">
       <div className="instrument-summary"><div className="instrument-heading"><h1><SymbolPicker value={marketSymbol} options={instruments}
         formatLabel={item => displaySymbol(item, isHyperliquid)}
-        onChange={value => { setSymbol(value); setExchangeMid(null); setAccountState(null); setCandles([]) }}
+        onChange={value => { onSelectionChange({ ...selection, symbol: value, cycleId: null }); setExchangeMid(null); setAccountState(null); setCandles([]) }}
       /></h1>
           <dl className="instrument-market-stats" aria-label="Market statistics">
             <div><dt title="Exchange mark price">Mark</dt><dd className="mono">{markPrice !== null ? marketPrice(markPrice) : '—'}</dd></div>
@@ -374,7 +381,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
             <EntryHolds holds={snapshot?.entryHolds ?? []} now={now} formatDate={dateTime} />}
         </div>
         <div className="instrument-meta">
-          <span className={`cycle-state-display ${currentCycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {riskPaused ? (operatorPaused ? '风险暂停 + 人工暂停' : '风险暂停开仓') : currentCycle?.state ?? 'IDLE'}</span>
+          <span className={`cycle-state-display ${currentCycle?.state.toLowerCase() ?? 'idle'}`}><i />Cycle · {riskPaused ? (operatorPaused ? '风险暂停 + 人工暂停' : '风险暂停开仓') : currentCycle?.state ?? (cycleConflict ? 'CONFLICT' : 'IDLE')}</span>
           <span className="instrument-timing" title="Local time">Start: {dateTime(cycle?.startedAt)}</span>
           <span className="instrument-timing" title="Days, hours, minutes">Runs: {runningTime(cycle?.startedAt, cycle?.endedAt, now)}</span>
         </div>
@@ -382,7 +389,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       {riskPaused && <span className="warning-text">继续维护 TP；连续两次对账确认风险解除后恢复开仓{operatorPaused ? '（人工暂停仍保留）' : ''}</span>}
       <div className="control-buttons">
         {strategy && <button className="secondary" onClick={() => setParametersOpen(true)}>View</button>}
-        {!cycle && <button className="primary" disabled={!strategy || !runAccountId || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : 'Start'}</button>}
+        {!cycle && <button className="primary" disabled={!strategy || cycles.length > 0 || !runAccounts.some(x => x.id === selectedExecutionAccountId) || busy} onClick={() => void startCycle()}>{busy ? '启动中…' : 'Start'}</button>}
         {(currentCycle?.state === 'RUNNING' || (riskPaused && !operatorPaused)) && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>Pause Entry</button>}
         {currentCycle?.state === 'PAUSED' && operatorPaused && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', riskPaused ? '人工暂停已解除；风险暂停仍生效' : '已按固定中心恢复 Entry')}>{riskPaused ? '解除人工暂停' : 'Resume Entry'}</button>}
         {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
@@ -610,7 +617,7 @@ function fundingCountdown(now: number) {
   return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
     .map(value => String(value).padStart(2, '0')).join(':')
 }
-function coinFromSymbol(symbol?: string) { return (symbol ?? '').toUpperCase().replace(/[-_/]?(USDC|USDT)$/, '') }
+function coinFromSymbol(symbol?: string) { return normalizeSymbol(symbol ?? '') }
 function sameCoin(left?: string, right?: string) { return !!left && !!right && coinFromSymbol(left) === coinFromSymbol(right) }
 function displaySymbol(symbol: string, isHyperliquid: boolean) { const coin = coinFromSymbol(symbol); return isHyperliquid ? `${coin}-USDC` : symbol.toUpperCase() }
 function aggregateCandles(candles: Candle[], timeframe: Timeframe) {

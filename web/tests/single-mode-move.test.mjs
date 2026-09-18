@@ -13,7 +13,7 @@ function load(relative, imports = {}, extras = {}) {
   const source = readFileSync(new URL(relative, import.meta.url), 'utf8')
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: {
     module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX,
-  } }).outputText, { module, exports: module.exports, require: name => imports[name] ?? require(name), ...extras })
+  } }).outputText, { module, exports: module.exports, require: name => name === '../context/AccountsContext' ? { useAccounts: () => ({ revision: 0 }) } : imports[name] ?? require(name), ...extras })
   return module.exports
 }
 function client() {

@@ -118,53 +118,22 @@ public sealed class HyperliquidFillWebSocketService(
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     private const int MaximumMessageBytes = 4 * 1024 * 1024;
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.WhenAll(
-        RunNetwork(HyperliquidNetwork.Testnet, stoppingToken), RunNetwork(HyperliquidNetwork.Mainnet, stoppingToken));
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => DynamicWorkerSupervisor.RunAsync(
+        LoadFeeds, (feed, ct) => RunConnection(feed.AccountId is null ? null :
+            new SubscriptionAccount(feed.AccountId, feed.User!), feed.Network, ct), logger, stoppingToken);
 
-    private async Task RunNetwork(string network, CancellationToken stoppingToken)
-    {
-        var retrySeconds = 1;
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                var accounts = await LoadAccounts(network, stoppingToken);
-                await RunConnections(accounts, network, stoppingToken);
-                retrySeconds = 1;
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Hyperliquid WebSocket disconnected; reconnecting in {DelaySeconds}s.", retrySeconds);
-                await Task.Delay(TimeSpan.FromSeconds(retrySeconds), stoppingToken);
-                retrySeconds = Math.Min(30, retrySeconds * 2);
-            }
-        }
-    }
-
-    private async Task<IReadOnlyList<SubscriptionAccount>> LoadAccounts(string network, CancellationToken ct)
+    private async Task<IReadOnlyCollection<Feed>> LoadFeeds(CancellationToken ct)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
-        return await db.HyperliquidAccounts
-            .Where(x => x.Enabled && x.Environment == network)
-            .Select(x => new SubscriptionAccount(x.Id, x.AccountAddress))
-            .ToListAsync(ct);
+        var feeds = await db.HyperliquidAccounts.AsNoTracking().Where(x => x.Enabled)
+            .Select(x => new Feed(x.Environment, x.Id, x.AccountAddress)).ToListAsync(ct);
+        feeds.Add(new Feed(HyperliquidNetwork.Testnet, null, null));
+        feeds.Add(new Feed(HyperliquidNetwork.Mainnet, null, null));
+        return feeds;
     }
 
-    private async Task RunConnections(IReadOnlyList<SubscriptionAccount> accounts, string network, CancellationToken ct)
-    {
-        using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var connections = new List<Task> { RunConnection(null, network, connectionCts.Token) };
-        connections.AddRange(accounts.Select(account => RunConnection(account, network, connectionCts.Token)));
-
-        var completed = await Task.WhenAny(connections);
-        connectionCts.Cancel();
-        try { await Task.WhenAll(connections); }
-        catch (OperationCanceledException) when (connectionCts.IsCancellationRequested) { }
-
-        await completed;
-    }
+    private sealed record Feed(string Network, string? AccountId, string? User);
 
     private async Task RunConnection(SubscriptionAccount? account, string network, CancellationToken ct)
     {

@@ -97,6 +97,7 @@ test('disabling the limit hides fields and allows preview after invalid input wh
           },
           useMemo: calculate => calculate(), useEffect: () => {},
         }
+        if (name === '../context/AccountsContext') return { useAccounts: () => ({ revision: 0 }) }
         if (name === '../api') return client
         if (name === '../components/GridPreview') return { buildGridPreview: () => [], GridPreview: () => null }
         if (name === '../components/Icon') return { Icon: () => null }

@@ -209,12 +209,12 @@ public sealed partial class GridOrderLifecycle(
         var order = await db.Orders.SingleOrDefaultAsync(x => x.CycleId == cycle.Id &&
             (x.ExchangeOrderId == fill.ExchangeOrderId ||
              (fill.ClientOrderId != null && x.ClientOrderId == fill.ClientOrderId)), ct);
-        if (order is null || await db.Executions.AnyAsync(x => x.ExchangeExecutionId == fill.ExecutionId, ct)) return false;
+        if (order is null || await db.Executions.AnyAsync(x => x.ExecutionAccountId == cycle.ExecutionAccountId && x.ExchangeExecutionId == fill.ExecutionId, ct)) return false;
         if (order.ExchangeOrderId == "pending") order.ExchangeOrderId = fill.ExchangeOrderId;
         var terminalBeforeFill = order.Status is "CANCELLED" or "REJECTED";
         var execution = new ExecutionEntity
         {
-            Id = Ids.New("execution"), ExchangeExecutionId = fill.ExecutionId, ExchangeOrderId = fill.ExchangeOrderId, CycleId = cycle.Id, OrderId = order.Id,
+            Id = Ids.New("execution"), ExecutionAccountId = cycle.ExecutionAccountId, ExchangeExecutionId = fill.ExecutionId, ExchangeOrderId = fill.ExchangeOrderId, CycleId = cycle.Id, OrderId = order.Id,
             Side = fill.Side, Price = fill.Price, Quantity = fill.Quantity, Fee = fill.Fee, OccurredAt = fill.OccurredAt
         };
         db.Executions.Add(execution);

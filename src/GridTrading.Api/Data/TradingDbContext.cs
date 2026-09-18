@@ -28,12 +28,13 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
             new Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<DateTimeOffset, long>(
                 value => value.ToUnixTimeMilliseconds(), value => DateTimeOffset.FromUnixTimeMilliseconds(value)));
         modelBuilder.Entity<OrderEntity>().HasIndex(x => new { x.CycleId, x.Kind, x.Side, x.FilledAt });
-        modelBuilder.Entity<ExecutionEntity>().HasIndex(x => x.ExchangeExecutionId).IsUnique();
+        modelBuilder.Entity<ExecutionEntity>().HasIndex(x => new { x.ExecutionAccountId, x.ExchangeExecutionId }).IsUnique();
         modelBuilder.Entity<FundingPaymentEntity>().HasIndex(x => x.ExchangeFundingId).IsUnique();
         modelBuilder.Entity<FundingPaymentEntity>().HasIndex(x => new { x.CycleId, x.OccurredAt });
         modelBuilder.Entity<OperationEntity>().HasIndex(x => x.IdempotencyKey).IsUnique();
         modelBuilder.Entity<RiskAlertEntity>().HasIndex(x => new { x.CycleId, x.CreatedAt });
         modelBuilder.Entity<HyperliquidAccountEntity>().HasIndex(x => x.AgentAddress).IsUnique();
+        modelBuilder.Entity<HyperliquidAccountEntity>().HasIndex(x => new { x.Environment, x.AccountAddress }).IsUnique();
         modelBuilder.Entity<TelegramAlertDeliveryEntity>().HasKey(x => x.RiskAlertId);
         modelBuilder.Entity<TelegramAlertDeliveryEntity>().HasOne<RiskAlertEntity>().WithOne()
             .HasForeignKey<TelegramAlertDeliveryEntity>(x => x.RiskAlertId).OnDelete(DeleteBehavior.Cascade);
@@ -131,6 +132,7 @@ public sealed class OrderEntity
 
 public sealed class ExecutionEntity
 {
+    public string ExecutionAccountId { get; set; } = "acct_paper_01";
     public string ExchangeOrderId { get; set; } = "";
     public required string Id { get; set; }
     public required string ExchangeExecutionId { get; set; }

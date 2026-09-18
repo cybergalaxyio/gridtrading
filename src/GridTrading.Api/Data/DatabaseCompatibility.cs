@@ -27,6 +27,10 @@ public static class DatabaseCompatibility
             ON "HyperliquidAccounts" ("AgentAddress");
             """);
         await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_HyperliquidAccounts_Environment_AccountAddress"
+            ON "HyperliquidAccounts" ("Environment", "AccountAddress");
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "FundingPayments" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_FundingPayments" PRIMARY KEY,
                 "ExchangeFundingId" TEXT NOT NULL,
@@ -113,6 +117,25 @@ public static class DatabaseCompatibility
                     SELECT "DefaultExecutionEnvironmentId" FROM "Strategies" WHERE "Strategies"."Id" = "Cycles"."StrategyId"
                 ), "ExecutionEnvironmentId");
             """);
+        await EnsureAccountExecutionIdentityAsync(db);
+    }
+
+    private static async Task EnsureAccountExecutionIdentityAsync(TradingDbContext db)
+    {
+        var columns = await ColumnsAsync(db, "Executions");
+        if (!new[] { "CycleId", "ExchangeExecutionId" }.All(columns.Contains)) return;
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync() : null;
+        await AddColumnIfMissingAsync(db, "Executions", "ExecutionAccountId", "TEXT NOT NULL DEFAULT ''");
+        await db.Database.ExecuteSqlRawAsync("""
+            UPDATE "Executions" SET "ExecutionAccountId" = COALESCE(
+                (SELECT "ExecutionAccountId" FROM "Cycles" WHERE "Cycles"."Id" = "Executions"."CycleId"), 'acct_paper_01')
+            WHERE "ExecutionAccountId" = '';
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_Executions_ExecutionAccountId_ExchangeExecutionId"
+            ON "Executions" ("ExecutionAccountId", "ExchangeExecutionId");
+            DROP INDEX IF EXISTS "IX_Executions_ExchangeExecutionId";
+            """);
+        if (transaction is not null) await transaction.CommitAsync();
     }
 
     private static async Task EnsureOrderCompletionSchemaAsync(TradingDbContext db)

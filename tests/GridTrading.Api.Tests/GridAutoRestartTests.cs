@@ -276,6 +276,45 @@ public sealed class GridAutoRestartTests
         Assert.Equal(2, await f.Db.Cycles.CountAsync(Ct));
     }
 
+    [Fact]
+    public async Task AnotherStrategyOnSameMarketBlocksPendingRestart()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.CloseAsync("BASKET_TAKE_PROFIT");
+        var pending = await f.PendingAsync();
+        var other = await f.Workflow.CreateStrategyAsync(f.Request with { Name = "Other strategy" }, Ct);
+        var preview = await f.Workflow.CreatePreviewAsync(new(other.Id, other.Version, 0m, null, null), Ct);
+        var (_, occupying) = await f.Workflow.StartCycleAsync(other.Id,
+            new(preview.Id, preview.Plan.CenterPrice, new(true, true, "PAPER")), "other-start", Ct);
+        await f.Workflow.ProcessAutoRestartAsync(pending.Id, Ct);
+        Assert.Equal("FAILED", pending.Status);
+        Assert.Equal("ACCOUNT_SYMBOL_BUSY", pending.ErrorCode);
+        Assert.Equal(occupying.Id, (await f.Db.Cycles.SingleAsync(x => !x.IsTerminal, Ct)).Id);
+        Assert.Equal(2, f.Adapter.PreflightCount);
+    }
+
+    [Fact]
+    public async Task ManualStartAndAutomaticRestartCannotBothOwnTheMarket()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.CloseAsync("BASKET_TAKE_PROFIT");
+        var pending = await f.PendingAsync();
+        var other = await f.Workflow.CreateStrategyAsync(f.Request with { Name = "Competing strategy" }, Ct);
+        await using var manualDb = f.NewDbContext();
+        await using var restartDb = f.NewDbContext();
+        var manual = f.WorkflowFor(manualDb);
+        var restart = f.WorkflowFor(restartDb);
+        var preview = await manual.CreatePreviewAsync(new(other.Id, other.Version, 0m, null, null), Ct);
+        async Task StartManual()
+        {
+            try { await manual.StartCycleAsync(other.Id, new(preview.Id, preview.Plan.CenterPrice, new(true, true, "PAPER")), "racing-start", Ct); }
+            catch (TradingProblemException error) when (error.Code == "ACCOUNT_SYMBOL_BUSY") { }
+        }
+        await Task.WhenAll(StartManual(), restart.ProcessAutoRestartAsync(pending.Id, Ct));
+        Assert.Single(await f.Db.Cycles.Where(x => !x.IsTerminal).ToListAsync(Ct));
+        Assert.Equal(2, await f.Db.Cycles.CountAsync(Ct));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly SqliteConnection connection = new($"Data Source=restart-{Guid.NewGuid():N};Mode=Memory;Cache=Shared");

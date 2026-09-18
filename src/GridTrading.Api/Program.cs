@@ -32,6 +32,7 @@ builder.Services.AddScoped<HyperliquidNonceManager>();
 builder.Services.AddHttpClient<HyperliquidTradingClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient<HyperliquidMarketDataClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<HyperliquidAccountStatusService>();
+builder.Services.AddScoped<HyperliquidAccountManagementService>();
 builder.Services.AddScoped<HyperliquidOrderOwnershipService>();
 builder.Services.AddSingleton<ExecutionAccountOperationGate>();
 builder.Services.AddScoped<PaperExecutionAdapter>();
@@ -228,9 +229,10 @@ api.MapPost("/strategies/{id}/cycles", async (string id, StartCycleRequest reque
     response.Headers.Location = $"/api/v1/operations/{operation.Id}";
     return Results.Accepted(value: OperationDto(operation));
 });
-api.MapGet("/cycles", async (string? strategyId, string? state, TradingDbContext db, CancellationToken ct) =>
+api.MapGet("/cycles", async (string? strategyId, string? state, bool? activeOnly, TradingDbContext db, CancellationToken ct) =>
 {
-    var cycles = await db.Cycles.Where(x => (strategyId == null || x.StrategyId == strategyId) && (state == null || x.State == state)).ToListAsync(ct);
+    var cycles = await db.Cycles.Where(x => (strategyId == null || x.StrategyId == strategyId) && (state == null || x.State == state)
+        && (activeOnly != true || !x.IsTerminal)).ToListAsync(ct);
     cycles = cycles.OrderByDescending(x => x.StartedAt).ToList();
     return cycles.Select(CycleDto).ToArray();
 });
@@ -323,7 +325,7 @@ static bool IsAccount(string id) => id == "acct_paper_01";
 static object OperationDto(OperationEntity x) => new { operationId = x.Id, x.CommandId, x.ResourceId, type = x.Type, status = x.Status, x.AcceptedAt, x.CompletedAt };
 static object CycleDto(CycleEntity x) => new
 {
-    cycleId = x.Id, x.StrategyId, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired,
+    cycleId = x.Id, x.StrategyId, symbol = GridConfigurationCodec.ReadFrozen(x.FrozenConfigurationJson).Symbol, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired,
     x.RiskPaused, operatorPaused = x.IsOperatorPaused, x.EntryPauseReasons, x.RiskRecoveryChecks,
     x.ExecutionEnvironmentId, x.ExecutionAccountId, x.FixedCenterPrice,
     frozenConfiguration = GridConfigurationCodec.ReadFrozen(x.FrozenConfigurationJson),

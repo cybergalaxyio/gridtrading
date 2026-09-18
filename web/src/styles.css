@@ -212,3 +212,32 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .chart-indicator-legend { max-width: calc(100% - 75px); }.chart-indicator-legend span { overflow-wrap: anywhere; }
   .instrument-timing { font-size: 10px; }
 }
+
+.cycle-conflict { margin: 0 10px 10px; padding: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border: 1px solid #a9773c; color: #ffd296; background: #30271c; }
+.cycle-conflict select { max-width: 100%; padding: 8px; color: var(--text); background: var(--surface); border: 1px solid var(--line); }
+
+/* Local multi-account management */
+.account-settings .page-title { gap: 16px; }
+.account-paper, .account-card header, .account-actions { display: flex; align-items: center; gap: 12px; }
+.account-paper { padding: 20px; margin-bottom: 18px; }
+.account-cards { display: grid; gap: 18px; }
+.account-card, .account-empty { padding: 22px; }
+.account-card header { justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.account-card h2 { margin: 0 0 8px; }
+.account-card dl { margin: 0; }
+.account-card dl > div { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 14px; padding: 7px 0; }
+.account-card dt { color: var(--text-muted, #8996ab); }
+.account-card dd { margin: 0; overflow-wrap: anywhere; }
+.account-actions { flex-wrap: wrap; margin-top: 20px; }
+.account-blockers { color: #e5ba73; font-size: 13px; line-height: 1.6; }
+.account-form { display: grid; gap: 18px; padding: 24px; }
+.account-form label { display: grid; gap: 8px; }
+.account-form small { color: #8996ab; line-height: 1.5; }
+.account-form p { overflow-wrap: anywhere; }
+.account-form input, .account-form select { width: 100%; min-width: 0; }
+.account-label { display: inline-flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+.account-label small { font-size: 10px; }
+@media (max-width: 720px) {
+  .account-card dl > div { grid-template-columns: 1fr; gap: 4px; }
+  .account-settings .page-title { align-items: flex-start; flex-direction: column; }
+}

@@ -1,4 +1,4 @@
-import type { GridAdvisoryResponse, Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, TelegramSettings, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
+import type { CreateAccountRequest, RenameAccountRequest, ReplaceAccountCredentialsRequest, Cycle, GridAdvisoryResponse, Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, TelegramSettings, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -30,6 +30,11 @@ export const api = {
   executionEnvironments: () => call<ExecutionEnvironment[]>('/execution-environments'),
   executionAccounts: (environmentId: string) => call<ExecutionAccount[]>(`/execution-environments/${encodeURIComponent(environmentId)}/accounts`),
   hyperliquidAccounts: (environment = "hyperliquid-testnet") => call<HyperliquidAccount[]>(`/${environment}/accounts`),
+  createAccount: (environment: string, body: CreateAccountRequest) => call<HyperliquidAccount>(`/${environment}/accounts`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  renameAccount: (environment: string, id: string, body: RenameAccountRequest) => call<HyperliquidAccount>(`/${environment}/accounts/${encodeURIComponent(id)}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  replaceAccountCredentials: (environment: string, id: string, body: ReplaceAccountCredentialsRequest) => call<HyperliquidAccount>(`/${environment}/accounts/${encodeURIComponent(id)}/credentials`, { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body) }),
+  enableAccount: (environment: string, id: string) => call<HyperliquidAccount>(`/${environment}/accounts/${encodeURIComponent(id)}/test-and-enable`, { method: 'POST', headers: JSON_HEADERS, body: '{}' }),
+  disableAccount: (environment: string, id: string) => call<HyperliquidAccount>(`/${environment}/accounts/${encodeURIComponent(id)}/disable`, { method: 'POST', headers: JSON_HEADERS, body: '{}' }),
   hyperliquidInstruments: (environment = "hyperliquid-testnet") => call<HyperliquidInstruments>(`/${environment}/instruments`),
   hyperliquidHealth: (id: string, environment = "hyperliquid-testnet") => call<HyperliquidHealth>(`/${environment}/accounts/${id}/health`),
   hyperliquidBook: (symbol: string, environment = "hyperliquid-testnet") => call<HyperliquidBook>(`/${environment}/market/${symbol}`),
@@ -41,6 +46,8 @@ export const api = {
   hyperliquidOrderHistory: (id: string, environment = "hyperliquid-testnet") => call<HyperliquidHistoricalOrder[]>(`/${environment}/accounts/${id}/order-history`),
   instrumentRules: (accountId: string, symbol: string, referencePrice?: string) => call<ExchangeInstrumentRules>(`/exchange-accounts/${encodeURIComponent(accountId)}/instruments/${encodeURIComponent(symbol)}${referencePrice ? `?referencePrice=${encodeURIComponent(referencePrice)}` : ''}`),
   strategies: () => call<Strategy[]>('/strategies'),
+  cycles: () => call<Cycle[]>('/cycles'),
+  activeCycles: () => call<Cycle[]>('/cycles?activeOnly=true'),
   createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ...body, ...moveSettings(body) }) }),
   updateStrategy: (strategyId: string, body: StrategyConfig) => call<Strategy>(`/strategies/${encodeURIComponent(strategyId)}`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ ...body, ...moveSettings(body) }) }),
   activeCycle: (strategyId: string) => call(`/strategies/${strategyId}/active-cycle`),

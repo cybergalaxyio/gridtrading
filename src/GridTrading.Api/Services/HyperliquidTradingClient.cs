@@ -68,9 +68,12 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
     CredentialProtector protector, HyperliquidNonceManager nonces, HyperliquidL1Signer signer)
 {
 
-    public async Task<HyperliquidPreflight> PreflightAsync(string accountId, string? symbol, CancellationToken ct)
+    public async Task<HyperliquidPreflight> PreflightAsync(string accountId, string? symbol, CancellationToken ct, bool allowDisabled = false)
     {
-        var account = await Account(accountId, ct);
+        var account = allowDisabled
+            ? await db.HyperliquidAccounts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == accountId, ct)
+                ?? throw new TradingProblemException(404, "EXECUTION_ACCOUNT_NOT_FOUND", "Account was not found.")
+            : await Account(accountId, ct);
         using var role = await PostInfo(new { type = "userRole", user = account.AgentAddress }, ct, account.Environment);
         var roleName = role.RootElement.TryGetProperty("role", out var roleValue) ? roleValue.GetString() ?? "missing" : "missing";
         var approved = roleName.Equals("agent", StringComparison.OrdinalIgnoreCase) &&
