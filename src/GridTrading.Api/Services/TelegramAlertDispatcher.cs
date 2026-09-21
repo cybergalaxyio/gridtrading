@@ -11,8 +11,6 @@ public sealed class TelegramAlertDispatcher(
     ITelegramBotClient bot,
     ILogger<TelegramAlertDispatcher> logger) : BackgroundService
 {
-    private static readonly string[] SupportedSeverities = ["INFO", "WARNING", "CRITICAL"];
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -70,7 +68,8 @@ public sealed class TelegramAlertDispatcher(
             LIMIT 1
             """).AsNoTracking().ToListAsync(ct);
         var alert = candidates.SingleOrDefault();
-        if (alert is null) return false;
+        if (alert is null)
+            return await ProcessOrderAsync(db, settings, token, ct);
 
         var delivery = new TelegramAlertDeliveryEntity
         {
@@ -120,6 +119,61 @@ public sealed class TelegramAlertDispatcher(
         await db.SaveChangesAsync(ct);
         if (error is not null)
             logger.LogWarning("Telegram delivery for risk alert {AlertId} failed: {Reason}", alert.Id, error);
+        return true;
+    }
+
+    private async Task<bool> ProcessOrderAsync(TradingDbContext db,
+        TelegramNotificationSettingsEntity settings, string token, CancellationToken ct)
+    {
+        var enabledAt = settings.EnabledAt!.Value;
+        var candidates = await db.OrderPlacementNotifications.FromSqlInterpolated($"""
+            SELECT * FROM "OrderPlacementNotifications"
+            WHERE "AttemptedAt" IS NULL AND julianday("CreatedAt") >= julianday({enabledAt})
+            ORDER BY julianday("CreatedAt"), "Id"
+            LIMIT 1
+            """).AsNoTracking().ToListAsync(ct);
+        var notification = candidates.SingleOrDefault();
+        if (notification is null) return false;
+
+        var attemptedAt = DateTimeOffset.UtcNow;
+        var claimed = await db.OrderPlacementNotifications
+            .Where(x => x.Id == notification.Id && x.AttemptedAt == null)
+            .ExecuteUpdateAsync(update => update.SetProperty(x => x.AttemptedAt, attemptedAt), ct);
+        if (claimed == 0) return true;
+
+        db.Attach(notification);
+        notification.AttemptedAt = attemptedAt;
+        string? error = null;
+        try
+        {
+            await bot.SendMessageAsync(token, settings.ChatId, Truncate(notification.Message, 4096), ct);
+            notification.DeliveredAt = DateTimeOffset.UtcNow;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TelegramBotApiException ex)
+        {
+            error = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            error = $"Telegram delivery failed ({ex.GetType().Name}).";
+        }
+
+        notification.Error = error;
+        var currentSettings = await db.TelegramNotificationSettings
+            .SingleOrDefaultAsync(x => x.Id == TelegramNotificationSettingsEntity.SingletonId, ct);
+        if (currentSettings is not null && currentSettings.UpdatedAt == settings.UpdatedAt)
+        {
+            currentSettings.LastDeliveryAt = DateTimeOffset.UtcNow;
+            currentSettings.LastDeliveryStatus = error is null ? "SUCCEEDED" : "FAILED";
+            currentSettings.LastDeliveryError = error;
+        }
+        await db.SaveChangesAsync(ct);
+        if (error is not null)
+            logger.LogWarning("Telegram order notification {NotificationId} failed: {Reason}", notification.Id, error);
         return true;
     }
 

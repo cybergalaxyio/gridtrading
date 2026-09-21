@@ -65,7 +65,7 @@ export function SettingsPage() {
     try {
       const value = await api.disableTelegram()
       setTelegram(value)
-      setTelegramNotice('Telegram 通知已禁用；禁用期间的告警不会补发')
+      setTelegramNotice('Telegram 通知已禁用；禁用期间的通知不会补发')
     } catch (e) {
       setTelegramError(message(e, '禁用 Telegram 通知失败'))
     } finally {
@@ -116,9 +116,9 @@ export function SettingsPage() {
     {section === 'accounts'
       ? <AccountsPanel />
       : <div className="settings-content telegram-settings">
-          <div className="page-title"><div><h1>Telegram 通知</h1><p>将新产生的风险告警推送到一个私聊、群组或频道。</p></div></div>
+          <div className="page-title"><div><h1>Telegram 通知</h1><p>每笔确认下单（Entry、TP、平仓）和新风险告警都会推送到一个私聊、群组或频道。</p></div></div>
           <div className="system-cards">
-            <SystemMetric label="通知状态" value={telegram.enabled ? 'ENABLED' : telegram.configured ? 'DISABLED' : 'NOT CONFIGURED'} caption={telegram.enabled ? '新告警将自动推送' : '不会发送告警'} />
+            <SystemMetric label="通知状态" value={telegram.enabled ? 'ENABLED' : telegram.configured ? 'DISABLED' : 'NOT CONFIGURED'} caption={telegram.enabled ? '每笔下单和新告警将自动推送' : '不会发送通知'} />
             <SystemMetric label="Bot" value={telegram.botUsername ? '@' + telegram.botUsername : telegram.tokenStored ? 'TOKEN STORED' : 'NO TOKEN'} caption={telegram.verifiedAt ? '验证于 ' + formatTime(telegram.verifiedAt) : '需要发送测试消息验证'} />
             <SystemMetric label="最近推送" value={telegram.lastDeliveryStatus ?? 'NO ATTEMPT'} caption={telegram.lastDeliveryAt ? formatTime(telegram.lastDeliveryAt) : '尚无推送记录'} />
           </div>

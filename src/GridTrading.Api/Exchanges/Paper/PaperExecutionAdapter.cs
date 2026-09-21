@@ -48,6 +48,7 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         {
             order.ExchangeOrderId = Ids.New("paper");
             order.Status = "NEW";
+            await OrderPlacementNotifications.RecordAsync(db, selection, order, ct, quantity: order.Quantity - order.FilledQuantity);
             order.UpdatedAt = DateTimeOffset.UtcNow;
         }
         await db.SaveChangesAsync(ct);
@@ -96,6 +97,7 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         };
         var fee = price * quantity * config.TakerFeeRate;
         db.Orders.Add(order);
+        await OrderPlacementNotifications.RecordAsync(db, selection, order, ct);
         db.Executions.Add(new ExecutionEntity
         {
             ExecutionAccountId = cycle.ExecutionAccountId,

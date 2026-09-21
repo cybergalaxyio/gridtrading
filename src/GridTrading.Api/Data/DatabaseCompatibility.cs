@@ -81,6 +81,19 @@ public static class DatabaseCompatibility
             );
             """);
 
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "OrderPlacementNotifications" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_OrderPlacementNotifications" PRIMARY KEY,
+                "Message" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "AttemptedAt" TEXT NULL,
+                "DeliveredAt" TEXT NULL,
+                "Error" TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_OrderPlacementNotifications_AttemptedAt_CreatedAt"
+                ON "OrderPlacementNotifications" ("AttemptedAt", "CreatedAt");
+            """);
+
         await AddColumnIfMissingAsync(db, "Orders", "LastExchangeUpdateAt", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "VirtualLots", "ProtectionPending", "INTEGER NOT NULL DEFAULT 0");
         await AddColumnIfMissingAsync(db, "Executions", "ExchangeOrderId", "TEXT NOT NULL DEFAULT ''");

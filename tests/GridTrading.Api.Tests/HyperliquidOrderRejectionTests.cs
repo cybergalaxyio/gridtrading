@@ -73,6 +73,7 @@ public sealed class HyperliquidOrderRejectionTests
         await adapter.PlaceOrdersAsync(selection, config, [rejectedEntry], ct);
 
         Assert.Equal("REJECTED", rejectedEntry.Status);
+        Assert.Empty(await db.OrderPlacementNotifications.ToListAsync(ct));
         Assert.Equal("RUNNING", cycle.State);
         var warning = await db.RiskAlerts.SingleAsync(ct);
         Assert.Equal("ENTRY_ORDER_REJECTED", warning.Code);
@@ -87,6 +88,7 @@ public sealed class HyperliquidOrderRejectionTests
 
         Assert.Equal("NEW", retryEntry.Status);
         Assert.Equal("9001", retryEntry.ExchangeOrderId);
+        Assert.Contains("Exchange order: 9001", (await db.OrderPlacementNotifications.SingleAsync(ct)).Message);
         Assert.Equal("RUNNING", cycle.State);
 
         var takeProfit = Order("tp_rejected", "tp-rejected", "TAKE_PROFIT", "SELL", 7);
@@ -97,6 +99,7 @@ public sealed class HyperliquidOrderRejectionTests
 
         Assert.Equal("PROTECTIVE_ORDER_REJECTED", problem.Code);
         Assert.Equal("REJECTED", takeProfit.Status);
+        Assert.Single(await db.OrderPlacementNotifications.ToListAsync(ct));
         Assert.Equal(["Alo", "Alo", "Alo", "Gtc"], exchange.TimeInForce);
     }
 

@@ -210,6 +210,10 @@ public sealed partial class GridOrderLifecycle(
             (x.ExchangeOrderId == fill.ExchangeOrderId ||
              (fill.ClientOrderId != null && x.ClientOrderId == fill.ClientOrderId)), ct);
         if (order is null || await db.Executions.AnyAsync(x => x.ExecutionAccountId == cycle.ExecutionAccountId && x.ExchangeExecutionId == fill.ExecutionId, ct)) return false;
+        // An amendment fill can arrive before its new price/size snapshot. Let
+        // reconciliation record that generation with its confirmed details.
+        if (order.ExchangeOrderId == "pending" || order.ExchangeOrderId.StartsWith("0x", StringComparison.Ordinal))
+            await OrderPlacementNotifications.RecordAsync(db, Selection(cycle), order, ct, fill.ExchangeOrderId);
         if (order.ExchangeOrderId == "pending") order.ExchangeOrderId = fill.ExchangeOrderId;
         var terminalBeforeFill = order.Status is "CANCELLED" or "REJECTED";
         var execution = new ExecutionEntity

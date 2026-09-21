@@ -17,8 +17,11 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
     public DbSet<TelegramNotificationSettingsEntity> TelegramNotificationSettings => Set<TelegramNotificationSettingsEntity>();
     public DbSet<TelegramAlertDeliveryEntity> TelegramAlertDeliveries => Set<TelegramAlertDeliveryEntity>();
 
+    public DbSet<OrderPlacementNotificationEntity> OrderPlacementNotifications => Set<OrderPlacementNotificationEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<OrderPlacementNotificationEntity>().HasIndex(x => new { x.AttemptedAt, x.CreatedAt });
         modelBuilder.Entity<StrategyEntity>().Property(x => x.DefaultExecutionAccountId).HasColumnName("ExchangeAccountId");
         modelBuilder.Entity<StrategyEntity>().HasIndex(x => x.Name);
         modelBuilder.Entity<CycleEntity>().HasIndex(x => new { x.StrategyId, x.IsTerminal });

@@ -56,6 +56,10 @@ public sealed class HyperliquidAmendmentRecoveryTests
         Assert.Equal(desired - finalTp.FilledQuantity, lot.RemainingQuantity);
         Assert.False(lot.ProtectionPending);
         Assert.Equal("8002", finalTp.ExchangeOrderId);
+        var notifications = await verified.OrderPlacementNotifications.ToListAsync(ct);
+        Assert.Single(notifications, x => x.Message.Contains("Exchange order: 8001"));
+        var amendedNotification = Assert.Single(notifications, x => x.Message.Contains("Exchange order: 8002"));
+        Assert.Contains("Quantity: " + quantityText, amendedNotification.Message);
         Assert.Equal(1, fixture.Handler.Placements);
         Assert.Equal(mode == "timeout-before" ? 2 : 1, fixture.Handler.Modifications);
         if (mode == "confirmed") Assert.Empty(await verified.RiskAlerts.ToListAsync(ct));

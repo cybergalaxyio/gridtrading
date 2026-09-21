@@ -16,7 +16,7 @@
 - Basket 清算 PnL、Paper 自动 Basket TP/SL、有序关闭、紧急撤单与清零、人工对账；配置的 Basket TP/SL 阈值由后端对账触发自动关闭，依赖服务持续在线。
 - 保守 OHLC 回放：同一 Bar 同时触及 Entry 与 TP 时，不假设有利成交顺序。
 - Testnet/Mainnet 独立账户、签名、官方主机与行情订阅；Mainnet 使用用户填写的策略参数，无试运行预设或额外下单开关。
-- 可选 Telegram 风险告警推送：Bot Token 加密保存，先测试后启用，后台投递不会阻塞交易。
+- 可选 Telegram 下单与风险告警推送：Bot Token 加密保存，先测试后启用，后台投递不会阻塞交易。
 
 ## 中心模式与 Initial Gap
 
@@ -43,14 +43,14 @@
 - 自动重启失败时写入 `AUTO_RESTART_FAILED` 告警并停止重试，检查后可手动 Start。服务重启会继续处理尚未开始的请求；启动中断且结果不确定时停止自动操作，避免重复下单。
 - 控制台自动刷新并跟随新 Cycle。开启开关后需启动新 Cycle 才生效；关闭开关可阻止待执行的重启。
 
-## Telegram 风险告警通知
+## Telegram 下单与风险告警通知
 
 1. 在 Telegram 中通过 @BotFather 创建 Bot 并复制 Bot Token。私聊需要先向 Bot 发送一条消息；群组需要把 Bot 加入群组；频道需要授予 Bot 发消息权限。
 2. 获取接收目标：私聊和群组使用数字 Chat ID（群组通常为负数，超级群组/频道通常以 -100 开头）；公开频道也可填写 @channel_username。可通过 Telegram Bot API 的 getUpdates 查看 Bot 收到的更新并找到 message.chat.id 或 channel_post.chat.id。
 3. 后端必须设置稳定的 GRID_TRADING_CREDENTIAL_KEY（base64 编码的 32 字节密钥）并重启。该密钥用于 AES-256-GCM 加密 Bot Token；密钥变更后已保存的 Token 无法解密。
 4. 打开 **Settings → 通知设置**，填写 Bot Token 和 Chat ID，点击“测试并启用”。只有测试消息成功后才会启用自动推送；读取设置时后端不会返回 Token 或密文。
 
-启用后，系统会推送新产生的 INFO、WARNING 和 CRITICAL 风险告警，内容包含级别、代码、Cycle（如有）、UTC 时间与消息。启用前及禁用期间的历史告警不会补发。每条告警只尝试一次；Telegram 超时、限流或拒绝时会在设置页记录失败，但不会阻塞交易或自动重试。禁用操作无法撤回已在发送中的请求。
+启用后，每笔确认下单（Entry、TP、平仓，以及产生新交易所订单号的改单）都会发送一条通知，包含环境、账户、交易对、方向、类型、价格、数量、订单号与 Cycle。交易所拒绝或尚未确认的下单不会发送成功通知；通过成交或对账确认后发送，同一交易所订单不会重复通知。系统也会推送新产生的 INFO、WARNING 和 CRITICAL 风险告警，内容包含级别、代码、Cycle（如有）、UTC 时间与消息。启用前及禁用期间的历史通知不会补发。每条通知只尝试一次；Telegram 超时、限流或拒绝时会在设置页记录失败，但不会阻塞交易或自动重试。禁用操作无法撤回已在发送中的请求。
 
 ## 多账户管理
 

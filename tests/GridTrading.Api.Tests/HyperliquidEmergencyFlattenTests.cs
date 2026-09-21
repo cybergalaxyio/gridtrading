@@ -84,6 +84,9 @@ public sealed class HyperliquidEmergencyFlattenTests
         var flatten = await db.Orders.SingleAsync(x => x.Kind == "FLATTEN", ct);
         Assert.Equal("FILLED", flatten.Status);
         Assert.Equal(1.79m, flatten.FilledQuantity);
+        var notification = await db.OrderPlacementNotifications.SingleAsync(ct);
+        Assert.Contains("Type: FLATTEN", notification.Message);
+        Assert.Contains("Quantity: 1.79", notification.Message);
     }
 
     private sealed class EmergencyFlattenHandler : HttpMessageHandler

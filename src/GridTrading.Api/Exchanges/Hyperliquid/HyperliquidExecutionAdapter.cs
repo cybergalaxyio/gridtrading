@@ -113,6 +113,9 @@ public sealed class HyperliquidExecutionAdapter(
                 throw new TradingProblemException(422, "PROTECTIVE_ORDER_REJECTED", venueError);
             }
             order.ExchangeOrderId = result.ExchangeOrderId ?? result.Cloid;
+            if (result.ExchangeOrderId is not null && result.Status is "RESTING" or "FILLED")
+                await OrderPlacementNotifications.RecordAsync(db, selection, order, ct,
+                    quantity: order.Quantity - order.FilledQuantity);
             order.Status = result.Status switch
             {
                 "WAITING" => "UNKNOWN",
@@ -163,6 +166,7 @@ public sealed class HyperliquidExecutionAdapter(
         order.ExchangeOrderId = result.ExchangeOrderId;
         order.Price = price;
         order.Quantity = quantity;
+        await OrderPlacementNotifications.RecordAsync(db, selection, order, ct, quantity: remaining);
         order.Status = result.Status switch
         {
             "WAITING" => "UNKNOWN",
@@ -225,6 +229,8 @@ public sealed class HyperliquidExecutionAdapter(
                 result.Error ?? "Hyperliquid rejected the strategy flatten order.");
         }
 
+        if (result.ExchangeOrderId is not null && result.Status is "RESTING" or "FILLED")
+            await OrderPlacementNotifications.RecordAsync(db, selection, order, ct);
         var filled = Math.Min(order.Quantity, result.FilledQuantity);
         if (result.Status == "FILLED" && filled == 0m) filled = order.Quantity;
         order.FilledQuantity = filled;

@@ -1,5 +1,6 @@
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
+using GridTrading.Api.Services;
 using GridTrading.Domain;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,6 +26,8 @@ public sealed partial class GridOrderLifecycle
                 if (observed.OriginalQuantity <= 0m || observed.Price <= 0m ||
                     observed.RemainingQuantity < 0m || observed.RemainingQuantity > observed.OriginalQuantity)
                     throw new TradingProblemException(503, "INVALID_ORDER_SNAPSHOT", "Exchange order quantities could not be verified.");
+                var newlyConfirmed = order.ExchangeOrderId != observed.ExchangeOrderId ||
+                    order.Status is "PENDING_EXCHANGE" or "UNKNOWN";
                 // origSz describes one amendment generation. FilledQuantity describes
                 // the logical order across all generations sharing the same CLOID.
                 var precedingFills = fills.Where(x => VenueOrderId(x, order) != observed.ExchangeOrderId).Sum(x => x.Quantity);
@@ -36,11 +39,16 @@ public sealed partial class GridOrderLifecycle
                 if (observed.Status == "FILLED" && observed.FilledAt.HasValue)
                     order.FilledAt ??= observed.FilledAt.Value.ToUniversalTime();
                 order.UpdatedAt = DateTimeOffset.UtcNow;
+                if (newlyConfirmed && observed.Status is "NEW" or "PARTIALLY_FILLED" or "FILLED" or "CANCELLED")
+                    await OrderPlacementNotifications.RecordAsync(db, Selection(cycle), order, ct,
+                        quantity: observed.OriginalQuantity);
             }
             else if (snapshot.OpenOrdersByClientId.TryGetValue(order.ClientOrderId, out var oid))
             {
+                var newlyConfirmed = order.ExchangeOrderId != oid || order.Status is "PENDING_EXCHANGE" or "UNKNOWN";
                 order.ExchangeOrderId = oid;
                 if (order.Status == "PENDING_EXCHANGE") order.Status = "NEW";
+                if (newlyConfirmed) await OrderPlacementNotifications.RecordAsync(db, Selection(cycle), order, ct);
             }
             else if (snapshot.Orders is not null && order.Status is "NEW" or "PARTIALLY_FILLED")
             {

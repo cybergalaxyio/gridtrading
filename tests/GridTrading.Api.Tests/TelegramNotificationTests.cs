@@ -3,6 +3,9 @@ using System.Text;
 using GridTrading.Api.Contracts;
 using GridTrading.Api.Data;
 using GridTrading.Api.Services;
+using GridTrading.Api.Execution;
+using GridTrading.Api.Exchanges.Paper;
+using GridTrading.Domain;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -14,6 +17,123 @@ namespace GridTrading.Api.Tests;
 public sealed class TelegramNotificationTests
 {
     private const string Token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghi";
+
+    [Fact]
+    public async Task EveryPaperPlacementIsDeliveredOnceWithItsOriginalDetails()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = await OpenDatabaseAsync(ct);
+        var bot = new FakeBot();
+        await using var provider = Services(connection, bot);
+        await InScope(provider, async scope =>
+        {
+            var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
+            await settings.SaveAsync(new TelegramSettingsRequest(Token, "-100123"), ct);
+            await settings.TestAndEnableAsync(ct);
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var adapter = new PaperExecutionAdapter(new MarketState(), db);
+            var selection = new ExecutionSelection(ExecutionEnvironmentIds.PaperLocal, PaperExecutionAdapter.AccountId);
+            var orders = new[] { NotificationOrder("entry", "ENTRY"), NotificationOrder("tp", "TAKE_PROFIT") };
+            db.Orders.AddRange(orders);
+            await db.SaveChangesAsync(ct);
+            Assert.Empty(await db.OrderPlacementNotifications.ToListAsync(ct));
+            await adapter.PlaceOrdersAsync(selection, new GridConfiguration { Symbol = "SOLUSDT" }, orders, ct);
+            await adapter.PlaceOrdersAsync(selection, new GridConfiguration { Symbol = "SOLUSDT" }, orders, ct);
+            // Recovery of the same venue order must not enqueue it again.
+            await OrderPlacementNotifications.RecordAsync(db, selection, orders[0], ct);
+            await db.SaveChangesAsync(ct);
+            await adapter.AmendOrderAsync(selection, new GridConfiguration { Symbol = "SOLUSDT" }, orders[0], 200m, 3m, ct);
+            await adapter.CancelOrdersAsync(selection, orders, ct);
+            Assert.Equal(2, await db.OrderPlacementNotifications.CountAsync(ct));
+        });
+
+        var dispatcher = Dispatcher(provider, bot);
+        Assert.True(await dispatcher.ProcessNextAsync(ct));
+        Assert.True(await dispatcher.ProcessNextAsync(ct));
+        Assert.False(await Dispatcher(provider, bot).ProcessNextAsync(ct));
+        var messages = bot.Messages.Where(x => x.Text.Contains("Order Placed")).ToArray();
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message =>
+        {
+            Assert.Contains("Environment: paper-local", message.Text);
+            Assert.Contains("Account: acct_paper_01", message.Text);
+            Assert.Contains("Symbol: SOLUSDT", message.Text);
+            Assert.Contains("Price: 150.25", message.Text);
+            Assert.Contains("Quantity: 0.2", message.Text);
+            Assert.Contains("Cycle: cycle-notifications", message.Text);
+        });
+        Assert.Contains(messages, x => x.Text.Contains("Type: ENTRY"));
+        Assert.Contains(messages, x => x.Text.Contains("Type: TAKE_PROFIT"));
+        await InScope(provider, async scope =>
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            Assert.All(await db.OrderPlacementNotifications.ToListAsync(ct), x => Assert.NotNull(x.DeliveredAt));
+        });
+    }
+
+    [Fact]
+    public async Task OrderDeliverySkipsHistoryAndDisabledPeriodsAndRecordsFailureWithoutRetry()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = await OpenDatabaseAsync(ct);
+        var bot = new FakeBot();
+        await using var provider = Services(connection, bot);
+        var selection = new ExecutionSelection(ExecutionEnvironmentIds.HyperliquidMainnet, "live-account");
+        await InScope(provider, async scope =>
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            await OrderPlacementNotifications.RecordAsync(db, selection, NotificationOrder("old", "ENTRY"), ct);
+            db.OrderPlacementNotifications.Local.Single().CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync(ct);
+            var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
+            await settings.SaveAsync(new TelegramSettingsRequest(Token, "-100123"), ct);
+            await settings.TestAndEnableAsync(ct);
+        });
+        var dispatcher = Dispatcher(provider, bot);
+        Assert.False(await dispatcher.ProcessNextAsync(ct));
+        await InScope(provider, async scope =>
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var flatten = NotificationOrder("flatten", "FLATTEN");
+            flatten.Status = "FILLED";
+            flatten.FilledQuantity = flatten.Quantity;
+            await OrderPlacementNotifications.RecordAsync(db, selection, flatten, ct);
+            await db.SaveChangesAsync(ct);
+        });
+        bot.Failure = new TelegramBotApiException("delivery unavailable");
+        Assert.True(await dispatcher.ProcessNextAsync(ct));
+        bot.Failure = null;
+        Assert.False(await Dispatcher(provider, bot).ProcessNextAsync(ct));
+        await InScope(provider, async scope =>
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var failed = await db.OrderPlacementNotifications.SingleAsync(x => x.AttemptedAt != null, ct);
+            Assert.Equal("delivery unavailable", failed.Error);
+            Assert.Null(failed.DeliveredAt);
+            Assert.Contains("Quantity: 0.2", failed.Message);
+            Assert.Equal("FAILED", (await db.TelegramNotificationSettings.SingleAsync(ct)).LastDeliveryStatus);
+            var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
+            await settings.DisableAsync(ct);
+            await OrderPlacementNotifications.RecordAsync(db, selection, NotificationOrder("disabled", "ENTRY"), ct);
+            db.OrderPlacementNotifications.Local.Single(x => x.AttemptedAt == null).CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync(ct);
+        });
+        Assert.False(await dispatcher.ProcessNextAsync(ct));
+        await InScope(provider, async scope =>
+        {
+            var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
+            await settings.TestAndEnableAsync(ct);
+        });
+        Assert.False(await dispatcher.ProcessNextAsync(ct));
+    }
+
+    private static OrderEntity NotificationOrder(string id, string kind) => new()
+    {
+        Id = id, CycleId = "cycle-notifications", ClientOrderId = "client-" + id,
+        ExchangeOrderId = "pending", Symbol = "SOLUSDT", Side = "BUY", Kind = kind,
+        Status = "PENDING_EXCHANGE", Price = 150.25m, Quantity = .2m,
+        CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+    };
 
     [Fact]
     public void TelegramEncryptionUsesADifferentPurposeWithoutChangingHyperliquidCiphertext()

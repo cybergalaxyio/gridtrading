@@ -36,9 +36,9 @@ public sealed class DatabaseCompatibilityTests
         {
             command.CommandText = """
                 SELECT COUNT(*) FROM sqlite_master
-                WHERE type = 'table' AND name IN ('TelegramNotificationSettings', 'TelegramAlertDeliveries');
+                WHERE type = 'table' AND name IN ('TelegramNotificationSettings', 'TelegramAlertDeliveries', 'OrderPlacementNotifications');
                 """;
-            Assert.Equal(2L, await command.ExecuteScalarAsync(ct));
+            Assert.Equal(3L, await command.ExecuteScalarAsync(ct));
         }
 
 
