@@ -48,7 +48,7 @@ public sealed record GridConfiguration
     public decimal TakerFeeRate { get; init; } = 0.00055m;
     public decimal FaultExposureThresholdUsdt { get; init; } = 10m;
     public decimal EstimatedExitSlippagePct { get; init; } = 0.10m;
-    public bool IncludeFunding { get; init; } = true;
+    public bool IncludeFunding { get; init; } = false;
     public bool PostOnlyEntries { get; init; } = true;
     public bool PostOnlyTakeProfits { get; init; } = true;
     public int ReconcileIntervalSeconds { get; init; } = 10;

@@ -147,8 +147,10 @@ public sealed class GridRiskPauseTests
         await using var f = await Fixture.CreateAsync(ct, decimal.Parse(threshold));
         await f.FillAsync(ct);
         var lot = await f.Db.VirtualLots.SingleAsync(ct);
-        lot.RemainingQuantity = decimal.Parse(exposure) / lot.TakeProfitPrice;
-        await f.Db.SaveChangesAsync(ct);
+        var remainder = decimal.Parse(exposure) / lot.TakeProfitPrice;
+        var tp = await f.Db.Orders.SingleAsync(x => x.Kind == "TAKE_PROFIT", ct);
+        await f.Lifecycle.ProcessFillsAsync("account", [new NormalizedExecutionFill("threshold-tp", tp.ExchangeOrderId,
+            tp.ClientOrderId, "SELL", lot.TakeProfitPrice, lot.RemainingQuantity - remainder, 0m, DateTimeOffset.UtcNow)], ct);
         await f.Lifecycle.ReconcileAsync(f.Cycle, ct);
         await f.Lifecycle.ReconcileAsync(f.Cycle, ct);
         Assert.Equal(!resumes, f.Cycle.RiskPaused);
@@ -379,7 +381,7 @@ public sealed class GridRiskPauseTests
         await recovery.WaitAsync(ct);
         await close.WaitAsync(ct);
         Assert.Equal("PAUSED", stateWhileWaiting);
-        Assert.Equal(["CLOSING", "CLOSING"], closerAdapter.ReconciledStates);
+        Assert.Equal(["CLOSING", "CLOSING", "CLOSING"], closerAdapter.ReconciledStates);
         Assert.Equal(0, closerAdapter.EntryPlacements);
         var saved = await closerDb.Cycles.SingleAsync(ct);
         Assert.True(saved.IsTerminal);
@@ -405,15 +407,12 @@ public sealed class GridRiskPauseTests
         var workflow = CreateWorkflow(closerDb, closerAdapter, f.Gate, hubServices);
         var close = workflow.CommandAsync(f.Cycle.Id, command, "test", "close-first", null, true, ct);
         await entered.Task.WaitAsync(ct);
-        try
-        {
-            await f.Lifecycle.ReconcileAsync(f.Cycle, ct);
-            Assert.Equal("CLOSING", f.Cycle.State);
-            Assert.Equal(0, f.Adapter.EntryPlacements);
-            Assert.Equal(1, f.Cycle.RiskRecoveryChecks);
-        }
-        finally { release.TrySetResult(); }
+        var reconciliation = f.Lifecycle.ReconcileAsync(f.Cycle, ct);
+        Assert.False(reconciliation.IsCompleted); // Close owns the account gate through confirmed settlement.
+        release.TrySetResult();
         await close.WaitAsync(ct);
+        await reconciliation.WaitAsync(ct);
+        Assert.Equal(0, f.Adapter.EntryPlacements);
         Assert.True((await closerDb.Cycles.SingleAsync(ct)).IsTerminal);
     }
 
@@ -502,8 +501,10 @@ public sealed class GridRiskPauseTests
             await db.SaveChangesAsync(ct);
             var adapter = new Adapter(db);
             var gate = new ExecutionAccountOperationGate();
-            return new Fixture { Connection = connection, Db = db, Cycle = cycle, Entry = entry, Adapter = adapter, Gate = gate,
-                Lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]), gate) };
+            var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]), gate);
+            lifecycle.RegisterNewCycle(cycle);
+            await db.SaveChangesAsync(ct);
+            return new Fixture { Connection = connection, Db = db, Cycle = cycle, Entry = entry, Adapter = adapter, Gate = gate, Lifecycle = lifecycle };
         }
         public async ValueTask DisposeAsync() { await Db.DisposeAsync(); await Connection.DisposeAsync(); }
     }
@@ -569,6 +570,18 @@ public sealed class GridRiskPauseTests
             var active = await db.Orders.Where(x => x.CycleId == cycle.Id &&
                 (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" || x.Status == "UNKNOWN" || x.Status == "PENDING_EXCHANGE")).ToListAsync(ct);
             await CancelOrdersAsync(selection, active, ct);
+            var net = (await db.Executions.Where(x => x.CycleId == cycle.Id).ToListAsync(ct))
+                .Sum(x => x.Side == "BUY" ? x.Quantity : -x.Quantity);
+            if (net != 0m)
+            {
+                var order = new OrderEntity { Id = Ids.New("close"), CycleId = cycle.Id, ClientOrderId = Ids.New("client"),
+                    ExchangeOrderId = "close-venue", Symbol = "SOL", Side = net > 0m ? "SELL" : "BUY", Kind = "FLATTEN",
+                    Status = "FILLED", Price = 100m, Quantity = Math.Abs(net), FilledQuantity = Math.Abs(net) };
+                db.Orders.Add(order);
+                db.Executions.Add(new ExecutionEntity { Id = Ids.New("fill"), CycleId = cycle.Id, OrderId = order.Id,
+                    ExecutionAccountId = cycle.ExecutionAccountId, ExchangeExecutionId = Ids.New("venue-fill"),
+                    Side = order.Side, Price = 100m, Quantity = Math.Abs(net), OccurredAt = DateTimeOffset.UtcNow });
+            }
             cycle.ActualNetQuantity = 0m;
             cycle.ReconstructedNetQuantity = 0m;
             await db.SaveChangesAsync(ct);

@@ -176,7 +176,7 @@ public sealed class HyperliquidAmendmentRecoveryTests
             Side = "BUY", Status = "TP_PENDING", GridLevel = 5, EntryFillPrice = 101.66m, TakeProfitPrice = 103.66m,
             FilledQuantity = .42m, RemainingQuantity = .42m };
         var execution = new ExecutionEntity { Id = "entry-b5-fill", ExchangeExecutionId = "entry-b5-fill", ExchangeOrderId = "9001",
-            CycleId = f.Cycle.Id, OrderId = entry.Id, Side = "BUY", Price = 101.66m, Quantity = .42m, OccurredAt = now };
+            ExecutionAccountId = "repro-account", CycleId = f.Cycle.Id, OrderId = entry.Id, Side = "BUY", Price = 101.66m, Quantity = .42m, OccurredAt = now };
         f.Db.AddRange(entry, tp, lot, execution);
         await f.Db.SaveChangesAsync(ct);
         f.Handler.ExtraOpenOrders.Add(new { oid = 9002, cloid = HyperliquidWireCodec.CreateCloid(tp.ClientOrderId),
@@ -292,9 +292,12 @@ public sealed class HyperliquidAmendmentRecoveryTests
             db.AddRange(cycle, entry);
             await db.SaveChangesAsync(ct);
             var handler = new Handler { Mode = mode, Position = desired };
-            return new Fixture { Connection = connection, Options = options, Db = db, Configuration = configuration,
+            var fixture = new Fixture { Connection = connection, Options = options, Db = db, Configuration = configuration,
                 Cycle = cycle, Handler = handler, Http = new HttpClient(handler),
                 SecondFill = new NormalizedExecutionFill("second", "7001", entry.ClientOrderId, "BUY", 102.16m, desired - .11m, .002m, now.AddSeconds(1)) };
+            fixture.Lifecycle.RegisterNewCycle(cycle);
+            await db.SaveChangesAsync(ct);
+            return fixture;
         }
         public async ValueTask DisposeAsync()
         {
@@ -328,6 +331,8 @@ public sealed class HyperliquidAmendmentRecoveryTests
                 var type = doc.RootElement.GetProperty("type").GetString();
                 return type switch
                 {
+                    "orderStatus" => Json(new { status = "unknownOid" }),
+                    "l2Book" => Json(new { time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), levels = new[] { new[] { new { px = "102.15" } }, new[] { new { px = "102.17" } } } }),
                     "meta" => Json(new { universe = new[] { new { name = "SOL", szDecimals = 2 } } }),
                     "userFunding" or "historicalOrders" => Json(Array.Empty<object>()),
                     "userFillsByTime" => Json(_filled == 0m ? [] : new object[] { new { oid = _oid, cloid = _cloid, hash = "fixture-hash", tid = 123, time = _fillTime, side = "A", px = "104.16", sz = Text(_filled), fee = "0.001" } }),

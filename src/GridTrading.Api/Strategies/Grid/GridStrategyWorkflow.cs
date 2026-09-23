@@ -182,6 +182,7 @@ public sealed partial class GridStrategyWorkflow(
             await transaction.CommitAsync(ct);
         }
 
+        lifecycle.RegisterNewCycle(cycle);
         var reservations = new List<ActiveOrderReservation>();
         foreach (var side in new[] { OrderSide.Buy, OrderSide.Sell })
         {
@@ -209,7 +210,7 @@ public sealed partial class GridStrategyWorkflow(
             catch { }
             var errorCode = ex is TradingProblemException problem ? problem.Code : "EXECUTION_ERROR";
             cycle.State = "FAULT";
-            cycle.IsTerminal = selection.EnvironmentId != ExecutionEnvironmentIds.HyperliquidMainnet;
+            cycle.IsTerminal = adapter.Environment.VenueType != "HYPERLIQUID";
             cycle.EndedAt = cycle.IsTerminal ? DateTimeOffset.UtcNow : null;
             cycle.ExitReason = "START_FAILED";
             operation.Status = "FAILED";
@@ -217,7 +218,7 @@ public sealed partial class GridStrategyWorkflow(
             operation.CompletedAt = DateTimeOffset.UtcNow;
             db.RiskAlerts.Add(FaultAlert(cycle, "START_FAILED",
                 $"Cycle {cycle.Id} 进入 FAULT：启动阶段初始 Entry 挂单失败。原因 [{errorCode}]：{ex.Message}。" +
-                "系统已尽力撤销初始挂单；Mainnet Cycle 保持可对账及可关闭状态，请检查实际仓位。"));
+                "系统已尽力撤销初始挂单；Hyperliquid Cycle 保持可对账及可关闭状态，请检查实际仓位。"));
             await db.SaveChangesAsync(ct);
             throw;
         }
@@ -275,32 +276,7 @@ public sealed partial class GridStrategyWorkflow(
             case "EMERGENCY_FLATTEN":
                 if (command == "EMERGENCY_FLATTEN" && !emergencyConfirmed)
                     throw Problem(422, "EMERGENCY_CONFIRMATION_REQUIRED", "All emergency confirmations are required.");
-                await lifecycle.BeginClosingAsync(cycle, expectedVersion, ct);
-                restartAfterClose = restartAfterClose && !cycle.OperatorPaused && !cycle.OperatorResetRequired;
-                await lifecycle.ReconcileAsync(cycle, ct);
-                var residual = await adapter.FlattenAsync(selection, cycle, config, ct);
-                if (residual != 0m)
-                {
-                    cycle.State = "FAULT";
-                    cycle.ExitReason = "FLATTEN_RESIDUAL_POSITION";
-                    db.RiskAlerts.Add(FaultAlert(cycle, "FLATTEN_RESIDUAL_POSITION",
-                        $"Cycle {cycle.Id} 进入 FAULT：平仓未完全成交，策略残余敞口为 {residual}。" +
-                        "系统已执行策略挂单撤销；请核对实际仓位后重试 Exit 或紧急平仓。"));
-                    await db.SaveChangesAsync(ct);
-                    throw Problem(503, "FLATTEN_INCOMPLETE", $"Strategy exposure still has {residual} unfilled; the cycle remains non-terminal.");
-                }
-                await lifecycle.ReconcileAsync(cycle, ct);
-                if (selection.EnvironmentId == ExecutionEnvironmentIds.HyperliquidMainnet && cycle.ActualNetQuantity != 0m)
-                    throw Problem(503, "FLATTEN_INCOMPLETE", "Mainnet position is not flat after reconciliation; close remains pending.");
-                cycle.State = "WAITING_FOR_OPERATOR";
-                cycle.OperatorPaused = false;
-                cycle.RiskPaused = false;
-                cycle.RiskRecoveryChecks = 0;
-                cycle.IsTerminal = true;
-                cycle.EndedAt = DateTimeOffset.UtcNow;
-                cycle.OperatorResetRequired = command == "EMERGENCY_FLATTEN";
-                cycle.ExitReason = command == "EMERGENCY_FLATTEN" ? "EMERGENCY_FLATTEN" :
-                    string.IsNullOrWhiteSpace(reason) ? "OPERATOR_CLOSE" : reason;
+                restartAfterClose &= await lifecycle.CloseCycleAsync(cycle, expectedVersion, command == "EMERGENCY_FLATTEN", reason, ct);
                 if (restartAfterClose)
                     await NewOperationAsync("AUTO_RESTART", cycle.Id, AutoRestartKey(cycle.Id), new { cycleId = cycle.Id }, ct);
                 break;
@@ -333,11 +309,8 @@ public sealed partial class GridStrategyWorkflow(
             .ToDictionary(x => x.Id);
         var unprotectedExposureNotionalUsdt =
             GridOrderLifecycle.CalculateUnprotectedNotional(openLots, takeProfits);
-        var finalFee = Math.Abs(cycle.ActualNetQuantity) *
-            (cycle.ActualNetQuantity >= 0 ? quote.Bid : quote.Ask) * config.TakerFeeRate;
-        var pnl = GridMath.CalculateBasketPnl(new BasketPnlInput(cycle.RealisedCyclePnl, 0m,
-            cycle.PaidFees, cycle.AccruedFunding, finalFee, 0m));
-        var usage = config.MaxNetLot == 0m ? 0m : Math.Abs(cycle.ActualNetQuantity) / config.MaxNetLot * 100m;
+        var pnl = await lifecycle.ValueAsync(cycle, ct);
+        var usage = config.MaxNetLot == 0m ? 0m : Math.Abs(cycle.ReconstructedNetQuantity) / config.MaxNetLot * 100m;
         var color = usage switch { >= 90m => "RED", >= 70m => "ORANGE", >= 40m => "YELLOW", _ => "GREEN" };
         return new
         {
@@ -359,15 +332,18 @@ public sealed partial class GridStrategyWorkflow(
             },
             position = new
             {
+                strategyNetQuantity = cycle.ReconstructedNetQuantity,
+                accountNetQuantity = cycle.ActualNetQuantity,
+                externalNetQuantity = cycle.ActualNetQuantity - cycle.ReconstructedNetQuantity,
                 actualNetQuantity = cycle.ActualNetQuantity,
                 reconstructedNetQuantity = cycle.ReconstructedNetQuantity,
                 absoluteMaxNetLotUsagePct = usage,
-                netNotionalUsdt = cycle.ActualNetQuantity * quote.Mid
+                netNotionalUsdt = cycle.ReconstructedNetQuantity * quote.Mid
             },
             basketPnl = new
             {
                 pnl.RealisedCyclePnl, pnl.UnrealisedAtExecutablePrice, pnl.PaidFees, pnl.AccruedFunding,
-                pnl.EstimatedFinalTakerFee, pnl.EstimatedExitSlippage, pnl.LiquidationPnl,
+                pnl.EstimatedFinalTakerFee, pnl.EstimatedExitSlippage, pnl.LiquidationPnl, fundingIncluded = false,
                 takeProfitTarget = config.BasketTakeProfitUsdt, stopLossLimit = config.BasketStopLossUsdt
             },
             risk = new
@@ -384,12 +360,13 @@ public sealed partial class GridStrategyWorkflow(
             health = new
             {
                 exchange = "HEALTHY", marketData = quote.IsStale ? "STALE" : "FRESH",
-                reconciliation = cycle.ActualNetQuantity == cycle.ReconstructedNetQuantity ? "IN_SYNC" : "MISMATCH",
+                reconciliation = lifecycle.IsLedgerReady(cycle) ? "IN_SYNC" : "RECOVERY_REQUIRED",
+                cycle.LedgerError,
                 lastReconciledAt = cycle.LastReconciledAt
             },
             allowedCommands = cycle.State == "PAUSED"
                 ? new[] { cycle.IsOperatorPaused ? "RESUME_ENTRIES" : "PAUSE_ENTRIES", "CLOSE", "EMERGENCY_FLATTEN", "RECONCILE" }
-                : CycleStateMachine.AllowedCommands(ParseState(cycle.State), active.Length > 0 || cycle.ActualNetQuantity != 0m)
+                : CycleStateMachine.AllowedCommands(ParseState(cycle.State), active.Length > 0 || cycle.ReconstructedNetQuantity != 0m)
         };
     }
 

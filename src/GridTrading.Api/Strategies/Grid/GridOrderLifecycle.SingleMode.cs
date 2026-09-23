@@ -104,6 +104,6 @@ public sealed partial class GridOrderLifecycle
     }
 
     private async Task<bool> IsFlatForMoveAsync(CycleEntity cycle, CancellationToken ct) =>
-        cycle.ActualNetQuantity == 0m && cycle.ReconstructedNetQuantity == 0m &&
+        cycle.ReconstructedNetQuantity == 0m &&
         !await db.VirtualLots.AnyAsync(x => x.CycleId == cycle.Id && x.Status != "CLOSED", ct);
 }

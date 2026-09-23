@@ -213,6 +213,9 @@ public sealed class PaperGridWorkflowContractTests
         };
         db.Cycles.Add(cycle);
         db.Orders.Add(entry);
+        db.VirtualLots.Add(new VirtualLotEntity { Id = "partial-lot", CycleId = cycle.Id, EntryOrderId = entry.Id,
+            Side = "BUY", Status = "TP_ACCUMULATING", EntryFillPrice = center, TakeProfitPrice = center + 1m,
+            FilledQuantity = .1m, RemainingQuantity = .1m });
         db.Executions.Add(new ExecutionEntity
         {
             Id = "execution-partial", ExchangeExecutionId = "fill-partial",

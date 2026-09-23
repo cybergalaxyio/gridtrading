@@ -98,6 +98,7 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         var fee = price * quantity * config.TakerFeeRate;
         db.Orders.Add(order);
         await OrderPlacementNotifications.RecordAsync(db, selection, order, ct);
+        await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, now, ct);
         db.Executions.Add(new ExecutionEntity
         {
             ExecutionAccountId = cycle.ExecutionAccountId,

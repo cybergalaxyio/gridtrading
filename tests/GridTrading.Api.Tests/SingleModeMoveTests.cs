@@ -16,6 +16,18 @@ public sealed class SingleModeMoveTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+    [Fact]
+    public async Task ManualPositionDoesNotBlockFlatStrategyMovement()
+    {
+        await using var f = await Fixture.CreateAsync();
+        f.Cycle.ActualNetQuantity = 10m;
+        f.Clock.Advance(60);
+        f.Adapter.SetMarket(99m);
+        await f.Db.SaveChangesAsync(Ct);
+        await f.Maintain();
+        Assert.Equal(-1m, f.Cycle.EntryGridPriceOffset);
+    }
+
     [Theory]
     [InlineData(GridMode.SellOnly, -1)]
     [InlineData(GridMode.BuyOnly, 1)]
@@ -58,7 +70,6 @@ public sealed class SingleModeMoveTests
     [InlineData("stale")]
     [InlineData("unknown")]
     [InlineData("partial")]
-    [InlineData("position")]
     [InlineData("reconstructed")]
     [InlineData("paused")]
     [InlineData("minimum")]
@@ -71,7 +82,6 @@ public sealed class SingleModeMoveTests
         if (reason == "stale") f.Adapter.Stale = true;
         if (reason == "unknown") f.Entry.Status = "UNKNOWN";
         if (reason == "partial") { f.Entry.Status = "PARTIALLY_FILLED"; f.Entry.FilledQuantity = .1m; }
-        if (reason == "position") f.Cycle.ActualNetQuantity = -.2m;
         if (reason == "reconstructed") f.Cycle.ReconstructedNetQuantity = -.2m;
         if (reason == "paused") { f.Cycle.State = "PAUSED"; f.Cycle.OperatorPaused = true; }
         if (reason == "limit")
@@ -650,9 +660,14 @@ public sealed class SingleModeMoveTests
             f.Adapter = new(f.Db, f.Clock);
             await f.Adapter.PlaceOrdersAsync(new(f.Cycle.ExecutionEnvironmentId, "test"), f.Config, [f.Entry], Ct);
             f.Lifecycle = new(f.Db, new([f.Adapter]), new(), f.Clock);
+            f.Lifecycle.RegisterNewCycle(f.Cycle);
             return f;
         }
-        public Task Maintain() => Lifecycle.MaintainEntryOrdersAsync(Cycle, Config, null, Ct);
+        public async Task Maintain()
+        {
+            if (!Lifecycle.IsLedgerReady(Cycle)) await Lifecycle.ReconcileAsync(Cycle, Ct);
+            else await Lifecycle.MaintainEntryOrdersAsync(Cycle, Config, null, Ct);
+        }
         public OrderEntity[] ActiveEntries() => Db.Orders.Where(x => x.Kind == "ENTRY" &&
             (x.Status == "NEW" || x.Status == "PENDING_EXCHANGE" || x.Status == "UNKNOWN" || x.Status == "PARTIALLY_FILLED")).ToArray();
         public async Task Restart()

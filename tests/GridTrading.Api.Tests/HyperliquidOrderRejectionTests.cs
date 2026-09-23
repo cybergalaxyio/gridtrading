@@ -139,6 +139,7 @@ public sealed class HyperliquidOrderRejectionTests
         var adapter = new ProtectiveRejectingAdapter();
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
 
         var processed = await lifecycle.ProcessFillsAsync("account_testnet",
             [new NormalizedExecutionFill("fill-1", "7001", "entry-filled", "BUY", 99.9m, .2m, 0m, now)], ct);
@@ -197,6 +198,7 @@ public sealed class HyperliquidOrderRejectionTests
         var adapter = new ProtectiveRejectingAdapter();
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
 
         var processed = await lifecycle.ProcessFillsAsync("account_testnet",
             [new NormalizedExecutionFill("fill-1", "7001", "entry-filled", "BUY", 99.9m, .2m, 0m, now)], ct);
@@ -252,11 +254,14 @@ public sealed class HyperliquidOrderRejectionTests
             TakeProfitPrice = pendingTp.Price, FilledQuantity = .2m, RemainingQuantity = .2m
         };
         db.AddRange(cycle, pendingTp, workingEntry, filledEntry, lot);
+        db.Executions.Add(new ExecutionEntity { Id = "seed-fill", ExchangeExecutionId = "seed-fill", ExecutionAccountId = cycle.ExecutionAccountId,
+            CycleId = cycle.Id, OrderId = filledEntry.Id, Side = "BUY", Price = 99m, Quantity = filledEntry.Quantity, OccurredAt = now });
         await db.SaveChangesAsync(ct);
 
         var adapter = new ProtectiveRejectingAdapter();
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
 
         await lifecycle.ReconcileAsync(cycle, ct);
 
@@ -307,7 +312,7 @@ public sealed class HyperliquidOrderRejectionTests
         public Task<ExecutionInstrument> GetInstrumentAsync(ExecutionSelection selection, string symbol,
             decimal? referencePrice, CancellationToken ct) => throw new NotSupportedException();
         public Task<ExecutionQuote> GetQuoteAsync(ExecutionSelection selection, string symbol, CancellationToken ct) =>
-            throw new NotSupportedException();
+            Task.FromResult(new ExecutionQuote(99m, 101m, 100m, DateTimeOffset.UtcNow));
         public Task<ExecutionQuote> PreflightStartAsync(ExecutionSelection selection, string symbol, CancellationToken ct) =>
             throw new NotSupportedException();
         public Task<decimal> FlattenAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config,

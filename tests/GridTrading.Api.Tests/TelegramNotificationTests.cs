@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace GridTrading.Api.Tests;
 
-public sealed class TelegramNotificationTests
+public sealed partial class TelegramNotificationTests
 {
     private const string Token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghi";
 
@@ -365,7 +365,7 @@ public sealed class TelegramNotificationTests
         await action(scope);
     }
 
-    private static ServiceProvider Services(SqliteConnection connection, FakeBot bot)
+    private static ServiceProvider Services(SqliteConnection connection, FakeBot bot, HttpMessageHandler? marketHandler = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(Configuration());
@@ -373,6 +373,11 @@ public sealed class TelegramNotificationTests
         services.AddSingleton<ITelegramBotClient>(bot);
         services.AddDbContext<TradingDbContext>(options => options.UseSqlite(connection));
         services.AddScoped<TelegramNotificationSettingsService>();
+        services.AddLogging();
+        services.AddScoped<TelegramAccountSnapshotService>();
+        services.AddScoped(sp => new HyperliquidMarketDataClient(
+            new HttpClient(marketHandler ?? new ThrowingHandler(new HttpRequestException("No live exchange in notification tests")), disposeHandler: false),
+            sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<TradingDbContext>()));
         return services.BuildServiceProvider();
     }
 

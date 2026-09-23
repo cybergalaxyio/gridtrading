@@ -8,13 +8,13 @@ namespace GridTrading.Api.Strategies.Grid.Configuration;
 public static class GridConfigurationCodec
 {
     public static StrategyRequest ReadStrategy(string json) =>
-        JsonSerializer.Deserialize<StrategyRequest>(json, JsonSupport.Options)!;
+        JsonSerializer.Deserialize<StrategyRequest>(json, JsonSupport.Options)! with { IncludeFunding = false };
 
     public static string WriteStrategy(StrategyRequest settings) =>
         JsonSerializer.Serialize(settings, JsonSupport.Options);
 
     public static GridConfiguration ReadFrozen(string json) =>
-        JsonSerializer.Deserialize<GridConfiguration>(json, JsonSupport.Options)!;
+        JsonSerializer.Deserialize<GridConfiguration>(json, JsonSupport.Options)! with { IncludeFunding = false };
 
     public static string WriteFrozen(GridConfiguration configuration) =>
         JsonSerializer.Serialize(configuration, JsonSupport.Options);

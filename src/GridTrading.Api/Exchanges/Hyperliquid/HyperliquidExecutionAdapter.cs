@@ -51,23 +51,6 @@ public sealed class HyperliquidExecutionAdapter(
             throw new TradingProblemException(412, "TESTNET_ACCOUNT_UNFUNDED", $"The Hyperliquid {network} {check.AccountMode} account has no Trading Equity.");
         if (check.AvailableBalance <= 0m)
             throw new TradingProblemException(412, "TESTNET_ACCOUNT_NO_AVAILABLE_BALANCE", $"The Hyperliquid {network} account has no available balance.");
-        if (check.NetPosition != 0m)
-            throw new TradingProblemException(409, "TESTNET_POSITION_NOT_FLAT", $"Start is blocked because the actual {symbol} position is {check.NetPosition}.");
-        if (network == HyperliquidNetwork.Mainnet)
-        {
-            if (await client.GetPositionAsync(selection.AccountId, symbol, ct) != 0m)
-                throw new TradingProblemException(409, "MAINNET_POSITION_NOT_FLAT", $"Start requires a flat {symbol} position on this mainnet account.");
-            using var allOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
-            if (CountSymbolOpenOrders(allOrders.RootElement, symbol) != 0)
-                throw new TradingProblemException(409, "MAINNET_OPEN_ORDERS_EXIST", $"Cancel all existing {symbol} orders on this mainnet account before starting.");
-        }
-        if (check.OpenOrderCount != 0)
-        {
-            using var openOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
-            var tracked = await ownership.CountTrackedOpenOrdersAsync(selection.AccountId, symbol, null, openOrders.RootElement, ct);
-            if (tracked != 0)
-                throw new TradingProblemException(409, "TESTNET_OPEN_ORDERS_EXIST", $"Start is blocked because {tracked} tracked strategy order(s) remain open.");
-        }
         return await GetQuoteAsync(selection, symbol, ct);
     }
 
@@ -112,10 +95,14 @@ public sealed class HyperliquidExecutionAdapter(
                 await db.SaveChangesAsync(ct);
                 throw new TradingProblemException(422, "PROTECTIVE_ORDER_REJECTED", venueError);
             }
+            RememberOrderId(order, result.ExchangeOrderId);
+            order.ObservedFilledQuantity = Math.Max(order.ObservedFilledQuantity ?? 0m, order.FilledQuantity + result.FilledQuantity);
             order.ExchangeOrderId = result.ExchangeOrderId ?? result.Cloid;
             if (result.ExchangeOrderId is not null && result.Status is "RESTING" or "FILLED")
                 await OrderPlacementNotifications.RecordAsync(db, selection, order, ct,
                     quantity: order.Quantity - order.FilledQuantity);
+            if (result.Status == "FILLED" && result.FilledQuantity >= order.Quantity - order.FilledQuantity)
+                await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, DateTimeOffset.UtcNow, ct);
             order.Status = result.Status switch
             {
                 "WAITING" => "UNKNOWN",
@@ -133,7 +120,15 @@ public sealed class HyperliquidExecutionAdapter(
         await AccountAsync(selection, ct);
         foreach (var order in orders.Where(IsActive).ToArray())
         {
-            await client.CancelByCloidAsync(selection.AccountId, order.Symbol, order.ClientOrderId, ct);
+            if (order.Status != "PENDING_EXCHANGE")
+            {
+                order.CancellationPending = true;
+                var cycle = await db.Cycles.SingleAsync(x => x.Id == order.CycleId, ct);
+                cycle.LedgerStatus = "RECOVERY_REQUIRED";
+                cycle.LedgerError = $"Waiting for final fills of cancelled order {order.Id}.";
+                await db.SaveChangesAsync(ct);
+                await client.CancelByCloidAsync(selection.AccountId, order.Symbol, order.ClientOrderId, ct);
+            }
             order.Status = "CANCELLED";
             order.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
@@ -163,10 +158,14 @@ public sealed class HyperliquidExecutionAdapter(
             await db.SaveChangesAsync(ct);
             return; // Keep the last confirmed quantity; the lot retains its desired protection.
         }
+        RememberOrderId(order, result.ExchangeOrderId);
+        order.ObservedFilledQuantity = Math.Max(order.ObservedFilledQuantity ?? 0m, order.FilledQuantity + result.FilledQuantity);
         order.ExchangeOrderId = result.ExchangeOrderId;
         order.Price = price;
         order.Quantity = quantity;
         await OrderPlacementNotifications.RecordAsync(db, selection, order, ct, quantity: remaining);
+        if (result.Status == "FILLED" && result.FilledQuantity >= remaining)
+            await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, DateTimeOffset.UtcNow, ct);
         order.Status = result.Status switch
         {
             "WAITING" => "UNKNOWN",
@@ -185,40 +184,44 @@ public sealed class HyperliquidExecutionAdapter(
             (x.Status == "PENDING_EXCHANGE" || x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" ||
              x.Status == "UNKNOWN")).ToListAsync(ct);
         await CancelOrdersAsync(selection, active, ct);
-        await Task.Delay(TimeSpan.FromSeconds(5), ct);
         using var openOrders = await client.GetOpenOrdersAsync(selection.AccountId, ct);
         var remainingOrders = await ownership.CountTrackedOpenOrdersAsync(selection.AccountId, config.Symbol, cycle.Id,
             openOrders.RootElement, ct);
-        var blockingOrders = network == HyperliquidNetwork.Mainnet
-            ? CountSymbolOpenOrders(openOrders.RootElement, config.Symbol) : remainingOrders;
-        if (remainingOrders != 0 || blockingOrders != 0)
-            throw new TradingProblemException(503, "CANCEL_INCOMPLETE",
-                $"Close is blocked because {Math.Max(remainingOrders, blockingOrders)} {config.Symbol} order(s) remain open.");
-
-        // Mainnet reserves this account's symbol and closes its observed venue position.
-        // Testnet retains its existing strategy-attribution semantics.
-        var strategyPosition = network == HyperliquidNetwork.Mainnet
-            ? await client.GetPositionAsync(selection.AccountId, config.Symbol, ct)
-            : cycle.ReconstructedNetQuantity;
+        if (remainingOrders != 0)
+            throw new TradingProblemException(503, "CANCEL_INCOMPLETE", "Strategy orders remain open.");
+        var cycleOrders = await db.Orders.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
+        if (cycleOrders.Any(x => x.Kind == "FLATTEN" && IsActive(x)))
+            throw new TradingProblemException(503, "FLATTEN_UNCERTAIN", "Reconcile the previous exit before submitting another.");
+        var executions = await db.Executions.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
+        if (cycleOrders.Any(x => executions.Where(e => e.OrderId == x.Id).Sum(e => e.Quantity) <
+            Math.Max(x.FilledQuantity, x.ObservedFilledQuantity ?? 0m)))
+            throw new TradingProblemException(503, "STRATEGY_LEDGER_INCOMPLETE", "Strategy order executions are missing.");
+        var strategyPosition = executions.Sum(x => x.Side == "BUY" ? x.Quantity : -x.Quantity);
         if (strategyPosition == 0m) return 0m;
 
         var quote = await GetQuoteAsync(selection, config.Symbol, ct);
         var isBuy = strategyPosition < 0m;
         var price = isBuy ? quote.Ask * 1.02m : quote.Bid * .98m;
+        var rules = GridInstrumentRules.FromConfiguration(config);
+        var quantity = Math.Abs(strategyPosition);
+        if (quantity < rules.MinOrderQuantity || quantity * price < rules.MinOrderNotional ||
+            (rules.QuantityStep > 0m && quantity % rules.QuantityStep != 0m))
+            throw new TradingProblemException(422, "FLATTEN_RESIDUAL_UNTRADEABLE", "Strategy residual does not meet venue quantity/notional limits.");
         var order = new OrderEntity
         {
             Id = Ids.New("order"), CycleId = cycle.Id, ClientOrderId = Ids.New("flatten"), ExchangeOrderId = "pending",
-            Symbol = config.Symbol, Side = isBuy ? "BUY" : "SELL", Kind = "FLATTEN", Status = "PENDING_EXCHANGE",
+            Symbol = config.Symbol, Side = isBuy ? "BUY" : "SELL", Kind = "FLATTEN", Status = "UNKNOWN",
             GridLevel = -1, Price = price, Quantity = Math.Abs(strategyPosition),
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
         };
         db.Orders.Add(order);
         await db.SaveChangesAsync(ct);
 
-        // Mainnet exits are reduce-only so a stale snapshot cannot reverse the account.
-        // Testnet preserves ordinary IOC closing of independently attributed strategy exposure.
+        // Offset the virtual strategy ledger, even if doing so increases the account position.
+        // UNKNOWN was committed before I/O: a lost response must never authorize a duplicate exit.
         var result = await client.PlaceLimitAsync(selection.AccountId, config.Symbol, isBuy, price, order.Quantity,
-            false, order.ClientOrderId, ct, immediateOrCancel: true, reduceOnly: network == HyperliquidNetwork.Mainnet);
+            false, order.ClientOrderId, ct, immediateOrCancel: true, reduceOnly: false);
+        RememberOrderId(order, result.ExchangeOrderId);
         order.ExchangeOrderId = result.ExchangeOrderId ?? result.Cloid;
         if (result.Status == "REJECTED")
         {
@@ -232,14 +235,16 @@ public sealed class HyperliquidExecutionAdapter(
         if (result.ExchangeOrderId is not null && result.Status is "RESTING" or "FILLED")
             await OrderPlacementNotifications.RecordAsync(db, selection, order, ct);
         var filled = Math.Min(order.Quantity, result.FilledQuantity);
-        if (result.Status == "FILLED" && filled == 0m) filled = order.Quantity;
+
+        order.ObservedFilledQuantity = filled;
         order.FilledQuantity = filled;
-        order.Status = filled >= order.Quantity ? "FILLED" : filled > 0m ? "PARTIALLY_FILLED" : "CANCELLED";
+        order.Status = result.Status is "UNKNOWN" or "WAITING" or "RESTING" ? "UNKNOWN" :
+            filled >= order.Quantity ? "FILLED" : "CANCELLED";
         order.UpdatedAt = DateTimeOffset.UtcNow;
+        if (result.Status == "FILLED" && result.FilledQuantity >= order.Quantity)
+            await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, order.UpdatedAt, ct);
         await db.SaveChangesAsync(ct);
 
-        if (network == HyperliquidNetwork.Mainnet)
-            return await client.GetPositionAsync(selection.AccountId, config.Symbol, ct);
         return isBuy ? strategyPosition + filled : strategyPosition - filled;
     }
 
@@ -247,7 +252,14 @@ public sealed class HyperliquidExecutionAdapter(
         GridConfiguration config, CancellationToken ct)
     {
         await AccountAsync(selection, ct);
-        var fillStart = cycle.LastReconciledAt.AddSeconds(-5);
+        var fillStart = (cycle.LedgerStatus == "READY" ? cycle.LastReconciledAt : cycle.StartedAt).AddSeconds(-5);
+        var incomplete = await db.Orders.Where(x => x.CycleId == cycle.Id &&
+            (x.Status == "UNKNOWN" || x.Status == "FILLED" || x.ObservedFilledQuantity != null)).ToListAsync(ct);
+        var storedExecutions = await db.Executions.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
+        foreach (var order in incomplete)
+            if (order.Status == "UNKNOWN" || storedExecutions.Where(x => x.OrderId == order.Id).Sum(x => x.Quantity) <
+                Math.Max(order.FilledQuantity, order.ObservedFilledQuantity ?? (order.Status == "FILLED" ? order.Quantity : 0m)))
+                if (order.CreatedAt.AddSeconds(-5) < fillStart) fillStart = order.CreatedAt.AddSeconds(-5);
         if (cycle.EntryGridMovePendingOrderId is not null)
         {
             var movingEntry = await db.Orders.SingleAsync(x => x.Id == cycle.EntryGridMovePendingOrderId, ct);
@@ -261,16 +273,6 @@ public sealed class HyperliquidExecutionAdapter(
             fillStart = unresolved.Min().AddSeconds(-5);
         using var fillsDocument = await client.GetUserFillsAsync(selection.AccountId,
             Math.Max(0, fillStart.ToUnixTimeMilliseconds()), ct);
-        var fills = fillsDocument.RootElement.ValueKind == JsonValueKind.Array
-            ? await NormalizeFillsAsync(selection.AccountId, fillsDocument.RootElement.EnumerateArray().ToArray(), ct)
-            : [];
-
-        using var fundingDocument = await client.GetUserFundingAsync(selection.AccountId,
-            Math.Max(0, cycle.LastReconciledAt.AddSeconds(-5).ToUnixTimeMilliseconds()), ct);
-        var fundingPayments = fundingDocument.RootElement.ValueKind == JsonValueKind.Array
-            ? NormalizeFundingPayments(selection.AccountId, fundingDocument.RootElement.EnumerateArray().ToArray())
-            : [];
-
         using var openDocument = await client.GetFrontendOpenOrdersAsync(selection.AccountId, ct);
         var local = await db.Orders.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
         var byCloid = local.ToDictionary(x => HyperliquidWireCodec.CreateCloid(x.ClientOrderId));
@@ -281,13 +283,14 @@ public sealed class HyperliquidExecutionAdapter(
             var order = FindOwned(row);
             if (order is null) continue;
             openByClientId[order.ClientOrderId] = ReadString(row, "oid");
+            RememberOrderId(order, ReadString(row, "oid"));
             observed[order.ClientOrderId] = Snapshot(row, "NEW", order);
         }
 
         // Missing active orders require a terminal observation, not an assumed cancel.
         // History also resolves the new OID after an acknowledged or timed-out amendment.
         if (local.Any(x => !observed.ContainsKey(x.ClientOrderId) &&
-            (IsActive(x) || x.Id == cycle.EntryGridMovePendingOrderId || x.Status == "PENDING_EXCHANGE" || (x.Kind == "ENTRY" && x.Status == "FILLED" && x.FilledAt == null))))
+            (IsActive(x) || x.CancellationPending || x.Id == cycle.EntryGridMovePendingOrderId || x.Status == "PENDING_EXCHANGE" || (x.Kind == "ENTRY" && x.Status == "FILLED" && x.FilledAt == null))))
         {
             using var history = await client.GetHistoricalOrdersAsync(selection.AccountId, ct);
             foreach (var group in history.RootElement.EnumerateArray()
@@ -295,6 +298,7 @@ public sealed class HyperliquidExecutionAdapter(
                 .GroupBy(x => ReadString(x.GetProperty("order"), "cloid")))
             {
                 if (!byCloid.TryGetValue(group.Key, out var order) || observed.ContainsKey(order.ClientOrderId)) continue;
+                foreach (var generation in group) RememberOrderId(order, ReadString(generation.GetProperty("order"), "oid"));
                 var latest = group.OrderByDescending(x => ReadDecimal(x.GetProperty("order"), "timestamp"))
                     .ThenByDescending(x => ReadDecimal(x, "statusTimestamp"))
                     .ThenBy(x => ReadString(x, "status") == "open" ? 1 : 0).First();
@@ -307,8 +311,28 @@ public sealed class HyperliquidExecutionAdapter(
                 observed[order.ClientOrderId] = Snapshot(latest.GetProperty("order"), status, order, filledAt);
             }
         }
+        foreach (var order in local.Where(x => !observed.ContainsKey(x.ClientOrderId) &&
+            (IsActive(x) && x.Status != "PENDING_EXCHANGE" || x.CancellationPending || x.Id == cycle.EntryGridMovePendingOrderId)))
+        {
+            using var statusDocument = await client.GetOrderStatusAsync(selection.AccountId, order.ClientOrderId, ct);
+            var root = statusDocument.RootElement;
+            if (ReadString(root, "status") != "order" || !root.TryGetProperty("order", out var detail) ||
+                !detail.TryGetProperty("order", out var row)) continue;
+            var cloid = ReadString(row, "cloid");
+            if (cloid != HyperliquidWireCodec.CreateCloid(order.ClientOrderId))
+                throw new TradingProblemException(503, "ORDER_IDENTITY_MISMATCH", "Order status does not match the requested strategy order.");
+            RememberOrderId(order, ReadString(row, "oid"));
+            var status = MapStatus(ReadString(detail, "status"), order.FilledQuantity);
+            DateTimeOffset? filledAt = status == "FILLED" && detail.TryGetProperty("statusTimestamp", out var time) && time.TryGetInt64(out var ms)
+                ? DateTimeOffset.FromUnixTimeMilliseconds(ms) : null;
+            observed[order.ClientOrderId] = Snapshot(row, status, order, filledAt);
+            if (status is "NEW" or "PARTIALLY_FILLED") openByClientId[order.ClientOrderId] = ReadString(row, "oid");
+        }
+        await db.SaveChangesAsync(ct);
+        var fills = fillsDocument.RootElement.ValueKind == JsonValueKind.Array
+            ? await NormalizeFillsAsync(selection.AccountId, fillsDocument.RootElement.EnumerateArray().ToArray(), ct) : [];
         var position = await client.GetPositionSnapshotAsync(selection.AccountId, config.Symbol, ct);
-        return new ExecutionReconciliationSnapshot(fills, fundingPayments, [], openByClientId,
+        return new ExecutionReconciliationSnapshot(fills, [], [], openByClientId,
             new ExecutionPosition(position.Quantity, position.PositionValue, position.UnrealizedPnl), observed.Values.ToArray());
 
         OrderEntity? FindOwned(JsonElement row)
@@ -330,13 +354,13 @@ public sealed class HyperliquidExecutionAdapter(
         {
             var oid = ReadString(fill, "oid");
             var cloid = ReadString(fill, "cloid");
-            var local = candidates.FirstOrDefault(x => x.ExchangeOrderId == oid ||
+            var local = candidates.FirstOrDefault(x => KnownOrderId(x, oid) ||
                 (!string.IsNullOrWhiteSpace(cloid) && HyperliquidWireCodec.CreateCloid(x.ClientOrderId) == cloid));
             var time = ReadTime(fill);
             var id = $"hl:{ReadString(fill, "hash")}:{oid}:{time}:{ReadString(fill, "tid")}";
             result.Add(new NormalizedExecutionFill(id, oid, local?.ClientOrderId,
                 ReadString(fill, "side") == "B" ? "BUY" : "SELL", ReadDecimal(fill, "px"),
-                ReadDecimal(fill, "sz"), Math.Abs(ReadDecimal(fill, "fee")), DateTimeOffset.FromUnixTimeMilliseconds(time)));
+                ReadDecimal(fill, "sz"), Math.Abs(ReadDecimal(fill, "fee")), DateTimeOffset.FromUnixTimeMilliseconds(time), Environment.Id));
         }
         return result;
     }
@@ -376,22 +400,33 @@ public sealed class HyperliquidExecutionAdapter(
             if (!update.TryGetProperty("order", out var details)) continue;
             var oid = ReadString(details, "oid");
             var cloid = ReadString(details, "cloid");
-            var local = candidates.FirstOrDefault(x => x.ExchangeOrderId == oid ||
+            var local = candidates.FirstOrDefault(x => KnownOrderId(x, oid) ||
                 (!string.IsNullOrWhiteSpace(cloid) && HyperliquidWireCodec.CreateCloid(x.ClientOrderId) == cloid));
             var filled = Math.Max(0m, ReadDecimal(details, "origSz") - ReadDecimal(details, "sz"));
             var status = MapStatus(ReadString(update, "status"), local?.FilledQuantity ?? filled);
             long milliseconds = 0;
             var hasExchangeTimestamp = update.TryGetProperty("statusTimestamp", out var timestamp) && timestamp.TryGetInt64(out milliseconds);
             var occurredAt = hasExchangeTimestamp ? DateTimeOffset.FromUnixTimeMilliseconds(milliseconds) : DateTimeOffset.UtcNow;
-            result.Add(new NormalizedOrderUpdate(oid, local?.ClientOrderId, status, filled, occurredAt, hasExchangeTimestamp));
+            result.Add(new NormalizedOrderUpdate(oid, local?.ClientOrderId, status, filled, occurredAt, hasExchangeTimestamp, Environment.Id));
         }
         return result;
+    }
+
+    private static bool KnownOrderId(OrderEntity order, string oid) =>
+        order.ExchangeOrderId == oid || (JsonSerializer.Deserialize<string[]>(order.ExchangeOrderIdsJson) ?? []).Contains(oid);
+
+    private static void RememberOrderId(OrderEntity order, string? oid)
+    {
+        var ids = (JsonSerializer.Deserialize<string[]>(order.ExchangeOrderIdsJson) ?? []).ToHashSet();
+        if (long.TryParse(order.ExchangeOrderId, out _)) ids.Add(order.ExchangeOrderId);
+        if (oid is not null && long.TryParse(oid, out _)) ids.Add(oid);
+        order.ExchangeOrderIdsJson = JsonSerializer.Serialize(ids.Order());
     }
 
     private async Task<List<OrderEntity>> OwnedOrdersAsync(string accountId, CancellationToken ct) =>
         await (from order in db.Orders.AsNoTracking()
                join cycle in db.Cycles on order.CycleId equals cycle.Id
-               where cycle.ExecutionAccountId == accountId && !cycle.IsTerminal
+               where cycle.ExecutionAccountId == accountId && cycle.ExecutionEnvironmentId == Environment.Id && !cycle.IsTerminal
                select order).ToListAsync(ct);
 
     private async Task<HyperliquidAccountEntity> AccountAsync(ExecutionSelection selection, CancellationToken ct)

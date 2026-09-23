@@ -317,3 +317,25 @@ test('late account balance responses cannot replace the newly selected account',
   assert.doesNotMatch(page.render(), /999,999|999999/)
   assert.equal(page.children.get('GridSuitability').strategy.strategyId, 'other')
 })
+
+
+test('strategy metrics use cycle valuation while account positions remain separate', async () => {
+  const page = dashboard([eth], 'ETH', null, {
+    snapshot: () => ({ ...snapshot,
+      position: { strategyNetQuantity: '-3', accountNetQuantity: '7', externalNetQuantity: '10' },
+      basketPnl: { realisedCyclePnl: '12', unrealisedAtExecutablePrice: '4', paidFees: '1', accruedFunding: '999', liquidationPnl: '14.5' },
+      health: { reconciliation: 'RECOVERY_REQUIRED', ledgerError: 'Missing strategy executions' },
+    }),
+    hyperliquidAccountState: () => ({ netPosition: '7', unrealizedPnl: '54321', tradingEquity: '100', availableBalance: '80', totalMarginUsed: '20' }),
+  })
+  const html = await page.settle()
+  assert.match(html, /策略净仓位/)
+  assert.match(html, /-3\.00 ETH/)
+  assert.match(html, /账户净仓位/)
+  assert.match(html, /外部 \/ 未归属仓位/)
+  assert.match(html, /Strategy PnL/)
+  assert.match(html, /14.50/)
+  assert.match(html, /不计入策略/)
+  assert.doesNotMatch(html, /54,321|999.00/)
+  assert.match(html, /Missing strategy executions/)
+})

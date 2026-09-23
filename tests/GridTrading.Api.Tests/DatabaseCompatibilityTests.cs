@@ -15,6 +15,12 @@ public sealed class DatabaseCompatibilityTests
         await using (var command = connection.CreateCommand())
         {
             command.CommandText = """
+                CREATE TABLE "OrderPlacementNotifications" (
+                    "Id" TEXT PRIMARY KEY, "Message" TEXT NOT NULL, "CreatedAt" TEXT NOT NULL,
+                    "AttemptedAt" TEXT NULL, "DeliveredAt" TEXT NULL, "Error" TEXT NULL
+                );
+                INSERT INTO "OrderPlacementNotifications" ("Id", "Message", "CreatedAt")
+                    VALUES ('legacy-notification', 'Account: legacy-account', '2026-09-21 00:00:00+00:00');
                 CREATE TABLE "VirtualLots" ("Id" TEXT PRIMARY KEY);
                 CREATE TABLE "Executions" ("Id" TEXT PRIMARY KEY);
                 CREATE TABLE "Orders" ("Id" TEXT PRIMARY KEY);
@@ -32,6 +38,17 @@ public sealed class DatabaseCompatibilityTests
         await using var db = new TradingDbContext(options);
 
         await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
+        await using (var ledgerCommand = connection.CreateCommand())
+        {
+            ledgerCommand.CommandText = "SELECT LedgerStatus FROM Cycles WHERE Id = 'hl-cycle'";
+            Assert.Equal("RECOVERY_REQUIRED", await ledgerCommand.ExecuteScalarAsync(ct));
+            ledgerCommand.CommandText = "INSERT INTO Orders (Id) VALUES ('legacy-order')";
+            await ledgerCommand.ExecuteNonQueryAsync(ct);
+            ledgerCommand.CommandText = "SELECT ExchangeOrderIdsJson || ':' || CancellationPending FROM Orders WHERE Id = 'legacy-order'";
+            Assert.Equal("[]:0", await ledgerCommand.ExecuteScalarAsync(ct));
+            ledgerCommand.CommandText = "UPDATE Cycles SET LedgerStatus = 'READY', LedgerError = NULL WHERE Id = 'hl-cycle'";
+            await ledgerCommand.ExecuteNonQueryAsync(ct);
+        }
         await using (var command = connection.CreateCommand())
         {
             command.CommandText = """
@@ -41,6 +58,11 @@ public sealed class DatabaseCompatibilityTests
             Assert.Equal(3L, await command.ExecuteScalarAsync(ct));
         }
 
+
+        var legacyNotification = await db.OrderPlacementNotifications.SingleAsync(ct);
+        Assert.Equal("Account: legacy-account", legacyNotification.Message);
+        Assert.Null(legacyNotification.ExecutionAccountId);
+        Assert.Null(legacyNotification.Symbol);
 
         await using (var offsetCommand = connection.CreateCommand())
         {
@@ -68,6 +90,8 @@ public sealed class DatabaseCompatibilityTests
 
         Assert.Equal(("frozen-env", "frozen-account"), await CycleBindingAsync(connection, "hl-cycle", ct));
         await using var pendingCommand = connection.CreateCommand();
+        pendingCommand.CommandText = "SELECT LedgerStatus FROM Cycles WHERE Id = 'hl-cycle'";
+        Assert.Equal("READY", await pendingCommand.ExecuteScalarAsync(ct));
         pendingCommand.CommandText = "SELECT ProtectionPending FROM VirtualLots WHERE Id = 'pending-lot'";
         Assert.Equal(1L, await pendingCommand.ExecuteScalarAsync(ct));
         pendingCommand.CommandText = "SELECT OperatorPaused + RiskPaused + RiskRecoveryChecks FROM Cycles WHERE Id = 'hl-cycle'";

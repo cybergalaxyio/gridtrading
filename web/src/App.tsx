@@ -119,10 +119,10 @@ export default function App() {
     {route === 'settings' && <SettingsPage />}
     {route === 'create' && <CreateStrategyPage initialStrategy={editingStrategy} onCancel={() => { setEditingStrategy(null); setRoute('strategies') }} onSaved={async editing => { await reload(); setEditingStrategy(null); setRoute('strategies'); setToast(editing ? '策略已更新；运行中的 Cycle 继续使用冻结参数' : '策略已创建，可预览并人工启动 Cycle') }} reportError={setError} />}
     {emergency && <Modal title="紧急停止确认" icon="alert" onClose={() => setEmergency(false)}>
-      <div className="emergency-copy"><p>{emergencyEnvironment === 'MAINNET' ? 'Mainnet：撤销本 Cycle 的策略挂单，检查账户挂单后，用 reduce-only IOC 关闭所选市场的实际仓位。请确认下方账户与策略。' : '此操作将立即禁止新单，撤销本 Cycle 的策略挂单，Sync 后使用 Taker IOC 对冲本策略净敞口。'}</p>
+      <div className="emergency-copy"><p>{'此操作禁止新单，仅撤销本 Cycle 的策略挂单，Sync 后使用普通 Taker IOC 对冲数据库记录的策略净敞口。手动订单保持不变；对冲可能增加或反转账户净仓位。'}</p>
         <dl><div><dt>账户</dt><dd><AccountLabel accountId={emergencyTarget?.executionAccountId} environmentId={emergencyTarget?.executionEnvironmentId} /></dd></div><div><dt>当前运行策略</dt><dd>{emergencyStrategy?.name ?? emergencyTarget?.strategyId ?? '—'}</dd></div><div><dt>受影响交易对</dt><dd>{emergencyTarget ? cycleSymbol(emergencyTarget) : '—'}</dd></div><div><dt>Cycle ID</dt><dd>{emergencyTarget?.cycleId}</dd></div><div><dt>执行环境</dt><dd>{emergencyTarget ? emergencyEnvironment : '—'}</dd></div></dl>
         <label className="confirm-line"><input type="checkbox" checked={emergencyAcknowledged} onChange={event => setEmergencyAcknowledged(event.target.checked)} /> 我理解紧急平仓可能产生滑点与 Taker 手续费</label>
-        <div className="modal-actions"><button className="secondary" onClick={() => setEmergency(false)}>取消</button><button className="danger" disabled={!emergencyAcknowledged || !emergencyCycle} onClick={() => void emergencyFlatten()}>撤单并清零仓位</button></div>
+        <div className="modal-actions"><button className="secondary" onClick={() => setEmergency(false)}>取消</button><button className="danger" disabled={!emergencyAcknowledged || !emergencyCycle} onClick={() => void emergencyFlatten()}>撤单并对冲策略敞口</button></div>
       </div>
     </Modal>}
   </Layout>

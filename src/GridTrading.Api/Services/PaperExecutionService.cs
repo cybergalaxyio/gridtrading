@@ -47,7 +47,7 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
 
             // Matching is not reconciliation. Keep its timestamp untouched so scheduled
             // reconciliation can repair protection and advance risk-pause recovery.
-            var liquidationPnl = cycle.RealisedCyclePnl - cycle.PaidFees - cycle.AccruedFunding;
+            var liquidationPnl = (await lifecycle.ValueAsync(cycle, ct)).LiquidationPnl;
             var takeProfitTriggered = config.BasketTakeProfitUsdt > 0m && liquidationPnl >= config.BasketTakeProfitUsdt;
             var stopLossTriggered = GridMath.BasketStopLossTriggered(liquidationPnl, config.BasketStopLossUsdt);
             if (cycle.State is "RUNNING" or "PAUSED" && (takeProfitTriggered || stopLossTriggered))

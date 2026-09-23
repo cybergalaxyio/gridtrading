@@ -62,7 +62,7 @@ public sealed partial class GridStrategyWorkflow
             if (!strategy.Symbol.Equals(frozen.Symbol, StringComparison.OrdinalIgnoreCase))
                 throw Problem(409, "RESTART_SYMBOL_CHANGED", "The strategy symbol changed. Start the new symbol manually.");
             await lifecycle.ReconcileClosedCycleUnderGateAsync(previous, ct);
-            if (previous.ActualNetQuantity != 0m || previous.ReconstructedNetQuantity != 0m ||
+            if (previous.ReconstructedNetQuantity != 0m ||
                 (await ActiveOrdersAsync(previous.Id, null, ct)).Count != 0)
                 throw Problem(409, "RESTART_CLOSE_NOT_CLEAN", "Previous cycle still has exposure or unresolved orders.");
             var lots = await db.VirtualLots.AsNoTracking().Where(x => x.CycleId == previous.Id).ToListAsync(ct);

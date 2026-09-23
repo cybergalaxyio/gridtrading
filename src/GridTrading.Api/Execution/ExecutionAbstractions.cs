@@ -27,10 +27,10 @@ public sealed record ExecutionInstrument(
 }
 public sealed record NormalizedExecutionFill(
     string ExecutionId, string ExchangeOrderId, string? ClientOrderId, string Side,
-    decimal Price, decimal Quantity, decimal Fee, DateTimeOffset OccurredAt);
+    decimal Price, decimal Quantity, decimal Fee, DateTimeOffset OccurredAt, string? ExecutionEnvironmentId = null);
 public sealed record NormalizedOrderUpdate(
     string ExchangeOrderId, string? ClientOrderId, string Status, decimal FilledQuantity, DateTimeOffset OccurredAt,
-    bool HasExchangeTimestamp = true);
+    bool HasExchangeTimestamp = true, string? ExecutionEnvironmentId = null);
 public sealed record NormalizedFundingPayment(
     string FundingId, string Coin, decimal UsdcDelta, decimal PositionQuantity,
     decimal FundingRate, DateTimeOffset OccurredAt);

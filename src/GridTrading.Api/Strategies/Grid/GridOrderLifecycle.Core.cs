@@ -10,7 +10,7 @@ public sealed partial class GridOrderLifecycle
 {
     public async Task MaintainEntryOrdersAsync(CycleEntity cycle, GridConfiguration config, ExecutionQuote? quote, CancellationToken ct)
     {
-        if (cycle.State != "RUNNING" || cycle.RiskPaused || cycle.OperatorPaused) return;
+        if (!IsLedgerReady(cycle) || cycle.State != "RUNNING" || cycle.RiskPaused || cycle.OperatorPaused) return;
         await UpdateRiskPauseAsync(cycle, ct);
         if (cycle.RiskPaused) return;
         var selection = Selection(cycle);
@@ -48,7 +48,7 @@ public sealed partial class GridOrderLifecycle
 
             var reservations = active.Select(x => new ActiveOrderReservation(
                 Enum.Parse<OrderSide>(x.Side, true), x.Quantity - x.FilledQuantity));
-            var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, cycle.ActualNetQuantity,
+            var quantity = GridMath.AllowedOrderQuantity(side, level.PlannedQuantity, cycle.ReconstructedNetQuantity,
                 reservations, config.MaxNetLot, GridInstrumentRules.FromConfiguration(config));
             if (quantity <= 0m) continue;
             var order = CreateEntry(cycle, config.Symbol, level, quantity);

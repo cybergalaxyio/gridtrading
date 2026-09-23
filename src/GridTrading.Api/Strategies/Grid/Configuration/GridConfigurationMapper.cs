@@ -23,7 +23,7 @@ public static class GridConfigurationMapper
         BasketStopLossUsdt = request.BasketStopLossUsdt, MakerFeeRate = request.MakerFeeRate,
         FaultExposureThresholdUsdt = request.FaultExposureThresholdUsdt,
         TakerFeeRate = request.TakerFeeRate, EstimatedExitSlippagePct = request.EstimatedExitSlippagePct,
-        IncludeFunding = request.IncludeFunding, PostOnlyEntries = request.PostOnlyEntries,
+        IncludeFunding = false, PostOnlyEntries = request.PostOnlyEntries,
         PostOnlyTakeProfits = request.PostOnlyTakeProfits, ReconcileIntervalSeconds = request.ReconcileIntervalSeconds,
         MarketDataStaleSeconds = request.MarketDataStaleSeconds, OrderCommandTimeoutSeconds = request.OrderCommandTimeoutSeconds,
         MaxOrderFrequency = request.MaxOrderFrequency, PartialFillCancelAfterMinutes = request.PartialFillCancelAfterMinutes

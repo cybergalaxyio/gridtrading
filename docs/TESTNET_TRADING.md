@@ -22,10 +22,10 @@
 1. 打开“设置 → 交易所账户”，确认 Testnet 显示“可交易”。
 2. 新建策略时选择 `Hyperliquid Testnet` 账户，点击“获取建议”读取真实 Testnet 盘口。
    Dashboard 会通过官方 `allMids` WebSocket 实时更新当前选中 Symbol 的价格；切换 Symbol 时会自动更换 SignalR 订阅。
-3. 保存策略，在控制台点击“确认预览并开启”。后端会再次检查 Agent 授权、测试资金、实际仓位为零和无残留挂单，然后才提交 Entry。
+3. 保存策略，在控制台点击“确认预览并开启”。后端会再次检查 Agent 授权、测试资金、行情与策略记录，然后才提交 Entry。同交易对的手动仓位和手动挂单不会阻止启动。
 4. Cycle 运行后，后端通过官方 Testnet WebSocket `userFills` 订阅实时接收成交；Entry 成交后立即按实际成交价和数量提交一张反方向普通 TP Limit。Entry 与 TP 都是非 reduce-only 普通 Limit。
 5. 系统按当前中间价在冻结 Grid 中选择最近的下方 BUY 与上方 SELL，各维持一张未成交 Entry；已有未关闭 Lot 的层不会重复挂 Entry，越过最外层后停止该方向补单。TP 完成后释放原层，并在处理成交后按当前价格重新选层。
-6. “暂停 Entry”只撤 Entry，保留已有 TP；“继续”按当前价格恢复工作 Entry；“关闭 Cycle”先撤全部策略单，再用非 reduce-only IOC Limit 尝试清零实际仓位。若仍有残余仓位，Cycle 会保持非终态并报错，绝不会假装关闭成功。
+6. “暂停 Entry”只撤 Entry，保留已有 TP；“继续”按当前价格恢复工作 Entry；“关闭 Cycle”先撤全部策略单，核对撤单期间的成交后，再用非 reduce-only IOC Limit 对冲数据库记录的策略净敞口；不要求账户实际仓位为零。若仍有残余仓位，Cycle 会保持非终态并报错，绝不会假装关闭成功。
 7. 当前代码会在对账时检查 Basket TP/SL，并在触发阈值时自动关闭 Cycle。此功能需要后端及交易所连接持续可用；不是交易所托管止损。
 
 ## Nonce 与安全边界
@@ -34,7 +34,7 @@
 - 每个请求使用稳定 CLOID，成交按交易所 execution identity 去重。
 - WebSocket 每 30 秒发送官方应用层 ping，每个账户独立断线重连；重连 snapshot 与 REST Sync 都通过相同 execution identity 去重。
 - `allMids` 行情在后端按 Dashboard 当前选中的 Symbol 转发；标题价格与当前 K 线实时更新，REST book/candle snapshot 仍作为首屏和断线兜底。
-- REST Sync（默认 10 秒）继续校验 fills、Open Orders 和实际持仓，用于启动/断线恢复及漏消息兜底，不是实时成交的主路径。
+- REST Sync（默认 10 秒）继续校验 fills、Open Orders 和实际持仓，用于启动/断线恢复及漏消息兜底，不是实时成交的主路径。策略仅归属自身订单的成交，账户仓位另行显示，资金费不计入 Cycle PnL。恢复时记录不完整会阻止新单及不确定的重复平仓。
 - 签名域、Info、Exchange URL 都固定为官方 Testnet；配置成其他主机或 Mainnet 会被拒绝。
 - 本机账户写入接口要求 loopback 来源、可信 Host / Origin 和 JSON 请求；Mainnet 仍由用户点击 Start 启动。
 - V1 没有远程用户登录体系，因此所有 HTTP 写操作只接受 loopback 来源；远程部署前必须另行设计认证与授权。

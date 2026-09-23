@@ -90,7 +90,7 @@ export const api = {
   }),
   command: (cycleId: string, route: string, version: number, emergency = false) => call(`/cycles/${cycleId}/commands/${route}`, {
     method: 'POST', headers: { ...JSON_HEADERS, 'Idempotency-Key': crypto.randomUUID(), 'If-Match': `"${version}"` },
-    body: emergency ? JSON.stringify({ reason: 'Operator emergency action', confirmation: { cancelAllStrategyOrders: true, flattenActualNetPosition: true, acknowledgedTakerExecution: true } }) : JSON.stringify({ reason: 'Operator requested action' }),
+    body: emergency ? JSON.stringify({ reason: 'Operator emergency action', confirmation: { cancelAllStrategyOrders: true, flattenStrategyPosition: true, acknowledgedTakerExecution: true } }) : JSON.stringify({ reason: 'Operator requested action' }),
   }),
   acknowledge: (alertId: string) => call(`/risk-alerts/${alertId}/acknowledgements`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ note: '已由本地操作员确认' }) }),
 }
@@ -105,7 +105,7 @@ export const defaultConfig: StrategyConfig = {
   singleModeMoveDistancePoints: null, singleModeMoveIntervalSeconds: 30,
   faultExposureThresholdUsdt: '10',
   entryFillLimitEnabled: false, entryFillWindowMinutes: 60, maxEntryFillsPerSide: 3,
-  estimatedExitSlippagePct: '0.10', includeFunding: true, postOnlyEntries: true, postOnlyTakeProfits: true,
+  estimatedExitSlippagePct: '0.10', includeFunding: false, postOnlyEntries: true, postOnlyTakeProfits: true,
   reconcileIntervalSeconds: 10, marketDataStaleSeconds: 5, orderCommandTimeoutSeconds: 10, maxOrderFrequency: 5,
   partialFillCancelAfterMinutes: 10,
 }

@@ -53,12 +53,12 @@ export type Snapshot = {
   cycle: Cycle & { fixedCenterPrice: string };
   market: { bid: string; ask: string; mid: string; asOf: string; isStale: boolean };
   orders: { activeEntryCount: number; activeTakeProfitCount: number; unknownCount: number };
-  position: { actualNetQuantity: string; reconstructedNetQuantity: string; absoluteMaxNetLotUsagePct: string; netNotionalUsdt: string };
+  position: { strategyNetQuantity: string; accountNetQuantity: string; externalNetQuantity: string; actualNetQuantity: string; reconstructedNetQuantity: string; absoluteMaxNetLotUsagePct: string; netNotionalUsdt: string };
   basketPnl: { realisedCyclePnl: string; unrealisedAtExecutablePrice: string; paidFees: string; accruedFunding: string;
     estimatedFinalTakerFee: string; estimatedExitSlippage: string; liquidationPnl: string; takeProfitTarget: string; stopLossLimit: string };
   risk: { color: string; reasons: string[]; usedBuyLevels: number; remainingBuyLevels: number; usedSellLevels: number; remainingSellLevels: number;
     unprotectedExposureNotionalUsdt: string; faultExposureThresholdUsdt: string; faultExposureThresholdExceeded: boolean };
-  health: { exchange: string; marketData: string; reconciliation: string; lastReconciledAt: string };
+  health: { ledgerError?: string | null; exchange: string; marketData: string; reconciliation: string; lastReconciledAt: string };
   allowedCommands: string[];
 }
 

@@ -184,6 +184,13 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         return await PostInfo(new { type = "frontendOpenOrders", user = account.AccountAddress }, ct, account.Environment);
     }
 
+    public async Task<JsonDocument> GetOrderStatusAsync(string accountId, string clientOrderId, CancellationToken ct)
+    {
+        var account = await Account(accountId, ct);
+        return await PostInfo(new { type = "orderStatus", user = account.AccountAddress,
+            oid = HyperliquidWireCodec.CreateCloid(clientOrderId) }, ct, account.Environment);
+    }
+
     public async Task<JsonDocument> GetHistoricalOrdersAsync(string accountId, CancellationToken ct)
     {
         var account = await Account(accountId, ct);

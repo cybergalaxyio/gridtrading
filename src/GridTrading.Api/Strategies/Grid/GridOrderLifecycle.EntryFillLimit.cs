@@ -12,7 +12,7 @@ public sealed partial class GridOrderLifecycle
     public async Task PlaceNewEntryOrdersAsync(CycleEntity cycle, GridConfiguration config,
         IEnumerable<OrderEntity> orders, CancellationToken ct)
     {
-        if (cycle.EntryGridMovePendingOrderId is not null) return;
+        if (!IsLedgerReady(cycle) || cycle.EntryGridMovePendingOrderId is not null) return;
         var selection = Selection(cycle);
         var adapter = environments.Adapter(selection.EnvironmentId);
         foreach (var order in orders.ToArray())

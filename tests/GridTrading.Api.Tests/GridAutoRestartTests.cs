@@ -82,9 +82,20 @@ public sealed class GridAutoRestartTests
         Assert.Single(await f.Db.Cycles.ToListAsync(Ct));
     }
 
+    [Fact]
+    public async Task ExternalAccountPositionDoesNotBlockRestart()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.CloseAsync("BASKET_TAKE_PROFIT");
+        var pending = await f.PendingAsync();
+        f.Cycle.ActualNetQuantity = .1m;
+        await f.Db.SaveChangesAsync(Ct);
+        await f.Workflow.ProcessAutoRestartAsync(pending.Id, Ct);
+        Assert.Equal("COMPLETED", pending.Status);
+    }
+
     [Theory]
     [InlineData("STALE")]
-    [InlineData("POSITION")]
     [InlineData("ORDER")]
     [InlineData("PREFLIGHT")]
     public async Task UnsafeRestartFailsOnceWithoutSendingNewOrders(string condition)
@@ -93,7 +104,6 @@ public sealed class GridAutoRestartTests
         await f.CloseAsync("BASKET_TAKE_PROFIT");
         var pending = await f.PendingAsync();
         if (condition == "STALE") f.Adapter.Quote = f.Adapter.Quote with { AsOf = DateTimeOffset.UtcNow.AddMinutes(-1) };
-        if (condition == "POSITION") f.Cycle.ActualNetQuantity = .1m;
         if (condition == "ORDER") (await f.Db.Orders.FirstAsync(Ct)).Status = "UNKNOWN";
         if (condition == "PREFLIGHT") f.Adapter.FailPreflight = true;
         await f.Db.SaveChangesAsync(Ct);

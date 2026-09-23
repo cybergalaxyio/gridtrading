@@ -41,7 +41,7 @@ public sealed class HyperliquidFillFlowTests
     }
 
     [Fact]
-    public async Task FundingPaymentsAreAppliedOnceToTheMatchingCycle()
+    public async Task FundingPaymentsAreExcludedEvenWhenLegacyConfigurationEnablesThem()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -64,6 +64,7 @@ public sealed class HyperliquidFillFlowTests
         await db.SaveChangesAsync(ct);
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
         var payments = new[]
         {
             new NormalizedFundingPayment("funding-paid", "SOL", -.125m, .45m, .0001m, settledAt),
@@ -74,13 +75,10 @@ public sealed class HyperliquidFillFlowTests
         var processed = await lifecycle.ProcessFundingPaymentsAsync("account_testnet", payments, ct);
         var repeated = await lifecycle.ProcessFundingPaymentsAsync("account_testnet", payments, ct);
 
-        Assert.Equal(2, processed);
+        Assert.Equal(0, processed);
         Assert.Equal(0, repeated);
-        Assert.Equal(.1m, cycle.AccruedFunding);
-        var stored = (await db.FundingPayments.ToListAsync(ct)).OrderBy(x => x.OccurredAt).ToList();
-        Assert.Equal(2, stored.Count);
-        Assert.Equal(.125m, stored[0].FundingCost);
-        Assert.Equal(-.025m, stored[1].FundingCost);
+        Assert.Equal(0m, cycle.AccruedFunding);
+        Assert.Empty(await db.FundingPayments.ToListAsync(ct));
     }
     [Fact]
     public async Task EntryFillCreatesTakeProfitAndReplacementEntry()
@@ -168,6 +166,7 @@ public sealed class HyperliquidFillFlowTests
             new HyperliquidOrderOwnershipService(db));
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
         using var message = JsonDocument.Parse("""
             {
               "channel": "userFills",
@@ -312,6 +311,7 @@ public sealed class HyperliquidFillFlowTests
         var adapter = new RecordingAmendmentAdapter(102.2m);
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
 
         var first = await lifecycle.ProcessFillsAsync("account_testnet",
             [new NormalizedExecutionFill("fill-s0-1", "7002", "entry-sell-0",
@@ -391,6 +391,7 @@ public sealed class HyperliquidFillFlowTests
         var adapter = new RecordingAmendmentAdapter(102.2m);
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
 
         await lifecycle.ProcessFillsAsync("account_testnet",
             [new NormalizedExecutionFill("fill-s0-partial", "7002", "entry-sell-0",
@@ -485,6 +486,7 @@ public sealed class HyperliquidFillFlowTests
             new HyperliquidOrderOwnershipService(db));
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]),
             new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(ct)) lifecycle.RegisterNewCycle(seededCycle);
 
         await lifecycle.MaintainEntryOrdersAsync(cycle, config,
             new ExecutionQuote(99.9m, 100.1m, 100m, now), ct);
@@ -496,6 +498,12 @@ public sealed class HyperliquidFillFlowTests
         Assert.Equal(0, replacement.GridLevel);
         Assert.Equal(100.1m, replacement.Price);
         Assert.Equal(.2m, replacement.Quantity);
+        Assert.Equal("PENDING_EXCHANGE", replacement.Status);
+        Assert.True(staleSell.CancellationPending);
+        Assert.Single(exchange.ExchangeRequests); // Cancellation ACK alone does not establish final fills.
+        await lifecycle.ProcessOrderUpdatesAsync("account_testnet",
+            [new NormalizedOrderUpdate("7002", staleSell.ClientOrderId, "CANCELLED", 0m, DateTimeOffset.UtcNow)], ct);
+        await lifecycle.PlaceNewEntryOrdersAsync(cycle, config, [replacement], ct);
         Assert.Equal("NEW", replacement.Status);
 
         Assert.Equal(2, exchange.ExchangeRequests.Count);

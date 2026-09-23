@@ -100,7 +100,7 @@ function app(cycles = [cycle('ETH'), cycle('SOL')]) {
       render()
     },
     openEmergency: () => { children.get('Layout').onEmergency(); render() },
-    confirm: () => findButton(children.get('Modal')?.children, '撤单并清零仓位'),
+    confirm: () => findButton(children.get('Modal')?.children, '撤单并对冲策略敞口'),
   }
 }
 

@@ -320,12 +320,13 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
     ? markPrice - previousDayPrice : null
   const change24hPercent = change24h !== null && previousDayPrice !== null ? change24h / previousDayPrice * 100 : null
   const fundingRate = marketNumber(marketContext?.fundingRate)
-  const netPosition = isHyperliquid ? accountState?.netPosition ?? '0' : strategyMatchesMarket ? snapshot?.position.actualNetQuantity ?? '0' : '0'
-  const unrealized = isHyperliquid ? accountState?.unrealizedPnl ?? '0' : strategyMatchesMarket ? snapshot?.basketPnl.unrealisedAtExecutablePrice ?? '0' : '0'
+  const netPosition = strategyMatchesMarket ? snapshot?.position.strategyNetQuantity ?? '0' : '0'
+  const accountPosition = isHyperliquid ? accountState?.netPosition ?? '0' : netPosition
+  const externalPosition = strategyMatchesMarket ? snapshot?.position.externalNetQuantity ?? '0' : accountPosition
+  const unrealized = snapshot?.basketPnl.unrealisedAtExecutablePrice ?? '0'
   const realised = snapshot?.basketPnl.realisedCyclePnl ?? '0'
   const fees = snapshot?.basketPnl.paidFees ?? '0'
-  const funding = snapshot?.basketPnl.accruedFunding ?? '0'
-  const liquidation = String(+realised + +unrealized - +fees - +funding)
+  const liquidation = snapshot?.basketPnl.liquidationPnl ?? '0'
   const maxNetLot = +(cycle?.frozenConfiguration?.maxNetLot ?? strategy?.configuration.maxNetLot ?? 0)
   const maxNetUsage = maxNetLot > 0 ? Math.abs(+netPosition) / maxNetLot * 100 : 0
   const unprotectedExposure = +(snapshot?.risk.unprotectedExposureNotionalUsdt ?? 0)
@@ -397,6 +398,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       </div>
     </section>
     <GridSuitability environmentId={selectedEnvironment} accountId={selectedExecutionAccountId} symbol={marketSymbol} strategy={strategy} />
+    {snapshot?.health?.reconciliation === 'RECOVERY_REQUIRED' && <p role="status" className="warning-text">策略等待成交对账：{snapshot.health.ledgerError ?? '正在恢复策略订单与成交记录；完成后才会继续交易。'}</p>}
     <div className="dashboard-grid">
       <section className="chart-panel panel">
         <div className="chart-tools"><div className="timeframe-picker" role="group" aria-label="K 线周期">{TIMEFRAMES.map(item => <button key={item} type="button" className={timeframe === item ? 'active' : ''} aria-pressed={timeframe === item} onClick={() => { setTimeframe(item); setCandles([]) }}>{item === '1d' ? 'D' : item}</button>)}</div><i /><div className="chart-indicator-toggles"><button type="button" aria-pressed={showBB} title="Bollinger Bands (20, 2)" onClick={() => setShowBB(x => !x)}>BB</button><button type="button" aria-pressed={showATR} title="Average True Range (14)" onClick={() => setShowATR(x => !x)}>ATR</button></div><span className="chart-source">{isHyperliquid ? 'Hyperliquid candleSnapshot' : 'Paper candles'}</span></div>
@@ -413,13 +415,14 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
 
           ['权益', isHyperliquid ? accountState ? `${format(accountState.tradingEquity)} USDC` : '—' : '13,420.50 USDC'],
           ['可用余额', isHyperliquid ? accountState ? `${format(accountState.availableBalance)} USDC` : '—' : '8,420.00 USDC'],
-          ['净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['保证金使用', isHyperliquid ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
+          ['策略净仓位', `${signed(netPosition)} ${quantitySymbol}`], ['账户净仓位', `${signed(accountPosition)} ${quantitySymbol}`], ['外部 / 未归属仓位', `${signed(externalPosition)} ${quantitySymbol}`], ['保证金使用', isHyperliquid ? `${format(accountState?.totalMarginUsed ?? '0')} USDC` : `${maxNetUsage.toFixed(1)}%`],
           ['MaxNetLot 使用', `${maxNetUsage.toFixed(1)}%`],
+          ['策略成交同步', snapshot?.health?.reconciliation ?? '—'],
           ['未保护敞口 / 阈值', snapshot ? `$${format(unprotectedExposure)} / $${format(faultExposureThreshold)}` : '—', snapshot ? exposureTone : undefined],
         ]} />
-        <MetricCard title="PnL" rows={[
+        <MetricCard title="Strategy PnL" rows={[
           ['浮动', signedUsd(unrealized)], ['已实现', signedUsd(realised)], ['费用', `-$${format(Math.abs(+fees), 3)}`],
-          ['资金费', signedUsd(String(-Number(funding)))], ['估算净值', signedUsd(liquidation)],
+          ['资金费', '不计入策略'], ['估算净值', signedUsd(liquidation)],
         ]} accent />
       </aside>
       <section className="orders-panel panel">

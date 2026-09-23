@@ -27,6 +27,7 @@ builder.Services.AddHttpClient<HyperliquidInfoClient>().ConfigurePrimaryHttpMess
 builder.Services.AddSingleton<CredentialProtector>();
 builder.Services.AddSingleton<ITelegramBotClient, TelegramBotClient>();
 builder.Services.AddScoped<TelegramNotificationSettingsService>();
+builder.Services.AddScoped<TelegramAccountSnapshotService>();
 builder.Services.AddSingleton<GridTrading.Api.Exchange.HyperliquidL1Signer>();
 builder.Services.AddScoped<HyperliquidNonceManager>();
 builder.Services.AddHttpClient<HyperliquidTradingClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -157,7 +158,7 @@ api.MapGet("/exchange-accounts/{id}/balances", (string id) => IsAccount(id)
     : Results.NotFound());
 api.MapGet("/exchange-accounts/{id}/positions", async (string id, string? symbol, TradingDbContext db, CancellationToken ct) =>
     IsAccount(id) ? Results.Ok(await db.Cycles.Where(x => !x.IsTerminal && (symbol == null || x.FrozenConfigurationJson.Contains(symbol)))
-        .Select(x => new { cycleId = x.Id, symbol = symbol ?? "SOLUSDT", netQuantity = x.ActualNetQuantity, reconstructedQuantity = x.ReconstructedNetQuantity }).ToListAsync(ct)) : Results.NotFound());
+        .Select(x => new { cycleId = x.Id, symbol = symbol ?? "SOLUSDT", netQuantity = x.ActualNetQuantity, reconstructedQuantity = x.ReconstructedNetQuantity, strategyNetQuantity = x.ReconstructedNetQuantity, accountNetQuantity = x.ActualNetQuantity, externalNetQuantity = x.ActualNetQuantity - x.ReconstructedNetQuantity }).ToListAsync(ct)) : Results.NotFound());
 api.MapGet("/exchange-accounts/{id}/instruments/{symbol}", async (string id, string symbol, decimal? referencePrice,
     ExecutionEnvironmentRegistry registry, CancellationToken ct) =>
 {
@@ -245,14 +246,14 @@ api.MapGet("/cycles/{id}/plan", async (string id, TradingDbContext db, Cancellat
 api.MapGet("/cycles/{id}/levels", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(c.EffectivePlan.Levels) : Results.NotFound());
 api.MapGet("/cycles/{id}/lots", async (string id, TradingDbContext db, CancellationToken ct) => await db.VirtualLots.Where(x => x.CycleId == id).ToListAsync(ct));
-api.MapGet("/cycles/{id}/position", async (string id, TradingDbContext db, CancellationToken ct) =>
-    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { actualNetQuantity = c.ActualNetQuantity, reconstructedNetQuantity = c.ReconstructedNetQuantity, inSync = c.ActualNetQuantity == c.ReconstructedNetQuantity }) : Results.NotFound());
-api.MapGet("/cycles/{id}/pnl", async (string id, TradingDbContext db, CancellationToken ct) =>
-    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { realisedCyclePnl = c.RealisedCyclePnl, paidFees = c.PaidFees, accruedFunding = c.AccruedFunding, liquidationPnl = c.RealisedCyclePnl - c.PaidFees - c.AccruedFunding }) : Results.NotFound());
+api.MapGet("/cycles/{id}/position", async (string id, TradingDbContext db, GridOrderLifecycle lifecycle, CancellationToken ct) =>
+    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { actualNetQuantity = c.ActualNetQuantity, reconstructedNetQuantity = c.ReconstructedNetQuantity, strategyNetQuantity = c.ReconstructedNetQuantity, accountNetQuantity = c.ActualNetQuantity, externalNetQuantity = c.ActualNetQuantity - c.ReconstructedNetQuantity, inSync = lifecycle.IsLedgerReady(c) }) : Results.NotFound());
+api.MapGet("/cycles/{id}/pnl", async (string id, TradingDbContext db, GridOrderLifecycle lifecycle, CancellationToken ct) =>
+    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(await lifecycle.ValueAsync(c, ct)) : Results.NotFound());
 api.MapGet("/cycles/{id}/risk-advisory", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.AnyAsync(x => x.Id == id, ct) ? Results.Ok(new { color = "GREEN", reasons = Array.Empty<string>(), adx = 19.4m, atr = .84m, fundingRate = .0001m }) : Results.NotFound());
-api.MapGet("/cycles/{id}/reconciliation", async (string id, TradingDbContext db, CancellationToken ct) =>
-    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { status = c.ActualNetQuantity == c.ReconstructedNetQuantity ? "IN_SYNC" : "MISMATCH", c.LastReconciledAt, differences = Array.Empty<object>() }) : Results.NotFound());
+api.MapGet("/cycles/{id}/reconciliation", async (string id, TradingDbContext db, GridOrderLifecycle lifecycle, CancellationToken ct) =>
+    await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { status = lifecycle.IsLedgerReady(c) ? "IN_SYNC" : "RECOVERY_REQUIRED", c.LastReconciledAt, differences = c.LedgerError is null ? Array.Empty<string>() : new[] { c.LedgerError } }) : Results.NotFound());
 api.MapGet("/cycles/{id}/operator-actions", async (string id, TradingDbContext db, CancellationToken ct) => (await db.AuditLogs.Where(x => x.ResourceId == id).ToListAsync(ct)).OrderByDescending(x => x.OccurredAt).ToList());
 api.MapGet("/cycles/{id}/report", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { cycle = CycleDto(c), c.ExitReason, c.MaximumAdverseExcursion, c.MaximumDrawdown, orders = await db.Orders.Where(x => x.CycleId == id).ToListAsync(ct), executions = await db.Executions.Where(x => x.CycleId == id).ToListAsync(ct) }) : Results.NotFound());
@@ -264,7 +265,7 @@ MapCycleCommand(api, "reconcile", "RECONCILE");
 api.MapPost("/cycles/{id}/commands/emergency-flatten", async (string id, EmergencyCommandRequest request, HttpRequest http,
     HttpResponse response, TradingService service, CancellationToken ct) =>
 {
-    var c = request.Confirmation; var confirmed = c.CancelAllStrategyOrders && c.FlattenActualNetPosition && c.AcknowledgedTakerExecution;
+    var c = request.Confirmation; var confirmed = c.CancelAllStrategyOrders && (c.FlattenStrategyPosition || c.FlattenActualNetPosition) && c.AcknowledgedTakerExecution;
     var operation = await service.Command(id, "EMERGENCY_FLATTEN", request.Reason, Header(http, "Idempotency-Key"), IfMatch(http), confirmed, ct);
     response.Headers.Location = $"/api/v1/operations/{operation.Id}"; return Results.Accepted(value: OperationDto(operation));
 });

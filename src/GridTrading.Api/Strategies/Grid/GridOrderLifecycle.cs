@@ -22,16 +22,17 @@ public sealed partial class GridOrderLifecycle(
         var affected = new Dictionary<string, (CycleEntity Cycle, GridConfiguration Config)>();
         foreach (var fill in fills.OrderBy(x => x.OccurredAt))
         {
-            var cycle = await FindCycleAsync(accountId, fill.ExchangeOrderId, fill.ClientOrderId, ct);
+            var cycle = await FindCycleAsync(accountId, fill.ExchangeOrderId, fill.ClientOrderId, ct, fill.ExecutionEnvironmentId);
             if (cycle is null) continue;
             var config = DeserializeConfig(cycle);
-            if (!await ApplyFillAsync(cycle, config, fill, ct)) continue;
+            if (!await ApplyFillAsync(cycle, config, fill, ct, allowExchangeActions: IsLedgerReady(cycle))) continue;
             processed++;
             affected[cycle.Id] = (cycle, config);
         }
 
         foreach (var item in affected.Values)
         {
+            if (!IsLedgerReady(item.Cycle)) continue;
             await UpdateRiskPauseAsync(item.Cycle, ct);
             if (item.Cycle.State == "RUNNING")
                 await MaintainEntryOrdersAsync(item.Cycle, item.Config, quote: null, ct);
@@ -42,37 +43,9 @@ public sealed partial class GridOrderLifecycle(
     public Task<int> ProcessFundingPaymentsAsync(string accountId, IReadOnlyList<NormalizedFundingPayment> payments, CancellationToken ct) =>
         accountGate.RunAsync(accountId, () => ApplyFundingPaymentsCoreAsync(accountId, payments, ct), ct);
 
-    private async Task<int> ApplyFundingPaymentsCoreAsync(
-        string accountId, IReadOnlyList<NormalizedFundingPayment> payments, CancellationToken ct)
-    {
-        if (payments.Count == 0) return 0;
-        var cycles = await db.Cycles.Where(x => x.ExecutionAccountId == accountId).ToListAsync(ct);
-        var processed = 0;
-        foreach (var payment in payments.OrderBy(x => x.OccurredAt))
-        {
-            if (await db.FundingPayments.AnyAsync(x => x.ExchangeFundingId == payment.FundingId, ct)) continue;
-            var cycle = cycles
-                .Where(x => x.StartedAt <= payment.OccurredAt &&
-                    (x.EndedAt == null || x.EndedAt >= payment.OccurredAt))
-                .OrderByDescending(x => x.StartedAt)
-                .FirstOrDefault(x => FundingCoin(DeserializeConfig(x).Symbol) == FundingCoin(payment.Coin));
-            if (cycle is null) continue;
-            var config = DeserializeConfig(cycle);
-            if (!config.IncludeFunding) continue;
-            var fundingCost = -payment.UsdcDelta;
-            db.FundingPayments.Add(new FundingPaymentEntity
-            {
-                Id = Ids.New("funding"), ExchangeFundingId = payment.FundingId, CycleId = cycle.Id,
-                ExecutionAccountId = accountId, Coin = payment.Coin, UsdcDelta = payment.UsdcDelta,
-                FundingCost = fundingCost, PositionQuantity = payment.PositionQuantity,
-                FundingRate = payment.FundingRate, OccurredAt = payment.OccurredAt
-            });
-            cycle.AccruedFunding += fundingCost;
-            processed++;
-        }
-        await db.SaveChangesAsync(ct);
-        return processed;
-    }
+    private static Task<int> ApplyFundingPaymentsCoreAsync(
+        string accountId, IReadOnlyList<NormalizedFundingPayment> payments, CancellationToken ct) =>
+        Task.FromResult(0);
 
     public Task<int> ProcessOrderUpdatesAsync(string accountId, IReadOnlyList<NormalizedOrderUpdate> updates, CancellationToken ct) =>
         accountGate.RunAsync(accountId, () => ProcessOrderUpdatesCoreAsync(accountId, updates, ct), ct);
@@ -84,7 +57,7 @@ public sealed partial class GridOrderLifecycle(
         var completedEntries = new Dictionary<(string CycleId, string Side), CycleEntity>();
         foreach (var update in updates)
         {
-            var order = await FindOrderAsync(accountId, update.ExchangeOrderId, update.ClientOrderId, ct);
+            var order = await FindOrderAsync(accountId, update.ExchangeOrderId, update.ClientOrderId, ct, update.ExecutionEnvironmentId);
             if (order is null) continue;
             var cycle = await db.Cycles.SingleAsync(x => x.Id == order.CycleId, ct);
             // A cancel/open from an earlier amendment generation must not roll
@@ -93,10 +66,22 @@ public sealed partial class GridOrderLifecycle(
             if (order.Status is "FILLED" or "CANCELLED" or "REJECTED" && update.Status is "NEW" or "PARTIALLY_FILLED") continue;
             if (order.Status == "FILLED" && update.Status != "FILLED") continue;
             order.Status = update.Status;
+            var previousGenerations = (await db.Executions.Where(x => x.OrderId == order.Id).ToListAsync(ct))
+                .Where(x => VenueOrderId(x, order) != update.ExchangeOrderId).Sum(x => x.Quantity);
+            order.ObservedFilledQuantity = Math.Max(order.ObservedFilledQuantity ?? 0m, previousGenerations + update.FilledQuantity);
+            if (update.Status is "CANCELLED" or "REJECTED" or "FILLED") order.CancellationPending = false;
+            if (order.ObservedFilledQuantity > order.FilledQuantity)
+            {
+                cycle.LedgerStatus = "RECOVERY_REQUIRED";
+                cycle.LedgerError = $"Waiting for executions of order {order.Id}.";
+                accountGate.RequireRecovery(cycle.Id);
+            }
             if (update.Status == "FILLED")
             {
                 if (update.HasExchangeTimestamp) order.FilledAt ??= update.OccurredAt.ToUniversalTime();
-                if (order.Kind == "ENTRY" && cycle.State == "RUNNING")
+                await OrderFillNotifications.RecordConfirmedAsync(db, Selection(cycle), order,
+                    order.FilledAt ?? update.OccurredAt, ct);
+                if (order.Kind == "ENTRY" && cycle.State == "RUNNING" && IsLedgerReady(cycle))
                     completedEntries[(cycle.Id, order.Side)] = cycle;
             }
             order.LastExchangeUpdateAt = update.OccurredAt;
@@ -114,6 +99,11 @@ public sealed partial class GridOrderLifecycle(
                 Enum.Parse<OrderSide>(item.Key.Side, true), ct);
         foreach (var item in affected.Values)
         {
+            // A terminal update can finish a cancellation within an already recovered session.
+            // A fresh process still requires a complete REST reconciliation.
+            if (accountGate.IsRecovered(item.Cycle.Id) && item.Cycle.LedgerStatus != "READY")
+                await ValidateLedgerAsync(item.Cycle, ct);
+            if (!IsLedgerReady(item.Cycle)) continue;
             await UpdateRiskPauseAsync(item.Cycle, ct);
             await MaintainEntryOrdersAsync(item.Cycle, item.Config, quote: null, ct);
         }
@@ -138,8 +128,12 @@ public sealed partial class GridOrderLifecycle(
         accountGate.RunAsync(cycle.ExecutionAccountId, async () =>
         {
             try { return await ReconcileCoreAsync(cycle, ct); }
-            catch
+            catch (Exception error)
             {
+                accountGate.RequireRecovery(cycle.Id);
+                cycle.LedgerStatus = "RECOVERY_REQUIRED";
+                cycle.LedgerError = error.Message;
+                await db.SaveChangesAsync(ct);
                 if (cycle.RiskPaused && cycle.RiskRecoveryChecks != 0)
                 {
                     cycle.RiskRecoveryChecks = 0;
@@ -149,7 +143,7 @@ public sealed partial class GridOrderLifecycle(
             }
         }, ct);
 
-    private async Task<decimal> ReconcileCoreAsync(CycleEntity cycle, CancellationToken ct)
+    private async Task<decimal> ReconcileCoreAsync(CycleEntity cycle, CancellationToken ct, bool allowExchangeActions = true)
     {
         // Background selection happens before the account gate. Refresh inside it
         // so an old tracked Cycle cannot overwrite newer fill/fee accumulators.
@@ -168,13 +162,14 @@ public sealed partial class GridOrderLifecycle(
         cycle.PaidFees = (await db.Executions.Where(x => x.CycleId == cycle.Id).ToListAsync(ct)).Sum(x => x.Fee);
         cycle.LastReconciledAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+        if (allowExchangeActions && cycle.State == "PAUSED") await TryCancelPausedEntriesAsync(cycle, ct);
+        var ledgerReady = await ValidateLedgerAsync(cycle, ct);
+        if (!ledgerReady || !allowExchangeActions) return 0m;
 
         // FAULT and CLOSING synchronize records only. No placement, amendment,
         // partial-entry cancellation, or entry maintenance is allowed here.
         if (cycle.State is "RUNNING" or "PAUSED")
         {
-            // Pauses block even previously persisted, unsent Entry intents.
-            if (cycle.State == "PAUSED") await TryCancelPausedEntriesAsync(cycle, ct);
             var pending = await db.Orders.Where(x => x.CycleId == cycle.Id &&
                 x.Status == "PENDING_EXCHANGE" && x.Kind == "TAKE_PROFIT").ToListAsync(ct);
             try { await adapter.PlaceOrdersAsync(selection, config, pending, ct); }
@@ -198,14 +193,12 @@ public sealed partial class GridOrderLifecycle(
             await PlaceNewEntryOrdersAsync(cycle, config, pendingEntries, ct);
             await MaintainEntryOrdersAsync(cycle, config, quote: null, ct);
         }
-        var finalFee = Math.Abs(snapshot.Position.PositionValue) * config.TakerFeeRate;
-        var slippage = Math.Abs(snapshot.Position.PositionValue) * config.EstimatedExitSlippagePct / 100m;
-        return GridMath.CalculateBasketPnl(new BasketPnlInput(cycle.RealisedCyclePnl, snapshot.Position.UnrealizedPnl,
-            cycle.PaidFees, config.IncludeFunding ? cycle.AccruedFunding : 0m, finalFee, slippage)).LiquidationPnl;
+        return (await ValueAsync(cycle, ct)).LiquidationPnl;
     }
 
     private async Task<bool> ApplyFillAsync(CycleEntity cycle, GridConfiguration config, NormalizedExecutionFill fill, CancellationToken ct, bool allowExchangeActions = true)
     {
+        if (fill.ExecutionEnvironmentId is not null && fill.ExecutionEnvironmentId != cycle.ExecutionEnvironmentId) return false;
         var order = await db.Orders.SingleOrDefaultAsync(x => x.CycleId == cycle.Id &&
             (x.ExchangeOrderId == fill.ExchangeOrderId ||
              (fill.ClientOrderId != null && x.ClientOrderId == fill.ClientOrderId)), ct);
@@ -232,8 +225,13 @@ public sealed partial class GridOrderLifecycle(
         if (filledAt.HasValue) order.FilledAt = filledAt;
         if (!terminalBeforeFill) order.Status = order.FilledQuantity >= order.Quantity ? "FILLED" : "PARTIALLY_FILLED";
         order.UpdatedAt = DateTimeOffset.UtcNow;
+        if (filledAt.HasValue && (order.ExchangeOrderId == fill.ExchangeOrderId ||
+            order.ExchangeOrderId.StartsWith("0x", StringComparison.Ordinal)))
+            await OrderFillNotifications.RecordConfirmedAsync(db, Selection(cycle), order,
+                filledAt.Value, ct, fill.ExchangeOrderId);
         cycle.PaidFees += fill.Fee;
-        cycle.ActualNetQuantity += fill.Side == "BUY" ? fill.Quantity : -fill.Quantity;
+        if (cycle.ExecutionEnvironmentId == ExecutionEnvironmentIds.PaperLocal)
+            cycle.ActualNetQuantity += fill.Side == "BUY" ? fill.Quantity : -fill.Quantity;
         cycle.ReconstructedNetQuantity += fill.Side == "BUY" ? fill.Quantity : -fill.Quantity;
 
         if (order.Kind == "ENTRY") await CreateOrAmendTakeProfitAsync(cycle, config, order, execution, ct, allowExchangeActions);
@@ -244,16 +242,17 @@ public sealed partial class GridOrderLifecycle(
 
 
 
-    private async Task<CycleEntity?> FindCycleAsync(string accountId, string exchangeOrderId, string? clientOrderId, CancellationToken ct)
+    private async Task<CycleEntity?> FindCycleAsync(string accountId, string exchangeOrderId, string? clientOrderId, CancellationToken ct, string? environmentId = null)
     {
-        var order = await FindOrderAsync(accountId, exchangeOrderId, clientOrderId, ct);
+        var order = await FindOrderAsync(accountId, exchangeOrderId, clientOrderId, ct, environmentId);
         return order is null ? null : await db.Cycles.SingleAsync(x => x.Id == order.CycleId, ct);
     }
 
-    private async Task<OrderEntity?> FindOrderAsync(string accountId, string exchangeOrderId, string? clientOrderId, CancellationToken ct) =>
+    private async Task<OrderEntity?> FindOrderAsync(string accountId, string exchangeOrderId, string? clientOrderId, CancellationToken ct, string? environmentId = null) =>
         await (from order in db.Orders
                join cycle in db.Cycles on order.CycleId equals cycle.Id
                where cycle.ExecutionAccountId == accountId && !cycle.IsTerminal &&
+                     (environmentId == null || cycle.ExecutionEnvironmentId == environmentId) &&
                      (order.ExchangeOrderId == exchangeOrderId || (clientOrderId != null && order.ClientOrderId == clientOrderId))
                select order).FirstOrDefaultAsync(ct);
 

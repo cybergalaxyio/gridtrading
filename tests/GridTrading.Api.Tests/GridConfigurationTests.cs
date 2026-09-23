@@ -51,7 +51,7 @@ public sealed class GridConfigurationTests
         Assert.True(saved.AutoRestart);
         Assert.False(draft.AutoRestart);
         Assert.False(saved.IncludeFunding);
-        Assert.True(draft.IncludeFunding);
+        Assert.False(draft.IncludeFunding);
         Assert.False(saved.PostOnlyEntries);
         Assert.True(draft.PostOnlyEntries);
         Assert.Equal(7, saved.PartialFillCancelAfterMinutes);

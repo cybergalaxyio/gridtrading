@@ -54,6 +54,7 @@ public sealed class TelegramAlertDispatcher(
             return false;
         }
 
+        var snapshots = scope.ServiceProvider.GetRequiredService<TelegramAccountSnapshotService>();
         var enabledAt = settings.EnabledAt.Value;
         var candidates = await db.RiskAlerts.FromSqlInterpolated($"""
             SELECT alert.*
@@ -69,7 +70,7 @@ public sealed class TelegramAlertDispatcher(
             """).AsNoTracking().ToListAsync(ct);
         var alert = candidates.SingleOrDefault();
         if (alert is null)
-            return await ProcessOrderAsync(db, settings, token, ct);
+            return await ProcessOrderAsync(db, settings, token, snapshots, ct);
 
         var delivery = new TelegramAlertDeliveryEntity
         {
@@ -90,7 +91,8 @@ public sealed class TelegramAlertDispatcher(
         string? error = null;
         try
         {
-            await bot.SendMessageAsync(token, settings.ChatId, FormatMessage(alert), ct);
+            var snapshot = await snapshots.ForCycleAsync(alert.CycleId, ct);
+            await bot.SendMessageAsync(token, settings.ChatId, AppendSnapshot(FormatMessage(alert), snapshot), ct);
             delivery.DeliveredAt = DateTimeOffset.UtcNow;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -123,7 +125,7 @@ public sealed class TelegramAlertDispatcher(
     }
 
     private async Task<bool> ProcessOrderAsync(TradingDbContext db,
-        TelegramNotificationSettingsEntity settings, string token, CancellationToken ct)
+        TelegramNotificationSettingsEntity settings, string token, TelegramAccountSnapshotService snapshots, CancellationToken ct)
     {
         var enabledAt = settings.EnabledAt!.Value;
         var candidates = await db.OrderPlacementNotifications.FromSqlInterpolated($"""
@@ -146,7 +148,8 @@ public sealed class TelegramAlertDispatcher(
         string? error = null;
         try
         {
-            await bot.SendMessageAsync(token, settings.ChatId, Truncate(notification.Message, 4096), ct);
+            var snapshot = await snapshots.ForOrderAsync(notification, ct);
+            await bot.SendMessageAsync(token, settings.ChatId, AppendSnapshot(notification.Message, snapshot), ct);
             notification.DeliveredAt = DateTimeOffset.UtcNow;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -189,6 +192,12 @@ public sealed class TelegramAlertDispatcher(
         var text = $"{icon} GridTrading Alert\nSeverity: {alert.Severity}\nCode: {alert.Code}{cycle}\n" +
             $"Time: {alert.CreatedAt.UtcDateTime:yyyy-MM-dd HH:mm:ss 'UTC'}\n\n{alert.Message}";
         return Truncate(text, 4096);
+    }
+
+    public static string AppendSnapshot(string message, string snapshot)
+    {
+        var suffix = "\n\n" + Truncate(snapshot, 1500);
+        return Truncate(message, 4096 - suffix.EnumerateRunes().Count()) + suffix;
     }
 
     private static string Truncate(string value, int maximumRunes)

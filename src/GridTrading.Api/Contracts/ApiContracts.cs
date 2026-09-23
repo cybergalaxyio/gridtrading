@@ -31,7 +31,7 @@ public sealed record StrategyRequest(
     public static StrategyRequest Default => new(
         "Weekend SOL Grid", "acct_paper_01", "SOLUSDT", GridMode.TwoWay, "CURRENT_MID", false,
         14, 1, 0m, 250m, 10m, 180m, 0.5m, 5m, 2m, 10m, 50m, 100m,
-        .0002m, .00055m, .10m, true, true, true, 10, 5, 10, 5, 10)
+        .0002m, .00055m, .10m, false, true, true, 10, 5, 10, 5, 10)
         { DefaultExecutionEnvironmentId = "paper-local", DefaultExecutionAccountId = "acct_paper_01" };
 }
 
@@ -52,7 +52,8 @@ public sealed record StartCycleRequest(string PreviewId, decimal ConfirmedCenter
 public sealed record OperatorConfirmation(bool ParametersReviewed, bool CenterConfirmed, string EnvironmentConfirmed);
 public sealed record CommandRequest(string Reason);
 public sealed record EmergencyCommandRequest(string Reason, EmergencyConfirmation Confirmation);
-public sealed record EmergencyConfirmation(bool CancelAllStrategyOrders, bool FlattenActualNetPosition, bool AcknowledgedTakerExecution);
+public sealed record EmergencyConfirmation(bool CancelAllStrategyOrders, bool FlattenActualNetPosition = false,
+    bool AcknowledgedTakerExecution = false, bool FlattenStrategyPosition = false);
 public sealed record AcknowledgementRequest(string Note);
 public sealed record PreviewCacheItem(string Id, string? StrategyId, int StrategyVersion, string ExecutionEnvironmentId, string ExecutionAccountId,
     DateTimeOffset ExpiresAt, GridConfiguration Configuration, GridPlan Plan);

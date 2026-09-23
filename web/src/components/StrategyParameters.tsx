@@ -46,7 +46,7 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
       ['Lookback Window (min)', `${entryFillLimit.entryFillWindowMinutes ?? 60}`],
       ['Max Filled Entries per Side', `${entryFillLimit.maxEntryFillsPerSide ?? 3}`],
       ['Fee', frozen ? `Maker ${rate(config.makerFeeRate)} · Taker ${rate(config.takerFeeRate)}` : '预览时从交易账户加载'], ['退出滑点储备', `${config.estimatedExitSlippagePct}%`],
-      ['计入资金费', yesNo(config.includeFunding)],
+      ['计入资金费', '否（仅策略订单成交计入 PnL）'],
     ] },
     { title: '执行设置', rows: [
       ['Entry Post-only', yesNo(config.postOnlyEntries)],

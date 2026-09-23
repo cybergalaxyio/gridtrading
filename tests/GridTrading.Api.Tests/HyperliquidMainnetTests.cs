@@ -108,7 +108,6 @@ public sealed partial class HyperliquidMainnetTests
     [Theory]
     [InlineData("unapproved", "API_WALLET_NOT_APPROVED")]
     [InlineData("unfunded", "TESTNET_ACCOUNT_UNFUNDED")]
-    [InlineData("orders", "MAINNET_OPEN_ORDERS_EXIST")]
     public async Task MainnetPreflightFailsClosed(string condition, string code)
     {
         await using var f = await Fixture.CreateAsync();
@@ -130,18 +129,19 @@ public sealed partial class HyperliquidMainnetTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task EmergencyExitUsesActualPositionAndConfirmsResidual(bool residual)
+    public async Task EmergencyExitUsesConfirmedStrategyFillsAndReturnsResidual(bool residual)
     {
         await using var f = await Fixture.CreateAsync();
-        f.Handler.Position = -.12m;
+        f.Handler.SharedVenue = true;
+        f.Handler.Position = 7m;
         f.Handler.LeaveResidual = residual;
-        var cycle = await f.AddCycleAsync();
-        cycle.ReconstructedNetQuantity = -9m; // stale local attribution must never size the live close
+        var cycle = await SeedPositionAsync(f, -.12m);
+        cycle.ReconstructedNetQuantity = -9m; // Rebuild stale aggregates from confirmed strategy executions.
         var left = await f.Adapter.FlattenAsync(new("hyperliquid-mainnet", "live"), cycle, ExampleConfig(), Ct);
         Assert.Equal(residual ? -.02m : 0m, left);
         var action = Assert.Single(f.Handler.Actions).GetProperty("action").GetProperty("orders")[0];
         Assert.Equal("0.12", action.GetProperty("s").GetString());
-        Assert.True(action.GetProperty("r").GetBoolean());
+        Assert.False(action.GetProperty("r").GetBoolean());
         Assert.Equal("Ioc", action.GetProperty("t").GetProperty("limit").GetProperty("tif").GetString());
     }
 
@@ -249,8 +249,7 @@ public sealed partial class HyperliquidMainnetTests
         Assert.Equal(isBuy, submitted[0].GetProperty("b").GetBoolean());
         Assert.Equal("Alo", submitted[0].GetProperty("t").GetProperty("limit").GetProperty("tif").GetString());
 
-        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]),
-            new ExecutionAccountOperationGate());
+        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]), f.Gate);
         await lifecycle.ProcessFillsAsync("live", [new NormalizedExecutionFill("single-fill",
             entry.ExchangeOrderId, entry.ClientOrderId, entry.Side, entry.Price, entry.Quantity, 0m,
             DateTimeOffset.UtcNow)], Ct);
@@ -316,7 +315,7 @@ public sealed partial class HyperliquidMainnetTests
                 timestamp = completedAt.AddMinutes(-1).ToUnixTimeMilliseconds() },
             status = "filled", statusTimestamp = completedAt.ToUnixTimeMilliseconds()
         }];
-        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]), new());
+        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]), f.Gate);
         await lifecycle.ReconcileAsync(cycle, Ct);
         Assert.Equal(completedAt, entry.FilledAt);
         Assert.Equal("FILLED", entry.Status);
@@ -340,7 +339,7 @@ public sealed partial class HyperliquidMainnetTests
         });
         var normalized = await f.Adapter.NormalizeOrderUpdatesAsync("live", [update], Ct);
         Assert.False(Assert.Single(normalized).HasExchangeTimestamp);
-        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]), new());
+        var lifecycle = new GridOrderLifecycle(f.Db, new ExecutionEnvironmentRegistry([f.Adapter]), f.Gate);
         await lifecycle.ProcessOrderUpdatesAsync("live", normalized, Ct);
         Assert.Null(entry.FilledAt);
         Assert.False(await lifecycle.CanPlaceNewEntryOrderAsync(cycle, config, OrderSide.Sell, Ct));
@@ -364,6 +363,7 @@ public sealed partial class HyperliquidMainnetTests
         public required TradingDbContext Db { get; init; }
         public required IConfiguration Settings { get; init; }
         public Handler Handler { get; } = new();
+        public ExecutionAccountOperationGate Gate { get; } = new();
         private readonly ServiceProvider _services = new ServiceCollection().AddLogging().AddSignalR().Services.BuildServiceProvider();
         public required HttpClient Http { get; set; }
         public HyperliquidTradingClient Client => new(Http, Settings, Db, new(Settings), new(Db), new());
@@ -393,7 +393,7 @@ public sealed partial class HyperliquidMainnetTests
             var previews = new PreviewStore();
             previews.Items["preview"] = new("preview", "strategy", 1, "hyperliquid-mainnet", "live", DateTimeOffset.UtcNow.AddMinutes(5), config, GridMath.BuildPlan(config, TradingService.RulesFor(config)));
             var registry = new ExecutionEnvironmentRegistry([Adapter]);
-            var gate = new ExecutionAccountOperationGate();
+            var gate = Gate;
             return new(Db, new(), previews, registry, new(Db, registry, gate), _services.GetRequiredService<IHubContext<TradingHub>>(), gate);
         }
         public async Task<CycleEntity> AddCycleAsync()
@@ -414,6 +414,41 @@ public sealed partial class HyperliquidMainnetTests
         public object[] HistoricalOrders { get; set; } = [];
         public object[] OpenOrders { get; set; } = [];
         public decimal OtherPosition { get; set; }
+        public bool SharedVenue { get; set; }
+        public bool LoseNextIocResponse { get; set; }
+        public bool HideFills { get; set; }
+        public bool SuppressHistory { get; set; }
+        public Action? BeforeCancel { get; set; }
+        public List<object> Fills { get; } = [];
+        private readonly Dictionary<string, VenueState> venue = new();
+        private long nextOid = 100;
+        private sealed class VenueState
+        {
+            public required string Cloid; public long Oid; public bool Buy; public decimal Price;
+            public decimal Quantity; public decimal Remaining; public string Status = "open";
+            public long Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            public object Row() => new { oid = Oid, cloid = Cloid, coin = "SOL", side = Buy ? "B" : "A",
+                limitPx = Price.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                origSz = Quantity.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                sz = Remaining.ToString(System.Globalization.CultureInfo.InvariantCulture), timestamp = Time };
+            public object History() => new { order = Row(), status = Status, statusTimestamp = Time };
+        }
+        public void Fill(string clientId, decimal quantity, decimal price)
+        {
+            var state = venue[HyperliquidWireCodec.CreateCloid(clientId)];
+            RecordFill(state, quantity, price);
+        }
+        private void RecordFill(VenueState state, decimal quantity, decimal price)
+        {
+            state.Remaining -= quantity;
+            if (state.Remaining == 0m) state.Status = "filled";
+            state.Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            Position += state.Buy ? quantity : -quantity;
+            Fills.Add(new { oid = state.Oid, cloid = state.Cloid, hash = "shared-test", tid = Fills.Count + 1,
+                time = state.Time, side = state.Buy ? "B" : "A", px = price.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                sz = quantity.ToString(System.Globalization.CultureInfo.InvariantCulture), fee = "0.001" });
+        }
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Hosts.Add(request.RequestUri!.Host);
@@ -428,11 +463,13 @@ public sealed partial class HyperliquidMainnetTests
                     "l2Book" => $$"""{"time":{{DateTimeOffset.UtcNow.AddSeconds(Condition == "stale-book" ? -30 : 0).ToUnixTimeMilliseconds()}},"levels":[[{"px":"99.9"}],[{"px":"100.1"}]]}""",
                     "userRole" => Condition == "unapproved" ? """{"role":"missing"}""" : JsonSerializer.Serialize(new { role = "agent", data = new { user = Fixture.Address } }),
                     "clearinghouseState" => JsonSerializer.Serialize(new { marginSummary = new { accountValue = Condition == "unfunded" ? "0" : "100" }, withdrawable = "100", assetPositions = new[] { new { position = new { coin = "SOL", szi = Position.ToString(System.Globalization.CultureInfo.InvariantCulture), positionValue = "12", unrealizedPnl = "0" } }, new { position = new { coin = "BTC", szi = (Condition == "other-position" ? 1m : OtherPosition).ToString(System.Globalization.CultureInfo.InvariantCulture), positionValue = "12", unrealizedPnl = "0" } } } }),
-                    "userFillsByTime" or "userFunding" => "[]",
-                    "historicalOrders" => JsonSerializer.Serialize(HistoricalOrders),
+                    "userFillsByTime" => JsonSerializer.Serialize(HideFills ? [] : Fills.ToArray()),
+                    "userFunding" => "[]",
+                    "orderStatus" => SharedVenue && venue.TryGetValue(root.GetProperty("oid").GetString()!, out var found) ? JsonSerializer.Serialize(new { status = "order", order = found.History() }) : "{\"status\":\"unknownOid\"}",
+                    "historicalOrders" => SuppressHistory ? "[]" : JsonSerializer.Serialize(HistoricalOrders.Concat(SharedVenue ? venue.Values.Select(x => x.History()) : []).ToArray()),
                     "spotClearinghouseState" => """{"balances":[]}""",
                     "userAbstraction" => "\"disabled\"",
-                    "openOrders" or "frontendOpenOrders" => Condition == "orders" ? """[{"coin":"SOL","oid":5,"side":"B","sz":"0.12","cloid":null}]""" : JsonSerializer.Serialize(OpenOrders),
+                    "openOrders" or "frontendOpenOrders" => Condition == "orders" ? """[{"coin":"SOL","oid":5,"side":"B","sz":"0.12","cloid":null}]""" : JsonSerializer.Serialize(OpenOrders.Concat(SharedVenue ? venue.Values.Where(x => x.Status == "open").Select(x => x.Row()) : []).ToArray()),
                     "activeAssetData" => JsonSerializer.Serialize(new { leverage = new { type = "cross", value = Condition == "leverage" ? 10 : 1 } }),
                     var type => throw new InvalidOperationException(type)
                 });
@@ -440,7 +477,30 @@ public sealed partial class HyperliquidMainnetTests
             if (Condition == "timeout") throw new HttpRequestException("Synthetic uncertain exchange response");
             var action = root.GetProperty("action");
             if (action.GetProperty("type").GetString() == "cancelByCloid")
+            {
+                BeforeCancel?.Invoke(); BeforeCancel = null;
+                if (SharedVenue)
+                    foreach (var cancel in action.GetProperty("cancels").EnumerateArray())
+                        if (venue.TryGetValue(cancel.GetProperty("cloid").GetString()!, out var state) && state.Status == "open") state.Status = "canceled";
                 return Json("""{"status":"ok","response":{"type":"cancel","data":{"statuses":["success"]}}}""");
+            }
+            if (SharedVenue && action.GetProperty("type").GetString() == "order")
+            {
+                var sent = action.GetProperty("orders")[0];
+                var state = new VenueState { Cloid = sent.GetProperty("c").GetString()!, Oid = nextOid++,
+                    Buy = sent.GetProperty("b").GetBoolean(), Price = decimal.Parse(sent.GetProperty("p").GetString()!, System.Globalization.CultureInfo.InvariantCulture),
+                    Quantity = decimal.Parse(sent.GetProperty("s").GetString()!, System.Globalization.CultureInfo.InvariantCulture) };
+                state.Remaining = state.Quantity; venue[state.Cloid] = state;
+                if (sent.GetProperty("t").GetProperty("limit").GetProperty("tif").GetString() == "Ioc")
+                {
+                    var filled = LeaveResidual ? Math.Max(0, state.Quantity - .02m) : state.Quantity;
+                    RecordFill(state, filled, state.Buy ? 100.1m : 99.9m);
+                    if (state.Remaining > 0m) state.Status = "canceled";
+                    if (LoseNextIocResponse) { LoseNextIocResponse = false; throw new HttpRequestException("IOC filled but response lost"); }
+                    return Json(JsonSerializer.Serialize(new { status = "ok", response = new { type = "order", data = new { statuses = new[] { new { filled = new { oid = state.Oid, totalSz = filled.ToString(System.Globalization.CultureInfo.InvariantCulture) } } } } } }));
+                }
+                return Json(JsonSerializer.Serialize(new { status = "ok", response = new { type = "order", data = new { statuses = new[] { new { resting = new { oid = state.Oid } } } } } }));
+            }
             if (action.GetProperty("type").GetString() == "order" && action.GetProperty("orders")[0].GetProperty("r").GetBoolean())
             {
                 Position = LeaveResidual ? -.02m : 0m;

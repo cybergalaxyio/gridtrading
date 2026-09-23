@@ -40,6 +40,7 @@ public sealed class MultiAccountIsolationTests
         await db.SaveChangesAsync(Ct);
         var adapter = new RecordingAdapter();
         var lifecycle = new GridOrderLifecycle(db, new ExecutionEnvironmentRegistry([adapter]), new ExecutionAccountOperationGate());
+        foreach (var seededCycle in await db.Cycles.ToListAsync(Ct)) lifecycle.RegisterNewCycle(seededCycle);
         var fill = new NormalizedExecutionFill("same-venue-fill", "venue-order-1", null, "BUY", 99, .2m, .001m, DateTimeOffset.UtcNow);
         Assert.Equal(1, await lifecycle.ProcessFillsAsync("account-a", [fill], Ct));
         Assert.Empty(await db.Executions.Where(x => x.ExecutionAccountId == "account-b").ToListAsync(Ct));

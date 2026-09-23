@@ -94,6 +94,14 @@ public static class DatabaseCompatibility
                 ON "OrderPlacementNotifications" ("AttemptedAt", "CreatedAt");
             """);
 
+        await AddColumnIfMissingAsync(db, "OrderPlacementNotifications", "ExecutionAccountId", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "OrderPlacementNotifications", "Symbol", "TEXT NULL");
+
+        await AddColumnIfMissingAsync(db, "Cycles", "LedgerStatus", "TEXT NOT NULL DEFAULT 'RECOVERY_REQUIRED'");
+        await AddColumnIfMissingAsync(db, "Cycles", "LedgerError", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "Orders", "ObservedFilledQuantity", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "Orders", "CancellationPending", "INTEGER NOT NULL DEFAULT 0");
+        await AddColumnIfMissingAsync(db, "Orders", "ExchangeOrderIdsJson", "TEXT NOT NULL DEFAULT '[]'");
         await AddColumnIfMissingAsync(db, "Orders", "LastExchangeUpdateAt", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "VirtualLots", "ProtectionPending", "INTEGER NOT NULL DEFAULT 0");
         await AddColumnIfMissingAsync(db, "Executions", "ExchangeOrderId", "TEXT NOT NULL DEFAULT ''");

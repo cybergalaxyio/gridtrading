@@ -21,6 +21,9 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<CycleEntity>().Property(x => x.LedgerStatus).HasDefaultValue("RECOVERY_REQUIRED");
+        modelBuilder.Entity<OrderEntity>().Property(x => x.ExchangeOrderIdsJson).HasDefaultValue("[]");
+        modelBuilder.Entity<OrderEntity>().Property(x => x.CancellationPending).HasDefaultValue(false);
         modelBuilder.Entity<OrderPlacementNotificationEntity>().HasIndex(x => new { x.AttemptedAt, x.CreatedAt });
         modelBuilder.Entity<StrategyEntity>().Property(x => x.DefaultExecutionAccountId).HasColumnName("ExchangeAccountId");
         modelBuilder.Entity<StrategyEntity>().HasIndex(x => x.Name);
@@ -98,6 +101,8 @@ public sealed class CycleEntity
     public GridTrading.Domain.GridPlan EffectivePlan => GridTrading.Domain.SingleModeEntryRules.ShiftPlan(
         System.Text.Json.JsonSerializer.Deserialize<GridTrading.Domain.GridPlan>(FrozenPlanJson,
             GridTrading.Api.Infrastructure.JsonSupport.Options)!, EntryGridPriceOffset);
+    public string LedgerStatus { get; set; } = "RECOVERY_REQUIRED";
+    public string? LedgerError { get; set; }
     public decimal ActualNetQuantity { get; set; }
     public decimal ReconstructedNetQuantity { get; set; }
     public decimal RealisedCyclePnl { get; set; }
@@ -115,6 +120,9 @@ public sealed class CycleEntity
 
 public sealed class OrderEntity
 {
+    public bool CancellationPending { get; set; }
+    public string ExchangeOrderIdsJson { get; set; } = "[]";
+    public decimal? ObservedFilledQuantity { get; set; }
     public DateTimeOffset? LastExchangeUpdateAt { get; set; }
     public DateTimeOffset? FilledAt { get; set; }
     public required string Id { get; set; }

@@ -23,7 +23,7 @@ public sealed partial class GridOrderLifecycle
 
         // Even an empty book needs synchronization: delayed fills must not start a new round.
         var snapshot = await SynchronizeMoveAsync(cycle, config, ct);
-        if (HasUnappliedSnapshotFills(snapshot) || await HasUnappliedEntryFillsAsync(cycle, ct)) return;
+        if (!IsLedgerReady(cycle) || HasUnappliedSnapshotFills(snapshot) || await HasUnappliedEntryFillsAsync(cycle, ct)) return;
         if (entry is not null)
         {
             if (!await CancelAndConfirmMoveEntryAsync(cycle, config, entry, snapshot, ct)) return;
@@ -83,7 +83,7 @@ public sealed partial class GridOrderLifecycle
             }
             else await adapter.CancelOrdersAsync(selection, [entry], ct);
             snapshot = await SynchronizeMoveAsync(cycle, config, ct);
-            if (HasUnappliedSnapshotFills(snapshot) || await HasUnappliedEntryFillsAsync(cycle, ct)) return false;
+            if (!IsLedgerReady(cycle) || HasUnappliedSnapshotFills(snapshot) || await HasUnappliedEntryFillsAsync(cycle, ct)) return false;
             observed = snapshot.Orders?.SingleOrDefault(x => x.ClientOrderId == entry.ClientOrderId);
         }
         // Absence from the book alone is not a terminal acknowledgement.
@@ -113,6 +113,7 @@ public sealed partial class GridOrderLifecycle
         cycle.ActualNetQuantity = snapshot.Position.Quantity;
         cycle.ReconstructedNetQuantity = await ReconstructedPositionAsync(cycle.Id, ct);
         await db.SaveChangesAsync(ct);
+        if (!await ValidateLedgerAsync(cycle, ct)) return snapshot;
         await RecoverLotProtectionAsync(cycle, config, ct);
         await UpdateRiskPauseAsync(cycle, ct);
         return snapshot;

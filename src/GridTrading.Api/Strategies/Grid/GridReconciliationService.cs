@@ -49,11 +49,12 @@ public sealed class GridReconciliationService(
             var cycle = await db.Cycles.SingleAsync(x => x.Id == cycleId, ct);
             if (cycle.IsTerminal) continue;
             var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
-            if (DateTimeOffset.UtcNow - cycle.LastReconciledAt <
+            if (lifecycle.IsLedgerReady(cycle) && DateTimeOffset.UtcNow - cycle.LastReconciledAt <
                 TimeSpan.FromSeconds(Math.Max(2, config.ReconcileIntervalSeconds))) continue;
             try
             {
                 var liquidationPnl = await lifecycle.ReconcileAsync(cycle, ct);
+                if (!lifecycle.IsLedgerReady(cycle)) continue;
                 var takeProfit = config.BasketTakeProfitUsdt > 0m && liquidationPnl >= config.BasketTakeProfitUsdt;
                 var stopLoss = GridMath.BasketStopLossTriggered(liquidationPnl, config.BasketStopLossUsdt);
                 if (cycle.State is "RUNNING" or "PAUSED" && (takeProfit || stopLoss))

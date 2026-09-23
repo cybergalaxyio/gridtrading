@@ -35,7 +35,8 @@ public static class OrderPlacementNotifications
             """);
         db.OrderPlacementNotifications.Add(new OrderPlacementNotificationEntity
         {
-            Id = id, Message = message, CreatedAt = now
+            Id = id, Message = message, CreatedAt = now,
+            ExecutionAccountId = selection.AccountId, Symbol = order.Symbol
         });
     }
 }

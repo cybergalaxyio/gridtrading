@@ -7,7 +7,7 @@
 - React + TypeScript + Vite 深色交易终端，覆盖控制台、策略、创建与预览、订单/成交、告警、设置和紧急停止界面。
 - Lightweight Charts K 线、成交量、固定中心和网格价格线。
 - ASP.NET Core Web API、SignalR 增量事件和后台 Paper 撮合服务。
-- Hyperliquid Testnet API Wallet：官方 EIP-712 签名、持久化单调 nonce、稳定 CLOID、真实挂撤单、成交对账、普通 Limit TP；Mainnet 使用 reduce-only 清仓。
+- Hyperliquid Testnet API Wallet：官方 EIP-712 签名、持久化单调 nonce、稳定 CLOID、真实挂撤单、成交对账、普通 Limit TP；Mainnet / Testnet 均仅按策略订单成交账本对冲策略敞口，支持同交易对手动交易共存。
 - 在本机网页配置多个 Mainnet / Testnet 账户，支持并行交易。API Wallet 私钥仅在保存时发送到本机后端，以 AES-256-GCM 加密保存；账户读取接口只返回公开信息。
 - SQLite 持久化，启用 WAL、Foreign Keys 和 Busy Timeout；金额和数量使用 `decimal` 并无损保存为文本。
 - Strategy / Frozen Cycle 分离、异步命令、幂等键、`If-Match` 状态版本和审计记录。
@@ -35,7 +35,7 @@
 
 ## 自动开始下一轮
 
-勾选“止盈 / 止损关闭后自动开始下一轮”后，Basket TP / SL 成功关闭当前 Cycle 会保存一个自动重启请求，后台约 2 秒内尝试启动下一轮。初次启动仍需手动 Start。旧 Cycle 的实际仓位、成交账本及未决挂单必须清零，历史虚拟持仓数量必须与已成交的平仓记录核对一致，新一轮仍执行正常启动检查。
+勾选“止盈 / 止损关闭后自动开始下一轮”后，Basket TP / SL 成功关闭当前 Cycle 会保存一个自动重启请求，后台约 2 秒内尝试启动下一轮。初次启动仍需手动 Start。旧 Cycle 的策略成交账本及未决策略挂单必须清零（账户手动仓位可保留），历史虚拟持仓数量必须与已成交的平仓记录核对一致，新一轮仍执行正常启动检查。
 
 - Current Mid 每轮获取启动时的实时 Bid / Ask；Manual 使用策略保存的中心价格。
 - 自动重启保持原来的账户和执行环境，采用最新保存的策略参数。变更 Symbol 后需手动启动。
@@ -50,7 +50,7 @@
 3. 后端必须设置稳定的 GRID_TRADING_CREDENTIAL_KEY（base64 编码的 32 字节密钥）并重启。该密钥用于 AES-256-GCM 加密 Bot Token；密钥变更后已保存的 Token 无法解密。
 4. 打开 **Settings → 通知设置**，填写 Bot Token 和 Chat ID，点击“测试并启用”。只有测试消息成功后才会启用自动推送；读取设置时后端不会返回 Token 或密文。
 
-启用后，每笔确认下单（Entry、TP、平仓，以及产生新交易所订单号的改单）都会发送一条通知，包含环境、账户、交易对、方向、类型、价格、数量、订单号与 Cycle。交易所拒绝或尚未确认的下单不会发送成功通知；通过成交或对账确认后发送，同一交易所订单不会重复通知。系统也会推送新产生的 INFO、WARNING 和 CRITICAL 风险告警，内容包含级别、代码、Cycle（如有）、UTC 时间与消息。启用前及禁用期间的历史通知不会补发。每条通知只尝试一次；Telegram 超时、限流或拒绝时会在设置页记录失败，但不会阻塞交易或自动重试。禁用操作无法撤回已在发送中的请求。
+启用后，每笔确认下单（Entry、TP、平仓，以及产生新交易所订单号的改单）都会发送一条通知，包含环境、账户、交易对、方向、类型、价格、数量、订单号与 Cycle。交易所拒绝或尚未确认的下单不会发送成功通知；通过成交或对账确认后发送，同一交易所订单不会重复通知。系统也会推送新产生的 INFO、WARNING 和 CRITICAL 风险告警，内容包含级别、代码、Cycle（如有）、UTC 时间与消息。每笔订单完全成交后（Entry、TP、平仓）另发一条 Order Fully Filled 通知；部分成交或部分成交后撤单不会触发。通过成交记录、交易所完全成交确认或对账恢复确认，同一订单号只通知一次，重启不会重复发送。通知中的 Order Price 是委托价格，Filled Quantity 是完整订单数量。每条下单、完全成交通知和风险告警在发送前附带账户快照：当前交易对净仓位、该交易对未实现 PnL、账户有效杠杆和可用 USDC 余额（统一账户使用 Spot USDC 余额减去 Hold，与 Dashboard 一致）。有效杠杆按当前 Hyperliquid 原生永续市场所有交易对的总名义敞口 / Trading Equity 计算，不是单个仓位设置的杠杆倍数；不含其他 Builder DEX 的敞口。快照带 UTC 时间；查询失败、Paper 或告警缺少账户/交易对上下文时，四个字段仍显示并标记 Unavailable，不阻止告警发送。旧版待发送下单通知也支持快照。启用前及禁用期间的历史通知不会补发。每条通知只尝试一次；Telegram 超时、限流或拒绝时会在设置页记录失败，但不会阻塞交易或自动重试。禁用操作无法撤回已在发送中的请求。
 
 ## 多账户管理
 
@@ -58,7 +58,7 @@
 
 ## Hyperliquid Testnet
 
-完整配置和用户操作见 [docs/TESTNET_TRADING.md](docs/TESTNET_TRADING.md)。启动 Testnet cycle 前，后端会强制验证 API Wallet 授权、账户已有测试资金、实际仓位为零以及没有残留挂单。nonce 由后端按签名地址管理，用户无需输入。
+完整配置和用户操作见 [docs/TESTNET_TRADING.md](docs/TESTNET_TRADING.md)。启动 Testnet cycle 前，后端会强制验证 API Wallet 授权、账户已有测试资金、行情与策略账本完整性；允许已有手动仓位和手动挂单。nonce 由后端按签名地址管理，用户无需输入。
 
 ## 本地运行
 
@@ -122,3 +122,7 @@ Dashboard 的 Symbol 控制条下方提供只读 **Grid Suitability**。展开 *
 只读接口：`GET /api/v1/grid-advisory?environmentId=hyperliquid-mainnet&symbol=SOL&accountId=...&strategyId=...`。不创建 Preview、订单或 Cycle，无数据库迁移。
 
 Mainnet 不再显示全宽横幅；顶部环境与账户选择框改为琥珀色高亮，环境标签显示 **MAINNET · REAL FUNDS**，锁定选择框时仍然清晰可见。
+
+### 手动交易账户与策略归属
+
+Cycle 只记录自身 Entry、TP 和 Exit 订单的成交、费用与 PnL；资金费不计入策略及 Basket TP/SL。Dashboard 分别显示策略净仓位、账户净仓位、外部 / 未归属仓位。重启使用原数据库恢复未完成 Cycle；不会把手动仓位导入策略。Exit / 紧急停止只撤本 Cycle 的单，并以普通 IOC 对冲策略账本净量，可能增加或反转交易所净仓位。例如手动 +10 SOL、策略 −3 SOL，退出策略会买入 3 SOL，让账户回到 +10 SOL。抵押品与清算风险仍由账户共享。

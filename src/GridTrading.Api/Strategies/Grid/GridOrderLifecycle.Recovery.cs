@@ -17,6 +17,7 @@ public sealed partial class GridOrderLifecycle
             var fills = executions.Where(x => x.OrderId == order.Id).ToArray();
             if (fills.Length > 0)
             {
+                order.ObservedFilledQuantity = Math.Max(order.ObservedFilledQuantity ?? 0m, order.FilledQuantity);
                 order.FilledQuantity = fills.Sum(x => x.Quantity);
                 order.Quantity = Math.Max(order.Quantity, order.FilledQuantity);
             }
@@ -31,6 +32,9 @@ public sealed partial class GridOrderLifecycle
                 // origSz describes one amendment generation. FilledQuantity describes
                 // the logical order across all generations sharing the same CLOID.
                 var precedingFills = fills.Where(x => VenueOrderId(x, order) != observed.ExchangeOrderId).Sum(x => x.Quantity);
+                order.ObservedFilledQuantity = Math.Max(order.ObservedFilledQuantity ?? 0m,
+                    precedingFills + observed.OriginalQuantity - observed.RemainingQuantity);
+                if (observed.Status is "CANCELLED" or "REJECTED" or "FILLED") order.CancellationPending = false;
                 order.Quantity = Math.Max(order.FilledQuantity, precedingFills + observed.OriginalQuantity);
                 order.Price = observed.Price;
                 order.ExchangeOrderId = observed.ExchangeOrderId;
@@ -56,6 +60,9 @@ public sealed partial class GridOrderLifecycle
             }
             var filledAt = OrderCompletion.FindFilledAt(order.Quantity, fills.Select(x => (x.Quantity, x.OccurredAt)));
             if (filledAt.HasValue) order.FilledAt = filledAt;
+            if (observed?.Status == "FILLED" || (filledAt.HasValue && order.Status == "FILLED"))
+                await OrderFillNotifications.RecordConfirmedAsync(db, Selection(cycle), order,
+                    observed?.FilledAt ?? order.FilledAt ?? DateTimeOffset.UtcNow, ct);
         }
         foreach (var update in snapshot.OrderUpdates)
         {
@@ -63,7 +70,12 @@ public sealed partial class GridOrderLifecycle
             if (order is null) continue;
             // A confirmed terminal event carries a completion time even when a
             // newer local reconciliation has already touched UpdatedAt.
-            if (update.Status == "FILLED" && update.HasExchangeTimestamp) order.FilledAt ??= update.OccurredAt.ToUniversalTime();
+            if (update.Status == "FILLED")
+            {
+                if (update.HasExchangeTimestamp) order.FilledAt ??= update.OccurredAt.ToUniversalTime();
+                await OrderFillNotifications.RecordConfirmedAsync(db, Selection(cycle), order,
+                    order.FilledAt ?? update.OccurredAt, ct);
+            }
             if (update.OccurredAt < order.UpdatedAt) continue;
             order.Status = update.Status;
             order.UpdatedAt = update.OccurredAt;

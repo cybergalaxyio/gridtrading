@@ -207,7 +207,8 @@ public sealed class ActiveCycleUniquenessTests
             Interlocked.Add(ref Placed, orders.Count());
             return Task.CompletedTask;
         }
-        public Task CancelOrdersAsync(ExecutionSelection s, IEnumerable<OrderEntity> orders, CancellationToken ct) => Task.CompletedTask;
+        public Task CancelOrdersAsync(ExecutionSelection s, IEnumerable<OrderEntity> orders, CancellationToken ct)
+        { foreach (var order in orders) order.Status = "CANCELLED"; return Task.CompletedTask; }
         public Task<decimal> FlattenAsync(ExecutionSelection s, CycleEntity cycle, GridConfiguration config, CancellationToken ct)
         { FlattenedAccounts.Add(s.AccountId); return Task.FromResult(0m); }
         public Task<ExecutionReconciliationSnapshot> ReconcileAsync(ExecutionSelection s, CycleEntity cycle, GridConfiguration config, CancellationToken ct) =>

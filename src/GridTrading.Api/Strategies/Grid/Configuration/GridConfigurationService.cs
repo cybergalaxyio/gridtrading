@@ -17,8 +17,6 @@ public sealed class GridConfigurationService(ExecutionEnvironmentRegistry enviro
         ValidateCenterMode(request.CenterSuggestionMode);
         if (request.CenterSuggestionMode == "MANUAL" && !(request.ManualCenterPrice > 0m))
             throw Problem(422, "CENTER_PRICE", "Manual mode requires a positive center price.");
-        if (!request.IncludeFunding)
-            throw Problem(422, "V1_FIXED_CONSTRAINT", "V1 requires includeFunding=true.");
         if (request.FaultExposureThresholdUsdt < 0m)
             throw Problem(422, "FAULT_THRESHOLD_INVALID", "Entry risk pause exposure threshold must be zero or greater.");
     }

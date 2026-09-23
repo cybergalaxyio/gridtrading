@@ -61,6 +61,12 @@ public sealed class HyperliquidEmergencyFlattenTests
             CreatedAt = now, UpdatedAt = now
         });
         db.AddRange(strategy, cycle);
+        db.Orders.Add(new OrderEntity { Id = "entry", CycleId = cycle.Id, ClientOrderId = "entry", ExchangeOrderId = "8000",
+            Symbol = config.Symbol, Kind = "ENTRY", Side = "SELL", Status = "FILLED", Price = 100m,
+            Quantity = 1.79m, FilledQuantity = 1.79m, CreatedAt = now });
+        db.Executions.Add(new ExecutionEntity { Id = "entry-fill", CycleId = cycle.Id, OrderId = "entry",
+            ExecutionAccountId = cycle.ExecutionAccountId, ExchangeExecutionId = "entry-fill", ExchangeOrderId = "8000",
+            Side = "SELL", Price = 100m, Quantity = 1.79m, OccurredAt = now });
         await db.SaveChangesAsync(ct);
 
         using var exchange = new EmergencyFlattenHandler();
@@ -84,7 +90,10 @@ public sealed class HyperliquidEmergencyFlattenTests
         var flatten = await db.Orders.SingleAsync(x => x.Kind == "FLATTEN", ct);
         Assert.Equal("FILLED", flatten.Status);
         Assert.Equal(1.79m, flatten.FilledQuantity);
-        var notification = await db.OrderPlacementNotifications.SingleAsync(ct);
+        var notifications = await db.OrderPlacementNotifications.ToListAsync(ct);
+        var notification = Assert.Single(notifications, x => x.Message.Contains("Order Placed"));
+        var completion = Assert.Single(notifications, x => x.Message.Contains("Order Fully Filled"));
+        Assert.Contains("Filled Quantity: 1.79", completion.Message);
         Assert.Contains("Type: FLATTEN", notification.Message);
         Assert.Contains("Quantity: 1.79", notification.Message);
     }

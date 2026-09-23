@@ -27,25 +27,23 @@ public sealed partial class HyperliquidMainnetTests
     [Theory]
     [InlineData("SOL")]
     [InlineData("SOL-USDC")]
-    public async Task MainnetPreflightStillBlocksCurrentSymbolPosition(string symbol)
+    public async Task MainnetPreflightAllowsManualCurrentSymbolPosition(string symbol)
     {
         await using var f = await Fixture.CreateAsync();
         f.Handler.Position = .12m;
         f.Handler.OtherPosition = 2m;
-        var error = await Assert.ThrowsAsync<TradingProblemException>(() =>
-            f.Adapter.PreflightStartAsync(new("hyperliquid-mainnet", "live"), symbol, Ct));
-        Assert.Equal("TESTNET_POSITION_NOT_FLAT", error.Code);
+        var quote = await f.Adapter.PreflightStartAsync(new("hyperliquid-mainnet", "live"), symbol, Ct);
+        Assert.Equal(100m, quote.Mid);
         Assert.Empty(f.Handler.Actions);
     }
 
     [Fact]
-    public async Task MainnetPreflightStillBlocksUntrackedCurrentSymbolOrdersAmongOtherOrders()
+    public async Task MainnetPreflightAllowsUntrackedCurrentSymbolOrdersAmongOtherOrders()
     {
         await using var f = await Fixture.CreateAsync();
         f.Handler.OpenOrders = [VenueOrder("BTC", 20), VenueOrder("SOL", 21)];
-        var error = await Assert.ThrowsAsync<TradingProblemException>(() =>
-            f.Adapter.PreflightStartAsync(new("hyperliquid-mainnet", "live"), "sol/usdc", Ct));
-        Assert.Equal("MAINNET_OPEN_ORDERS_EXIST", error.Code);
+        var quote = await f.Adapter.PreflightStartAsync(new("hyperliquid-mainnet", "live"), "sol/usdc", Ct);
+        Assert.Equal(100m, quote.Mid);
         Assert.Empty(f.Handler.Actions);
     }
 
@@ -92,7 +90,7 @@ public sealed partial class HyperliquidMainnetTests
     }
 
     [Fact]
-    public async Task CloseCancelsAndFlattensOnlySelectedSymbolWhileOtherStrategyContinues()
+    public async Task CloseCancelsOnlyOwnedOrdersAndLeavesManualPositionsWhileOtherStrategyContinues()
     {
         await using var f = await Fixture.CreateAsync();
         var workflow = await f.WorkflowAsync();
@@ -109,7 +107,8 @@ public sealed partial class HyperliquidMainnetTests
         Assert.Equal(2m, f.Handler.OtherPosition);
         Assert.Equal("NEW", otherOrder.Status);
         Assert.False((await f.Db.Cycles.SingleAsync(x => x.Id == "other-cycle", Ct)).IsTerminal);
-        Assert.Equal(3, f.Handler.Actions.Count); // Two SOL cancellations and its reduce-only close.
+        Assert.Equal(2, f.Handler.Actions.Count); // Two SOL cancellations; the unowned position is untouched.
+        Assert.Equal(.12m, f.Handler.Position);
         Assert.All(f.Handler.Actions, request =>
         {
             var action = request.GetProperty("action");
@@ -120,16 +119,14 @@ public sealed partial class HyperliquidMainnetTests
     }
 
     [Fact]
-    public async Task CloseStillBlocksUntrackedOrdersOnCurrentSymbol()
+    public async Task CloseIgnoresUntrackedOrdersOnCurrentSymbol()
     {
         await using var f = await Fixture.CreateAsync();
         var cycle = await f.AddCycleAsync();
         f.Handler.Position = .12m;
         f.Handler.OpenOrders = [VenueOrder("BTC", 20), VenueOrder("SOL", 21)];
-        var error = await Assert.ThrowsAsync<TradingProblemException>(() =>
-            f.Adapter.FlattenAsync(new("hyperliquid-mainnet", "live"), cycle, ExampleConfig(), Ct));
-        Assert.Equal("CANCEL_INCOMPLETE", error.Code);
-        Assert.Contains("1 SOLUSDC order(s)", error.Message);
+        var residual = await f.Adapter.FlattenAsync(new("hyperliquid-mainnet", "live"), cycle, ExampleConfig(), Ct);
+        Assert.Equal(0m, residual);
         Assert.Empty(f.Handler.Actions);
         Assert.Equal(.12m, f.Handler.Position);
     }
@@ -138,6 +135,7 @@ public sealed partial class HyperliquidMainnetTests
     public async Task AutomaticCloseAndRestartAllowsAnotherActiveSymbol()
     {
         await using var f = await Fixture.CreateAsync();
+        f.Handler.SharedVenue = true;
         var config = ExampleConfig() with { AutoRestart = true };
         var workflow = await f.WorkflowAsync(config);
         var settings = StrategyRequest.Default with

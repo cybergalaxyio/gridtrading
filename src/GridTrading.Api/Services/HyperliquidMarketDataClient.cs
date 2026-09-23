@@ -15,7 +15,7 @@ public sealed record HyperliquidAccountState(
     decimal NetPosition,
     decimal UnrealizedPnl,
     decimal? EntryPrice,
-    DateTimeOffset AsOf, string AccountMode, decimal TradingEquity, decimal AvailableBalance);
+    DateTimeOffset AsOf, string AccountMode, decimal TradingEquity, decimal AvailableBalance, decimal? AccountLeverage = null);
 
 public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration configuration, TradingDbContext db)
 {
@@ -74,8 +74,13 @@ public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration 
                 break;
             }
         }
+        // Effective account leverage uses gross exposure across all symbols, not
+        // the selected position's configured leverage. Unified collateral lives in spot.
+        var totalNotional = summary.TryGetProperty("totalNtlPos", out var notional) ? Decimal(notional) : (decimal?)null;
+        var accountLeverage = funds.TradingEquity > 0m && totalNotional.HasValue
+            ? Math.Abs(totalNotional.Value) / funds.TradingEquity : (decimal?)null;
         return new HyperliquidAccountState(account.Id, symbol.ToUpperInvariant(), accountValue, withdrawable, marginUsed,
-            net, unrealized, entryPrice, DateTimeOffset.UtcNow, funds.AccountMode, funds.TradingEquity, funds.AvailableBalance);
+            net, unrealized, entryPrice, DateTimeOffset.UtcNow, funds.AccountMode, funds.TradingEquity, funds.AvailableBalance, accountLeverage);
     }
 
     private async Task<JsonDocument> PostInfo(object request, CancellationToken ct, string network)
