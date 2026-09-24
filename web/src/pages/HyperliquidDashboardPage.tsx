@@ -51,6 +51,8 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const [busy, setBusy] = useState(false)
   const [parametersOpen, setParametersOpen] = useState(false)
   const [accountPanelTab, setAccountPanelTab] = useState<AccountPanelTab>('balances')
+  const [onlyCurrentStrategyOpenOrders, setOnlyCurrentStrategyOpenOrders] = useState(() => localStorage.getItem('grid.openOrdersOnlyCurrentStrategy') === 'true')
+  useEffect(() => { localStorage.setItem('grid.openOrdersOnlyCurrentStrategy', String(onlyCurrentStrategyOpenOrders)) }, [onlyCurrentStrategyOpenOrders])
   const [marketLoading, setMarketLoading] = useState(false)
   const [instruments, setInstruments] = useState<string[]>([])
   const [marketContexts, setMarketContexts] = useState<HyperliquidInstrument[]>([])
@@ -77,6 +79,10 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const strategy = cycle
     ? owner ? { ...owner, activeCycle: cycle } : undefined
     : cycles.length ? undefined : idleStrategies.find(item => item.strategyId === loadedStrategyId) ?? idleStrategies[0]
+  const currentStrategyId = cycle?.strategyId ?? strategy?.strategyId ?? null
+  const visibleOpenOrders = onlyCurrentStrategyOpenOrders
+    ? exchangeOpenOrders?.filter(order => currentStrategyId !== null && order.strategyId === currentStrategyId) ?? null
+    : exchangeOpenOrders
   const strategyMatchesMarket = !!cycle || !!strategy
   // Ignore data from the previous market while the new cycle is being fetched.
   const snapshot = cycle && cycleSnapshot?.cycle.cycleId === cycle.cycleId ? cycleSnapshot : null
@@ -429,15 +435,20 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         <div className="tabs" role="tablist" aria-label="账户与交易明细">
           <button type="button" className={accountPanelTab === 'balances' ? 'active' : ''} onClick={() => setAccountPanelTab('balances')}>Balances <i>{accountState ? 1 : '—'}</i></button>
           <button type="button" className={accountPanelTab === 'positions' ? 'active' : ''} onClick={() => setAccountPanelTab('positions')}>Positions <i>{exchangePositions?.length ?? '—'}</i></button>
-          <button type="button" className={accountPanelTab === 'orders' ? 'active' : ''} onClick={() => setAccountPanelTab('orders')}>Open Orders <i>{exchangeOpenOrders?.length ?? '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'orders' ? 'active' : ''} onClick={() => setAccountPanelTab('orders')}>Open Orders <i>{visibleOpenOrders?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'history' ? 'active' : ''} onClick={() => setAccountPanelTab('history')}>Order History <i>{exchangeOrderHistory?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'events' ? 'active' : ''} onClick={() => setAccountPanelTab('events')}>Events</button>
           <button type="button" className={accountPanelTab === 'alerts' ? 'active' : ''} onClick={() => setAccountPanelTab('alerts')}>Alerts</button>
+          {accountPanelTab === 'orders' && <label className="open-orders-current-strategy" title="只显示当前策略的挂单">
+            <input type="checkbox" checked={onlyCurrentStrategyOpenOrders} onChange={event => setOnlyCurrentStrategyOpenOrders(event.target.checked)} />
+            Only Current Strategy
+          </label>}
         </div>
         {accountPanelTab === 'balances' && <BalanceTable state={accountState} pnl={exchangePnl} />}
         {accountPanelTab === 'positions' && <PositionTable positions={exchangePositions} />}
-        {accountPanelTab === 'orders' && <OpenOrdersTable rows={exchangeOpenOrders} />}
+        {accountPanelTab === 'orders' && <OpenOrdersTable rows={visibleOpenOrders} />}
         {accountPanelTab === 'history' && <OrderHistoryTable rows={exchangeOrderHistory} currentSymbol={marketSymbol} currentCycleId={cycle?.cycleId ?? null}
+          currentStrategyId={currentStrategyId}
           refreshing={historyRefreshing} onRefresh={() => void refreshOrderHistory()} />}
         {accountPanelTab === 'events' && <Empty text="当前 Cycle 暂无策略事件" />}
         {accountPanelTab === 'alerts' && <Empty text="当前 Cycle 暂无风险告警" />}
@@ -521,18 +532,19 @@ function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
   </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
 }
 
-function OrderHistoryTable({ rows, currentSymbol, currentCycleId, refreshing, onRefresh }: {
-  rows: HyperliquidHistoricalOrder[] | null; currentSymbol: string; currentCycleId: string | null;
+function OrderHistoryTable({ rows, currentSymbol, currentCycleId, currentStrategyId, refreshing, onRefresh }: {
+  rows: HyperliquidHistoricalOrder[] | null; currentSymbol: string; currentCycleId: string | null; currentStrategyId: string | null;
   refreshing: boolean; onRefresh: () => void
 }) {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'FILLED'>(() => localStorage.getItem('grid.orderHistoryStatus') === 'FILLED' ? 'FILLED' : 'ALL')
+  const [onlyCurrentStrategy, setOnlyCurrentStrategy] = useState(() => localStorage.getItem('grid.orderHistoryOnlyCurrentStrategy') === 'true')
   const [onlyCurrentCycle, setOnlyCurrentCycle] = useState(() => localStorage.getItem('grid.orderHistoryOnlyCurrentCycle') === 'true')
   const [page, setPage] = useState(1)
-  useEffect(() => setPage(1), [currentSymbol, currentCycleId])
+  useEffect(() => setPage(1), [currentSymbol, currentCycleId, currentStrategyId])
   if (!rows) return <Empty text="正在加载 Hyperliquid historicalOrders…" />
-  const scopedRows = onlyCurrentCycle
-    ? rows.filter(item => currentCycleId !== null && item.cycleId === currentCycleId && sameCoin(item.order.coin, currentSymbol))
-    : rows
+  const scopedRows = rows.filter(item =>
+    (!onlyCurrentStrategy || (currentStrategyId !== null && item.strategyId === currentStrategyId))
+    && (!onlyCurrentCycle || (currentCycleId !== null && item.cycleId === currentCycleId && sameCoin(item.order.coin, currentSymbol))))
   const filledCount = scopedRows.filter(item => item.status.toLowerCase() === 'filled').length
   const visibleRows = statusFilter === 'FILLED' ? scopedRows.filter(item => item.status.toLowerCase() === 'filled') : scopedRows
   const pageSize = 20
@@ -541,6 +553,11 @@ function OrderHistoryTable({ rows, currentSymbol, currentCycleId, refreshing, on
   const pageRows = visibleRows.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   const firstRow = visibleRows.length === 0 ? 0 : (currentPage - 1) * pageSize + 1
   const lastRow = Math.min(currentPage * pageSize, visibleRows.length)
+  function selectOnlyCurrentStrategy(value: boolean) {
+    setOnlyCurrentStrategy(value)
+    setPage(1)
+    localStorage.setItem('grid.orderHistoryOnlyCurrentStrategy', String(value))
+  }
   function selectOnlyCurrentCycle(value: boolean) {
     setOnlyCurrentCycle(value)
     setPage(1)
@@ -550,7 +567,11 @@ function OrderHistoryTable({ rows, currentSymbol, currentCycleId, refreshing, on
   return <><div className="history-filterbar" role="group" aria-label="Order History 状态筛选"><span>状态</span>
     <button type="button" className={statusFilter === 'ALL' ? 'active' : ''} aria-pressed={statusFilter === 'ALL'} onClick={() => selectStatus('ALL')}>All <i>{scopedRows.length}</i></button>
     <button type="button" className={statusFilter === 'FILLED' ? 'active' : ''} aria-pressed={statusFilter === 'FILLED'} onClick={() => selectStatus('FILLED')}>Filled <i>{filledCount}</i></button>
-    <label className="history-current-cycle" title="只显示当前 Symbol 和当前 Cycle 的订单">
+    <label className="history-scope-filter history-current-strategy" title="只显示当前策略的订单（包括历史 Cycle）">
+      <input type="checkbox" checked={onlyCurrentStrategy} onChange={event => selectOnlyCurrentStrategy(event.target.checked)} />
+      Only Current Strategy
+    </label>
+    <label className="history-scope-filter history-current-cycle" title="只显示当前 Symbol 和当前 Cycle 的订单">
       <input type="checkbox" checked={onlyCurrentCycle} onChange={event => selectOnlyCurrentCycle(event.target.checked)} />
       Only Current Cycle
     </label>
