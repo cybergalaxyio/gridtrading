@@ -4,6 +4,8 @@ namespace GridTrading.Api.Data;
 
 public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options) : DbContext(options)
 {
+    public DbSet<OrderApprovalEntity> OrderApprovals => Set<OrderApprovalEntity>();
+    public DbSet<TradingControlSettingsEntity> TradingControlSettings => Set<TradingControlSettingsEntity>();
     public DbSet<StrategyEntity> Strategies => Set<StrategyEntity>();
     public DbSet<CycleEntity> Cycles => Set<CycleEntity>();
     public DbSet<OrderEntity> Orders => Set<OrderEntity>();
@@ -21,6 +23,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<OrderApprovalEntity>().HasIndex(x => new { x.OrderId, x.Status });
         modelBuilder.Entity<CycleEntity>().Property(x => x.LedgerStatus).HasDefaultValue("RECOVERY_REQUIRED");
         modelBuilder.Entity<OrderEntity>().Property(x => x.ExchangeOrderIdsJson).HasDefaultValue("[]");
         modelBuilder.Entity<OrderEntity>().Property(x => x.CancellationPending).HasDefaultValue(false);
@@ -120,6 +123,7 @@ public sealed class CycleEntity
 
 public sealed class OrderEntity
 {
+    public string? PendingTimeInForce { get; set; }
     public bool CancellationPending { get; set; }
     public string ExchangeOrderIdsJson { get; set; } = "[]";
     public decimal? ObservedFilledQuantity { get; set; }

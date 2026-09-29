@@ -108,6 +108,9 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         var cloid = HyperliquidWireCodec.CreateCloid(stableClientOrderId);
         var order = new HyperliquidLimitOrder(asset, isBuy, HyperliquidWireCodec.PriceToWire(price, sizeDecimals),
             HyperliquidWireCodec.SizeToWire(size, sizeDecimals), reduceOnly, immediateOrCancel ? "Ioc" : postOnly ? "Alo" : "Gtc", cloid);
+        if (!await OrderApprovalService.AuthorizeWireAsync(db, accountId, stableClientOrderId,
+            immediateOrCancel ? "FLATTEN" : "PLACE", order, ct))
+            return new HyperliquidOrderResult("AWAITING_APPROVAL", null, cloid, null);
         var actionBytes = HyperliquidWireCodec.PackOrderAction([order]);
         var action = new Dictionary<string, object>
         {
@@ -127,6 +130,8 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         var cloid = HyperliquidWireCodec.CreateCloid(stableClientOrderId);
         var order = new HyperliquidLimitOrder(asset, isBuy, HyperliquidWireCodec.PriceToWire(price, sizeDecimals),
             HyperliquidWireCodec.SizeToWire(size, sizeDecimals), false, postOnly ? "Alo" : "Gtc", cloid);
+        if (!await OrderApprovalService.AuthorizeWireAsync(db, accountId, stableClientOrderId, "AMEND", order, ct))
+            return new HyperliquidOrderResult("AWAITING_APPROVAL", null, cloid, null);
         var actionBytes = HyperliquidWireCodec.PackModifyAction(cloid, order);
         var modification = new Dictionary<string, object>
         {
@@ -316,16 +321,16 @@ public sealed class HyperliquidTradingClient(HttpClient http, IConfiguration con
         var nonce = await nonces.NextAsync(account.Id, ct);
         var signature = signer.Sign(actionBytes, protector.Unprotect(account.EncryptedAgentPrivateKey), nonce, account.Environment == HyperliquidNetwork.Mainnet, account.VaultAddress);
         using var response = await http.PostAsJsonAsync(endpoint, new { action, nonce, signature = new { r = signature.R, s = signature.S, v = signature.V }, vaultAddress = account.VaultAddress }, ct);
+        HyperliquidHttpHandler.EnsureSuccess(response, info: false);
         var stream = await response.Content.ReadAsStreamAsync(ct);
         var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        if (!response.IsSuccessStatusCode) { document.Dispose(); throw new TradingProblemException(503, "EXCHANGE_HTTP_ERROR", $"Hyperliquid returned HTTP {(int)response.StatusCode}."); }
         return document;
     }
 
     private async Task<JsonDocument> PostInfo(object request, CancellationToken ct, string network)
     {
         using var response = await http.PostAsJsonAsync(HyperliquidNetwork.Endpoint(configuration, network, "Info"), request, ct);
-        if (!response.IsSuccessStatusCode) throw new TradingProblemException(503, "EXCHANGE_INFO_UNAVAILABLE", $"Hyperliquid Info returned HTTP {(int)response.StatusCode}.");
+        HyperliquidHttpHandler.EnsureSuccess(response);
         return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
     }
 

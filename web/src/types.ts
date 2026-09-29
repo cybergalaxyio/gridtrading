@@ -130,3 +130,12 @@ export type GridAdvisoryResponse = {
   asOf: string; quoteAsOf: string | null; frames: AdvisoryFrame[]; status: AdvisoryStatus; checks: AdvisoryCheck[];
   scenarios: { interval: string; atrMultiple: number; loss: string; filledQuantity: string; side: string }[]; notice: string | null;
 }
+
+export type TradingControlSettings = { requireManualOrderConfirmation: boolean }
+
+export type OrderApproval = {
+  id: string; orderId: string; cycleId: string; strategyId: string; strategyName: string;
+  executionEnvironmentId: string; executionAccountId: string; symbol: string;
+  side: string; kind: string; action: string; price: string; quantity: string;
+  timeInForce: string; reduceOnly: boolean; status: 'PENDING' | 'APPROVED' | 'REJECTED'; createdAt: string; gridLevel: number;
+}

@@ -28,7 +28,7 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
     {
         var endpoint = Endpoint(network);
         using var response = await httpClient.PostAsJsonAsync(endpoint, new { type = "metaAndAssetCtxs" }, ct);
-        response.EnsureSuccessStatusCode();
+        HyperliquidHttpHandler.EnsureSuccess(response);
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() < 2)
@@ -55,7 +55,7 @@ public sealed class HyperliquidInfoClient(HttpClient httpClient, IConfiguration 
     {
         var endpoint = Endpoint(network);
         using var response = await httpClient.PostAsJsonAsync(endpoint, new { type = "metaAndAssetCtxs" }, ct);
-        response.EnsureSuccessStatusCode();
+        HyperliquidHttpHandler.EnsureSuccess(response);
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() < 2)

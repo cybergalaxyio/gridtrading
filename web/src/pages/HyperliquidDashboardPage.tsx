@@ -1,3 +1,5 @@
+import { useOrderApprovals } from '../context/OrderApprovalsContext'
+import { OrderApprovalActions, OrderApprovalStatus } from '../components/OrderApprovalActions'
 import { useAccounts } from '../context/AccountsContext'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -12,7 +14,7 @@ import { Empty } from '../components/Empty'
 import { Modal } from '../components/Modal'
 import { StrategyParameters } from '../components/StrategyParameters'
 import { SymbolPicker } from '../components/SymbolPicker'
-import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidInstrument, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, Order, Snapshot, Strategy } from '../types'
+import type { Candle, ExecutionAccount, ExecutionEnvironment, ExchangeInstrumentRules, HyperliquidAccountState, HyperliquidClearinghouseState, HyperliquidHistoricalOrder, HyperliquidInstrument, HyperliquidMidPriceTick, HyperliquidOpenOrder, HyperliquidOrderAttribution, HyperliquidPosition, Order, OrderApproval, Snapshot, Strategy } from '../types'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
@@ -23,6 +25,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   cycleRegistry: ActiveCycleRegistry; selection: CycleSelection; onSelectionChange: (selection: CycleSelection) => void
 }) {
   const { revision: accountRevision } = useAccounts()
+  const { orders: approvalOrders, error: approvalError } = useOrderApprovals()
   const [now, setNow] = useState(Date.now)
 
   useEffect(() => {
@@ -83,6 +86,9 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
   const visibleOpenOrders = onlyCurrentStrategyOpenOrders
     ? exchangeOpenOrders?.filter(order => currentStrategyId !== null && order.strategyId === currentStrategyId) ?? null
     : exchangeOpenOrders
+  const visibleApprovals = approvalOrders.filter(order => order.executionEnvironmentId === selectedEnvironment
+    && order.executionAccountId === selectedExecutionAccountId
+    && (!onlyCurrentStrategyOpenOrders || order.strategyId === currentStrategyId))
   const strategyMatchesMarket = !!cycle || !!strategy
   // Ignore data from the previous market while the new cycle is being fetched.
   const snapshot = cycle && cycleSnapshot?.cycle.cycleId === cycle.cycleId ? cycleSnapshot : null
@@ -400,7 +406,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         {(currentCycle?.state === 'RUNNING' || (riskPaused && !operatorPaused)) && <button className="primary" disabled={busy} onClick={() => void command('pause-entries', 'Entry 已暂停，已有 TP 保留')}>Pause Entry</button>}
         {currentCycle?.state === 'PAUSED' && operatorPaused && <button className="primary" disabled={busy} onClick={() => void command('resume-entries', riskPaused ? '人工暂停已解除；风险暂停仍生效' : '已按固定中心恢复 Entry')}>{riskPaused ? '解除人工暂停' : 'Resume Entry'}</button>}
         {cycle && <button className="secondary" disabled={busy} onClick={() => void command('reconcile', 'Sync 完成')}>Sync</button>}
-        {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', 'Cycle 已有序关闭并清零仓位')}>Exit</button>}
+        {cycle && <button className="danger-outline" disabled={busy} onClick={() => void command('close', '关闭请求已处理；如有待确认平仓订单，请逐笔审核')}>Exit</button>}
       </div>
     </section>
     <GridSuitability environmentId={selectedEnvironment} accountId={selectedExecutionAccountId} symbol={marketSymbol} strategy={strategy} />
@@ -435,7 +441,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         <div className="tabs" role="tablist" aria-label="账户与交易明细">
           <button type="button" className={accountPanelTab === 'balances' ? 'active' : ''} onClick={() => setAccountPanelTab('balances')}>Balances <i>{accountState ? 1 : '—'}</i></button>
           <button type="button" className={accountPanelTab === 'positions' ? 'active' : ''} onClick={() => setAccountPanelTab('positions')}>Positions <i>{exchangePositions?.length ?? '—'}</i></button>
-          <button type="button" className={accountPanelTab === 'orders' ? 'active' : ''} onClick={() => setAccountPanelTab('orders')}>Open Orders <i>{visibleOpenOrders?.length ?? '—'}</i></button>
+          <button type="button" className={accountPanelTab === 'orders' ? 'active' : ''} onClick={() => setAccountPanelTab('orders')}>Open Orders <i>{visibleOpenOrders || visibleApprovals.length ? (visibleOpenOrders?.length ?? 0) + visibleApprovals.length : '—'}</i></button>
           <button type="button" className={accountPanelTab === 'history' ? 'active' : ''} onClick={() => setAccountPanelTab('history')}>Order History <i>{exchangeOrderHistory?.length ?? '—'}</i></button>
           <button type="button" className={accountPanelTab === 'events' ? 'active' : ''} onClick={() => setAccountPanelTab('events')}>Events</button>
           <button type="button" className={accountPanelTab === 'alerts' ? 'active' : ''} onClick={() => setAccountPanelTab('alerts')}>Alerts</button>
@@ -446,7 +452,10 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
         </div>
         {accountPanelTab === 'balances' && <BalanceTable state={accountState} pnl={exchangePnl} />}
         {accountPanelTab === 'positions' && <PositionTable positions={exchangePositions} />}
-        {accountPanelTab === 'orders' && <OpenOrdersTable rows={visibleOpenOrders} />}
+        {accountPanelTab === 'orders' && <>
+          {approvalError && <p className="warning-text" role="alert">{approvalError}</p>}
+          <OpenOrdersTable rows={visibleOpenOrders} approvals={visibleApprovals} />
+        </>}
         {accountPanelTab === 'history' && <OrderHistoryTable rows={exchangeOrderHistory} currentSymbol={marketSymbol} currentCycleId={cycle?.cycleId ?? null}
           currentStrategyId={currentStrategyId}
           refreshing={historyRefreshing} onRefresh={() => void refreshOrderHistory()} />}
@@ -513,10 +522,19 @@ function PositionRow({ position }: { position: HyperliquidPosition }) {
   return <tr><td><strong className="positive">{position.coin}-USDC</strong></td><td className={+position.szi < 0 ? 'negative' : 'positive'}>{signed(position.szi)} {position.coin}</td><td>{format(Math.abs(+position.positionValue))} USDC</td><td>{position.entryPx ? format(position.entryPx, 3) : '—'}</td><td>{format(mark, 3)}</td><td className={+position.unrealizedPnl < 0 ? 'negative' : 'positive'}>{signed(position.unrealizedPnl)} ({roe >= 0 ? '+' : ''}{roe.toFixed(2)}%)</td><td>{position.liquidationPx ? format(position.liquidationPx, 3) : 'N/A'}</td><td>{format(position.marginUsed)} USDC ({position.leverage.value}x {position.leverage.type})</td><td>{format(position.cumFunding?.sinceOpen ?? '0')} USDC</td></tr>
 }
 
-function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
-  if (!rows) return <Empty text="正在加载 Hyperliquid frontendOpenOrders…" />
-  return <div className="table-wrap open-orders-scroll"><table><thead><tr><th>时间</th><th>市场</th><th>Strategy</th><th>Level</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>Reduce Only</th><th>订单 ID</th></tr></thead>
-    <tbody>{rows.map(order => {
+export function OpenOrdersTable({ rows, approvals = [] }: { rows: HyperliquidOpenOrder[] | null; approvals?: OrderApproval[] }) {
+  if (!rows && !approvals.length) return <Empty text="正在加载 Hyperliquid frontendOpenOrders…" />
+  return <div className="table-wrap open-orders-scroll"><table><thead><tr><th>时间</th><th>市场</th><th>Strategy</th><th>Level</th><th>方向</th><th>类型</th><th>限价</th><th>原始数量</th><th>剩余数量</th><th>Reduce Only</th><th>订单 ID</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>{approvals.map(order => <tr className={`pending-order-row ${order.status.toLowerCase()}`} key={order.id}>
+      <td>{exchangeTime(Date.parse(order.createdAt))}</td><td><strong>{order.symbol}</strong></td>
+      <td><b>{order.strategyName}</b><small className="dim">{order.strategyId}</small></td>
+      <td>{order.gridLevel < 0 ? '—' : `${order.side[0]}${order.gridLevel}`}</td>
+      <td className={order.side === 'BUY' ? 'positive' : 'negative'}>{order.side}</td>
+      <td>{order.kind} · {order.action === 'AMEND' ? 'Amend' : 'Limit'} · {order.timeInForce}</td>
+      <td className="mono">{order.price}</td><td>{order.quantity}</td><td>{order.quantity}</td>
+      <td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.orderId}</td>
+      <td><OrderApprovalStatus order={order} /></td><td><OrderApprovalActions order={order} /></td>
+    </tr>)}{(rows ?? []).map(order => {
       const remainingQuantity = Number(order.sz)
       const originalQuantity = Number(order.origSz)
       const isPartiallyFilled = Number.isFinite(remainingQuantity) && Number.isFinite(originalQuantity)
@@ -527,9 +545,9 @@ function OpenOrdersTable({ rows }: { rows: HyperliquidOpenOrder[] | null }) {
         <td>{isPartiallyFilled
           ? <span className="partial-fill-quantity" title={`已部分成交：原始 ${order.origSz}，剩余 ${order.sz}`}>{order.sz}</span>
           : order.sz}</td>
-        <td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td></tr>
+        <td>{order.reduceOnly ? 'YES' : 'NO'}</td><td className="dim">{order.oid}</td><td>{isPartiallyFilled ? 'Partially filled' : 'Open'}</td><td>—</td></tr>
     })}</tbody>
-  </table>{rows.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
+  </table>{rows?.length === 0 && approvals.length === 0 && <Empty text="Hyperliquid 当前没有挂单" />}</div>
 }
 
 function OrderHistoryTable({ rows, currentSymbol, currentCycleId, currentStrategyId, refreshing, onRefresh }: {

@@ -1,4 +1,5 @@
 using GridTrading.Api.Data;
+using GridTrading.Api.Services;
 using GridTrading.Domain;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,6 +17,8 @@ public sealed partial class GridOrderLifecycle
             throw new TradingProblemException(409, "INVALID_CYCLE_STATE", "A terminal cycle cannot be closed again.");
         var restartEligible = !cycle.IsOperatorPaused && !cycle.OperatorResetRequired && cycle.State != "FAULT";
         cycle.State = "CLOSING";
+        cycle.ExitReason = reason;
+        cycle.OperatorResetRequired |= emergency;
         cycle.StateVersion++;
         await db.SaveChangesAsync(ct);
         try
@@ -28,7 +31,7 @@ public sealed partial class GridOrderLifecycle
             await adapter.CancelOrdersAsync(Selection(cycle), orders, ct);
             await ReconcileCoreAsync(cycle, ct, allowExchangeActions: false);
             RequireLedgerReady(cycle);
-            if ((await ActiveOrdersAsync(cycle.Id, ct)).Count != 0)
+            if ((await ActiveOrdersAsync(cycle.Id, ct)).Any(x => x.Kind != "FLATTEN" || x.Status != "PENDING_EXCHANGE"))
                 throw new TradingProblemException(503, "CANCEL_INCOMPLETE", "Strategy orders are still unresolved.");
             var residual = await adapter.FlattenAsync(Selection(cycle), cycle, config, ct);
             await ReconcileCoreAsync(cycle, ct, allowExchangeActions: false);
@@ -49,6 +52,12 @@ public sealed partial class GridOrderLifecycle
             cycle.RealisedCyclePnl = executions.Sum(x => (x.Side == "SELL" ? 1m : -1m) * x.Price * x.Quantity);
             await db.SaveChangesAsync(ct);
             return restartEligible;
+        }
+        catch (OrderApprovalPendingException)
+        {
+            // This is a durable waiting state, not a failed close. Reconciliation keeps running.
+            await db.SaveChangesAsync(ct);
+            return false;
         }
         catch (Exception error)
         {

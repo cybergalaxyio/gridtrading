@@ -46,6 +46,8 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         EnsureSelection(selection);
         foreach (var order in orders.Where(x => x.Status == "PENDING_EXCHANGE"))
         {
+            if (!await OrderApprovalService.AuthorizeAsync(db, selection, order, "PLACE", order.Price,
+                order.Quantity - order.FilledQuantity, (order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits) ? "Alo" : "Gtc", false, ct)) continue;
             order.ExchangeOrderId = Ids.New("paper");
             order.Status = "NEW";
             await OrderPlacementNotifications.RecordAsync(db, selection, order, ct, quantity: order.Quantity - order.FilledQuantity);
@@ -59,6 +61,7 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         EnsureSelection(selection);
         foreach (var order in orders.Where(IsActive))
         {
+            await OrderApprovalService.InvalidateAsync(db, order.Id, ct);
             order.Status = "CANCELLED";
             order.UpdatedAt = DateTimeOffset.UtcNow;
         }
@@ -69,6 +72,8 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
         decimal price, decimal quantity, CancellationToken ct)
     {
         EnsureSelection(selection);
+        if (!await OrderApprovalService.AuthorizeAsync(db, selection, order, "AMEND", price,
+            quantity - order.FilledQuantity, (order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits) ? "Alo" : "Gtc", false, ct)) return;
         order.Price = price;
         order.Quantity = quantity;
         order.UpdatedAt = DateTimeOffset.UtcNow;
@@ -78,25 +83,47 @@ public sealed class PaperExecutionAdapter(MarketState market, TradingDbContext d
     public async Task<decimal> FlattenAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config, CancellationToken ct)
     {
         EnsureSelection(selection);
-        var active = db.Orders.Where(x => x.CycleId == cycle.Id).Where(IsActive).ToArray();
+        var active = db.Orders.Where(x => x.CycleId == cycle.Id && x.Kind != "FLATTEN").Where(IsActive).ToArray();
         await CancelOrdersAsync(selection, active, ct);
         var strategyPosition = cycle.ReconstructedNetQuantity;
+        var queued = db.Orders.SingleOrDefault(x => x.CycleId == cycle.Id && x.Kind == "FLATTEN" && x.Status == "PENDING_EXCHANGE");
+        if (queued is not null && (queued.Quantity != Math.Abs(strategyPosition) || queued.Side != (strategyPosition < 0m ? "BUY" : "SELL")))
+        {
+            queued.Status = "CANCELLED";
+            await db.SaveChangesAsync(ct);
+            queued = null;
+        }
         if (strategyPosition == 0m) return 0m;
 
         var quote = market.Snapshot(config.Symbol);
         var side = strategyPosition > 0m ? "SELL" : "BUY";
-        var price = side == "SELL" ? quote.Bid : quote.Ask;
+        var price = queued?.Price ?? (side == "SELL" ? quote.Bid : quote.Ask);
         var quantity = Math.Abs(strategyPosition);
         var now = DateTimeOffset.UtcNow;
-        var order = new OrderEntity
+        var order = queued ?? new OrderEntity
         {
             Id = Ids.New("order"), CycleId = cycle.Id, ClientOrderId = Ids.New("flatten"),
-            ExchangeOrderId = Ids.New("paper"), Symbol = config.Symbol, Side = side, Kind = "FLATTEN",
-            Status = "FILLED", GridLevel = -1, Price = price, Quantity = quantity, FilledQuantity = quantity,
+            ExchangeOrderId = "pending", Symbol = config.Symbol, Side = side, Kind = "FLATTEN",
+            Status = "PENDING_EXCHANGE", GridLevel = -1, Price = price, Quantity = quantity,
             CreatedAt = now, UpdatedAt = now
         };
+        if (queued is null) db.Orders.Add(order);
+        await db.SaveChangesAsync(ct);
+        if (!await OrderApprovalService.AuthorizeAsync(db, selection, order, "FLATTEN", price, quantity, "Ioc", false, ct))
+            throw new OrderApprovalPendingException();
+        // Simulate the approved IOC limit without filling outside its reviewed limit price.
+        var executable = side == "SELL" ? quote.Bid : quote.Ask;
+        if (side == "SELL" ? executable < price : executable > price)
+        {
+            order.Status = "CANCELLED";
+            await db.SaveChangesAsync(ct);
+            return strategyPosition;
+        }
+        price = executable;
+        order.ExchangeOrderId = Ids.New("paper");
+        order.Status = "FILLED";
+        order.FilledQuantity = quantity;
         var fee = price * quantity * config.TakerFeeRate;
-        db.Orders.Add(order);
         await OrderPlacementNotifications.RecordAsync(db, selection, order, ct);
         await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, now, ct);
         db.Executions.Add(new ExecutionEntity

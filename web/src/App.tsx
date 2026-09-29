@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { AccountLabel } from './context/AccountsContext'
 import { Layout, type Route } from './components/Layout'
+import { OrderApprovals } from './components/OrderApprovals'
 import { Modal } from './components/Modal'
 import { DashboardPage } from './pages/HyperliquidDashboardPage'
 import { StrategiesPage } from './pages/StrategiesPage'
@@ -98,7 +99,7 @@ export default function App() {
     setError('')
     try {
       await api.command(cycle.cycleId, 'emergency-flatten', cycle.stateVersion, true)
-      setToast('紧急停止已执行：挂单已撤销，本策略净敞口已清零')
+      setToast('紧急停止请求已处理；如有待确认平仓订单，请逐笔审核')
       await reload()
     } catch (e) {
       setError(e instanceof Error ? `紧急停止失败：${e.message}` : '紧急停止失败')
@@ -108,6 +109,7 @@ export default function App() {
   }
 
   return <Layout route={route} environment={environment} emergencyBusy={emergencyBusy} onRoute={setRoute} onEmergency={openEmergency}>
+    <OrderApprovals />
     {error && <div className="global-error" role="alert"><b>操作提示</b><span>{error}</span><button onClick={() => setError('')}>关闭</button></div>}
     {emergencyBusy && <div className="global-operation" role="status" aria-live="polite"><i />紧急停止执行中：正在撤单、同步并处理策略敞口…</div>}
     {toast && <div className="toast">✓ {toast}</div>}

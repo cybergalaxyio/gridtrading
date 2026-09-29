@@ -1,4 +1,4 @@
-import type { CreateAccountRequest, RenameAccountRequest, ReplaceAccountCredentialsRequest, Cycle, GridAdvisoryResponse, Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, TelegramSettings, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
+import type { OrderApproval, TradingControlSettings, CreateAccountRequest, RenameAccountRequest, ReplaceAccountCredentialsRequest, Cycle, GridAdvisoryResponse, Alert, Candle, Order, Preview, Snapshot, Strategy, StrategyConfig, TelegramSettings, HyperliquidAccount, HyperliquidHealth, HyperliquidBook, HyperliquidAccountState, HyperliquidInstruments, HyperliquidClearinghouseState, HyperliquidSpotClearinghouseState, HyperliquidOpenOrder, HyperliquidHistoricalOrder, ExchangeInstrumentRules, ExecutionEnvironment, ExecutionAccount } from './types'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -55,6 +55,13 @@ export const api = {
   snapshot: (cycleId: string) => call<Snapshot>(`/cycles/${cycleId}/snapshot`),
   orders: (cycleId?: string) => call<Order[]>(`/orders${cycleId ? `?cycleId=${cycleId}` : ''}`),
   alerts: () => call<Alert[]>('/risk-alerts'),
+  orderApprovals: () => call<OrderApproval[]>('/order-approvals'),
+  rejectOrder: (id: string) => call<void>(`/order-approvals/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
+  approveOrder: (id: string) => call<void>(`/order-approvals/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
+  tradingControlSettings: () => call<TradingControlSettings>('/trading-control-settings'),
+  saveTradingControlSettings: (body: TradingControlSettings) => call<TradingControlSettings>('/trading-control-settings', {
+    method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body),
+  }),
   telegramSettings: () => call<TelegramSettings>('/notification-settings/telegram'),
   saveTelegramSettings: (body: { botToken?: string; chatId: string }) => call<TelegramSettings>('/notification-settings/telegram', {
     method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body),

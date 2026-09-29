@@ -87,6 +87,8 @@ function dashboard(strategies = [eth, sol], symbol = 'ETH', loadedStrategyId = n
     module, exports: module.exports,
     require: name => {
       if (name === 'react') return react
+      if (name === '../context/OrderApprovalsContext') return { useOrderApprovals: () => ({ orders: responses.approvals ?? [], error: '' }) }
+      if (name === '../components/OrderApprovalActions') return { OrderApprovalActions: () => null, OrderApprovalStatus: ({ order }) => order.status }
       if (name === '../context/AccountsContext') return { useAccounts: () => ({ revision: responses.catalog?.revision ?? 0 }) }
       if (name === '../api') return { api }
       if (name === '../lib/activeCycles') return registryModule.exports
@@ -97,7 +99,7 @@ function dashboard(strategies = [eth, sol], symbol = 'ETH', loadedStrategyId = n
       }
       return require(name)
     },
-    localStorage: { getItem: key => key === 'grid.dashboardSymbol' ? symbol : null, setItem() {} },
+    localStorage: { getItem: key => key === 'grid.dashboardSymbol' ? symbol : responses.storage?.[key] ?? null, setItem() {} },
     document: { getElementById: () => null }, window: timers, ...timers,
   })
   const errors = []
@@ -115,7 +117,7 @@ function dashboard(strategies = [eth, sol], symbol = 'ETH', loadedStrategyId = n
   }
   function findButton(label, node = tree) {
     if (!node || typeof node !== 'object') return undefined
-    if (node.type === 'button' && node.props.children === label) return node
+    if (node.type === 'button' && [node.props.children].flat().some(child => typeof child === 'string' && child.trim() === label)) return node
     for (const child of [node.props?.children].flat(Infinity)) {
       const found = findButton(label, child ?? null)
       if (found) return found
@@ -339,3 +341,30 @@ test('strategy metrics use cycle valuation while account positions remain separa
   assert.doesNotMatch(html, /54,321|999.00/)
   assert.match(html, /Missing strategy executions/)
 })
+
+for (const onlyCurrentStrategy of [false, true]) {
+  test(`Open Orders shows pending orders for the selected account and honors strategy filter (${onlyCurrentStrategy})`, async () => {
+    const approval = {
+      id: 'approval-eth', orderId: 'pending-eth', cycleId: 'ETH-cycle', strategyId: 'ETH', strategyName: 'ETH grid',
+      executionEnvironmentId: environment, executionAccountId: account, symbol: 'ETH', side: 'BUY', kind: 'ENTRY',
+      action: 'PLACE', price: '12345.123', quantity: '0.2', timeInForce: 'Alo', reduceOnly: false,
+      status: 'PENDING', createdAt: '2026-09-29T00:00:00Z', gridLevel: 0,
+    }
+    const page = dashboard([eth, sol], 'ETH', null, {
+      storage: { 'grid.openOrdersOnlyCurrentStrategy': String(onlyCurrentStrategy) },
+      approvals: [approval,
+        { ...approval, id: 'approval-sol', orderId: 'pending-sol', strategyId: 'SOL', strategyName: 'SOL grid', symbol: 'SOL' },
+        { ...approval, id: 'approval-account', orderId: 'pending-other-account', executionAccountId: 'other-account' },
+        { ...approval, id: 'approval-network', orderId: 'pending-other-network', executionEnvironmentId: 'hyperliquid-mainnet' },
+      ],
+    })
+    await page.settle()
+    page.findButton('Open Orders').props.onClick()
+    const html = page.render()
+    assert.match(html, /pending-eth/)
+    assert.match(html, /12345.123/)
+    assert.doesNotMatch(html, /pending-other-account|pending-other-network/)
+    if (onlyCurrentStrategy) assert.doesNotMatch(html, /pending-sol/)
+    else assert.match(html, /pending-sol/)
+  })
+}

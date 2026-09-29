@@ -8,6 +8,12 @@ public static class DatabaseCompatibility
     public static async Task EnsureExecutionSchemaAsync(TradingDbContext db)
     {
         await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TradingControlSettings" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_TradingControlSettings" PRIMARY KEY,
+                "RequireManualOrderConfirmation" INTEGER NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "HyperliquidAccounts" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_HyperliquidAccounts" PRIMARY KEY,
                 "Name" TEXT NOT NULL,
@@ -94,6 +100,19 @@ public static class DatabaseCompatibility
                 ON "OrderPlacementNotifications" ("AttemptedAt", "CreatedAt");
             """);
 
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "OrderApprovals" (
+                "Id" TEXT NOT NULL PRIMARY KEY, "OrderId" TEXT NOT NULL, "CycleId" TEXT NOT NULL,
+                "ExecutionEnvironmentId" TEXT NOT NULL, "ExecutionAccountId" TEXT NOT NULL,
+                "Symbol" TEXT NOT NULL, "Side" TEXT NOT NULL, "Kind" TEXT NOT NULL,
+                "Action" TEXT NOT NULL, "TimeInForce" TEXT NOT NULL, "ClientOrderId" TEXT NOT NULL,
+                "ExchangeOrderId" TEXT NOT NULL, "Price" TEXT NOT NULL, "Quantity" TEXT NOT NULL,
+                "FilledQuantity" TEXT NOT NULL, "ReduceOnly" INTEGER NOT NULL,
+                "Status" TEXT NOT NULL, "CreatedAt" TEXT NOT NULL, "ApprovedAt" TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_OrderApprovals_OrderId_Status" ON "OrderApprovals" ("OrderId", "Status");
+            """);
+        await AddColumnIfMissingAsync(db, "Orders", "PendingTimeInForce", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "OrderPlacementNotifications", "ExecutionAccountId", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "OrderPlacementNotifications", "Symbol", "TEXT NULL");
 

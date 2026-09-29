@@ -86,8 +86,7 @@ public sealed class HyperliquidMarketDataClient(HttpClient http, IConfiguration 
     private async Task<JsonDocument> PostInfo(object request, CancellationToken ct, string network)
     {
         using var response = await http.PostAsJsonAsync(HyperliquidNetwork.Endpoint(configuration, network, "Info"), request, ct);
-        if (!response.IsSuccessStatusCode)
-            throw new TradingProblemException(503, "EXCHANGE_INFO_UNAVAILABLE", $"Hyperliquid Info returned HTTP {(int)response.StatusCode}.");
+        HyperliquidHttpHandler.EnsureSuccess(response);
         return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
     }
 

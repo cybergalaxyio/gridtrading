@@ -15,8 +15,10 @@ namespace GridTrading.Api.Tests;
 
 public sealed class HyperliquidEmergencyFlattenTests
 {
-    [Fact]
-    public async Task FlattenUsesOwnedStrategyExposureAndIgnoresExternalAccountPosition()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FlattenUsesOwnedStrategyExposureAndIgnoresExternalAccountPosition(bool manualApproval)
     {
         var ct = TestContext.Current.CancellationToken;
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -76,6 +78,20 @@ public sealed class HyperliquidEmergencyFlattenTests
         var adapter = new HyperliquidExecutionAdapter(db, client, new HyperliquidInfoClient(http, configuration),
             new HyperliquidOrderOwnershipService(db));
 
+        if (manualApproval)
+        {
+            cycle.State = "CLOSING";
+            await db.SaveChangesAsync(ct);
+            await new TradingControlSettingsService(db).SaveAsync(new(true), ct);
+            await Assert.ThrowsAsync<OrderApprovalPendingException>(() => adapter.FlattenAsync(
+                new(ExecutionEnvironmentIds.HyperliquidTestnet, "account-testnet"), cycle, config, ct));
+            Assert.Empty(exchange.ExchangeRequests);
+            var approval = await db.OrderApprovals.SingleAsync(ct);
+            Assert.Equal("Ioc", approval.TimeInForce);
+            Assert.Equal(1.79m, approval.Quantity);
+            Assert.Equal(102.1m, approval.Price); // Actual wire rounding, not the raw 102.102 quote.
+            await new OrderApprovalService(db, new ExecutionAccountOperationGate()).ApproveAsync(approval.Id, ct);
+        }
         var residual = await adapter.FlattenAsync(
             new ExecutionSelection(ExecutionEnvironmentIds.HyperliquidTestnet, "account-testnet"), cycle, config, ct);
 

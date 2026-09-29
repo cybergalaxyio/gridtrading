@@ -172,6 +172,14 @@ public sealed partial class GridOrderLifecycle(
         {
             var pending = await db.Orders.Where(x => x.CycleId == cycle.Id &&
                 x.Status == "PENDING_EXCHANGE" && x.Kind == "TAKE_PROFIT").ToListAsync(ct);
+            foreach (var order in pending)
+            {
+                var lot = await db.VirtualLots.SingleOrDefaultAsync(x => x.TakeProfitOrderId == order.Id && x.Status != "CLOSED", ct);
+                if (lot is null || lot.RemainingQuantity <= 0m) { order.Status = "CANCELLED"; continue; }
+                order.Price = lot.TakeProfitPrice;
+                order.Quantity = order.FilledQuantity + lot.RemainingQuantity;
+            }
+            await db.SaveChangesAsync(ct);
             try { await adapter.PlaceOrdersAsync(selection, config, pending, ct); }
             catch (TradingProblemException ex) when (ex.Code == "PROTECTIVE_ORDER_REJECTED")
             {

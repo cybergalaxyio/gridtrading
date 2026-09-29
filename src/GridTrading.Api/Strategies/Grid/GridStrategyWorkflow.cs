@@ -258,6 +258,14 @@ public sealed partial class GridStrategyWorkflow(
             ?? throw Problem(404, "CYCLE_NOT_FOUND", "Cycle was not found.");
         if (expectedVersion.HasValue && expectedVersion != cycle.StateVersion)
             throw Problem(412, "STATE_VERSION_STALE", "Cycle state changed; refresh the snapshot.");
+        if (cycle.State == "CLOSING" && command is "CLOSE" or "EMERGENCY_FLATTEN")
+        {
+            if (command == "EMERGENCY_FLATTEN" && !emergencyConfirmed)
+                throw Problem(422, "EMERGENCY_CONFIRMATION_REQUIRED", "All emergency confirmations are required.");
+            var pendingClose = await db.Operations.FirstOrDefaultAsync(x => x.ResourceId == cycleId &&
+                x.Status == "ACCEPTED" && (x.Type == "CLOSE" || x.Type == "EMERGENCY_FLATTEN"), ct);
+            if (pendingClose is not null && pendingClose.IdempotencyKey != key) return pendingClose;
+        }
         var operation = await NewOperationAsync(command, cycleId, key, new { command, reason }, ct);
         if (operation.Status == "COMPLETED") return operation;
 
@@ -277,6 +285,12 @@ public sealed partial class GridStrategyWorkflow(
                 if (command == "EMERGENCY_FLATTEN" && !emergencyConfirmed)
                     throw Problem(422, "EMERGENCY_CONFIRMATION_REQUIRED", "All emergency confirmations are required.");
                 restartAfterClose &= await lifecycle.CloseCycleAsync(cycle, expectedVersion, command == "EMERGENCY_FLATTEN", reason, ct);
+                if (!cycle.IsTerminal)
+                {
+                    await db.SaveChangesAsync(ct);
+                    await BroadcastAsync(cycle, ct);
+                    return operation; // The close remains ACCEPTED while its exact order awaits approval.
+                }
                 if (restartAfterClose)
                     await NewOperationAsync("AUTO_RESTART", cycle.Id, AutoRestartKey(cycle.Id), new { cycleId = cycle.Id }, ct);
                 break;

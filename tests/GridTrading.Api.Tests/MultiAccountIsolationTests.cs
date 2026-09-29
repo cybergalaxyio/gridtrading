@@ -124,8 +124,10 @@ public sealed class MultiAccountIsolationTests
         Assert.True(stopped["market-mainnet"]);
     }
 
-    [Fact]
-    public async Task ReconciliationFailureOnOneAccountDoesNotPreventTheOtherFromUpdating()
+    [Theory]
+    [InlineData("FAULT")]
+    [InlineData("CLOSING")]
+    public async Task ReconciliationFailureOnOneAccountDoesNotPreventTheOtherFromUpdating(string state)
     {
         var path = Path.Combine(Path.GetTempPath(), $"reconciliation-accounts-{Guid.NewGuid():N}.db");
         try
@@ -150,12 +152,14 @@ public sealed class MultiAccountIsolationTests
                 await db.Database.EnsureCreatedAsync(Ct);
                 foreach (var account in new[] { "account-a", "account-b" })
                     db.Cycles.Add(new CycleEntity { Id = account, StrategyId = account, ExecutionAccountId = account,
-                        ExecutionEnvironmentId = "test", State = "FAULT", FrozenConfigurationJson = JsonSerializer.Serialize(new GridConfiguration { Symbol = "SOL" }, JsonSupport.Options),
+                        ExecutionEnvironmentId = "test", State = state, FrozenConfigurationJson = JsonSerializer.Serialize(new GridConfiguration { Symbol = "SOL" }, JsonSupport.Options),
                         FrozenPlanJson = "{}", ExitReason = "" });
                 await db.SaveChangesAsync(Ct);
             }
             var service = new GridReconciliationService(provider.GetRequiredService<IServiceScopeFactory>(), NullLogger<GridReconciliationService>.Instance);
             await Task.WhenAll(service.TickAccountAsync("account-a", Ct), service.TickAccountAsync("account-b", Ct));
+            await service.TickAccountAsync("account-b", Ct);
+            Assert.Equal(1, adapter.ReconciliationCalls["account-b"]);
             using var verify = provider.CreateScope();
             var cycles = await verify.ServiceProvider.GetRequiredService<TradingDbContext>().Cycles.ToListAsync(Ct);
             Assert.Equal(default, cycles.Single(x => x.ExecutionAccountId == "account-a").LastReconciledAt);
@@ -174,6 +178,7 @@ public sealed class MultiAccountIsolationTests
     private sealed class RecordingAdapter : IExecutionAdapter
     {
         public string? FailAccount { get; init; }
+        public ConcurrentDictionary<string, int> ReconciliationCalls { get; } = new();
         public List<(string AccountId, string Kind)> Placements { get; } = [];
         public ExecutionEnvironmentDescriptor Environment { get; } = new("test", "PAPER", "TEST", "Test");
         public Task<IReadOnlyList<ExecutionAccountDescriptor>> GetAccountsAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<ExecutionAccountDescriptor>>(
@@ -188,8 +193,11 @@ public sealed class MultiAccountIsolationTests
         }
         public Task CancelOrdersAsync(ExecutionSelection selection, IEnumerable<OrderEntity> orders, CancellationToken ct) => Task.CompletedTask;
         public Task<decimal> FlattenAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config, CancellationToken ct) => throw new NotSupportedException();
-        public Task<ExecutionReconciliationSnapshot> ReconcileAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config, CancellationToken ct) =>
-            selection.AccountId == FailAccount ? throw new IOException("Simulated account outage") :
+        public Task<ExecutionReconciliationSnapshot> ReconcileAsync(ExecutionSelection selection, CycleEntity cycle, GridConfiguration config, CancellationToken ct)
+        {
+            ReconciliationCalls.AddOrUpdate(selection.AccountId, 1, (_, count) => count + 1);
+            return selection.AccountId == FailAccount ? throw new IOException("Simulated account outage") :
                 Task.FromResult(new ExecutionReconciliationSnapshot([], [], [], new Dictionary<string, string>(), new(0, 0, 0)));
+        }
     }
 }

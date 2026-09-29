@@ -20,18 +20,23 @@ builder.Services.AddSingleton<GridTrading.Api.Hubs.HyperliquidMarketSubscription
 builder.Services.AddSingleton<MarketState>();
 builder.Services.AddSingleton<PreviewStore>();
 builder.Services.AddMemoryCache();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<HyperliquidHttpState>();
+builder.Services.AddTransient<HyperliquidHttpHandler>();
 builder.Services.AddScoped<GridAdvisoryService>();
 builder.Services.AddSingleton<ReplayStore>();
 builder.Services.AddSingleton<ReplayService>();
-builder.Services.AddHttpClient<HyperliquidInfoClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<HyperliquidInfoClient>().AddHttpMessageHandler<HyperliquidHttpHandler>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<CredentialProtector>();
 builder.Services.AddSingleton<ITelegramBotClient, TelegramBotClient>();
 builder.Services.AddScoped<TelegramNotificationSettingsService>();
+builder.Services.AddScoped<TradingControlSettingsService>();
+builder.Services.AddScoped<OrderApprovalService>();
 builder.Services.AddScoped<TelegramAccountSnapshotService>();
 builder.Services.AddSingleton<GridTrading.Api.Exchange.HyperliquidL1Signer>();
 builder.Services.AddScoped<HyperliquidNonceManager>();
-builder.Services.AddHttpClient<HyperliquidTradingClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-builder.Services.AddHttpClient<HyperliquidMarketDataClient>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<HyperliquidTradingClient>().AddHttpMessageHandler<HyperliquidHttpHandler>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<HyperliquidMarketDataClient>().AddHttpMessageHandler<HyperliquidHttpHandler>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<HyperliquidAccountStatusService>();
 builder.Services.AddScoped<HyperliquidAccountManagementService>();
 builder.Services.AddScoped<HyperliquidOrderOwnershipService>();
@@ -285,6 +290,24 @@ api.MapPost("/risk-alerts/{id}/acknowledgements", async (string id, Acknowledgem
     var alert = await db.RiskAlerts.FindAsync([id], ct); if (alert is null) return Results.NotFound();
     alert.Acknowledged = true; alert.AcknowledgementNote = request.Note; await db.SaveChangesAsync(ct); return Results.Ok(alert);
 });
+
+api.MapGet("/order-approvals", async (OrderApprovalService service, CancellationToken ct) =>
+    Results.Ok(await service.ListAsync(ct)));
+api.MapPost("/order-approvals/{id}/reject", async (string id, OrderApprovalService service, CancellationToken ct) =>
+{
+    await service.RejectAsync(id, ct);
+    return Results.NoContent();
+});
+api.MapPost("/order-approvals/{id}/approve", async (string id, OrderApprovalService service, CancellationToken ct) =>
+{
+    await service.ApproveAsync(id, ct);
+    return Results.Accepted();
+});
+
+api.MapGet("/trading-control-settings", async (TradingControlSettingsService service, CancellationToken ct) =>
+    Results.Ok(await service.GetAsync(ct)));
+api.MapPut("/trading-control-settings", async (TradingControlSettings settings, TradingControlSettingsService service, CancellationToken ct) =>
+    Results.Ok(await service.SaveAsync(settings, ct)));
 
 api.MapGet("/notification-settings/telegram", async (TelegramNotificationSettingsService service, CancellationToken ct) =>
     Results.Ok(await service.GetAsync(ct)));

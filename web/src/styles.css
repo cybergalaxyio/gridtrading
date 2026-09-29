@@ -241,3 +241,35 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .account-card dl > div { grid-template-columns: 1fr; gap: 4px; }
   .account-settings .page-title { align-items: flex-start; flex-direction: column; }
 }
+
+.trading-control-card { padding: 20px; font-size: 12px; line-height: 1.6; }
+.trading-control-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.trading-control-row h2 { margin: 0 0 8px; font-size: 15px; }
+.trading-control-row p { margin: 0; color: var(--muted); }
+.settings-switch { flex: 0 0 44px; width: 44px; height: 26px; padding: 3px; border: 1px solid #526171; border-radius: 20px; background: #263441; }
+.settings-switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: #d2deeb; transition: transform .15s; }
+.settings-switch[aria-checked="true"] { background: #367df0; border-color: #75a7ff; }
+.settings-switch[aria-checked="true"] span { transform: translateX(18px); background: white; }
+.settings-switch:focus-visible { outline: 2px solid #bdd1ff; outline-offset: 3px; }
+
+
+.order-approval-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; background: #1c2e41; border-bottom: 1px solid #4776a7; color: #c4dbff; font-size: 12px; }
+.order-approval-modal { width: min(640px, 100%); max-height: calc(100dvh - 40px); overflow-y: auto; }
+.order-approval-body { padding: 18px; font-size: 12px; line-height: 1.6; }
+.order-approval-card { margin: 14px 0; padding: 16px; }
+.order-approval-card header, .order-approval-card dl > div { display: flex; justify-content: space-between; gap: 16px; }
+.order-approval-card header { font-size: 14px; }
+.order-approval-card dl > div { padding: 4px 0; }
+.order-approval-card dt { color: var(--muted); flex-shrink: 0; }
+.order-approval-card dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-family: Consolas, monospace; }
+.order-approval-card footer { display: flex; justify-content: flex-end; }
+
+.order-approval-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.order-approval-card footer { align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.approval-status { display: inline-block; font-size: 10px; white-space: nowrap; color: #e8bd73; }
+.approval-status.approved { color: #8eafff; }
+.approval-status.rejected { color: #ec8e8e; }
+.pending-order-row { background: #122536; }
+.pending-order-row.rejected { background: #201d26; }
+.pending-order-row td small { display: block; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.open-orders-scroll th:last-child, .open-orders-scroll td:last-child { position: sticky; right: 0; background: #10202b; }

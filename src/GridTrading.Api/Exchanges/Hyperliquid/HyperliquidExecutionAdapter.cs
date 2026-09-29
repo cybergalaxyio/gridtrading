@@ -63,12 +63,24 @@ public sealed class HyperliquidExecutionAdapter(
             order.Status = "UNKNOWN";
             order.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
+            var postOnly = order.PendingTimeInForce != "Gtc" &&
+                (order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits);
             var result = await client.PlaceLimitAsync(selection.AccountId, order.Symbol, order.Side == "BUY", order.Price,
-                order.Quantity - order.FilledQuantity, order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits,
+                order.Quantity - order.FilledQuantity, postOnly,
                 order.ClientOrderId, ct);
-            if (result.Status == "REJECTED" && order.Kind == "TAKE_PROFIT" && config.PostOnlyTakeProfits)
+            if (result.Status == "REJECTED" && order.Kind == "TAKE_PROFIT" && postOnly)
+            {
+                order.PendingTimeInForce = "Gtc";
                 result = await client.PlaceLimitAsync(selection.AccountId, order.Symbol, order.Side == "BUY", order.Price,
                     order.Quantity - order.FilledQuantity, false, order.ClientOrderId, ct);
+            }
+            if (result.Status == "AWAITING_APPROVAL")
+            {
+                order.Status = "PENDING_EXCHANGE";
+                await db.SaveChangesAsync(ct);
+                continue;
+            }
+            order.PendingTimeInForce = null;
             if (result.Status == "REJECTED")
             {
                 var rejectedAt = DateTimeOffset.UtcNow;
@@ -129,6 +141,7 @@ public sealed class HyperliquidExecutionAdapter(
                 await db.SaveChangesAsync(ct);
                 await client.CancelByCloidAsync(selection.AccountId, order.Symbol, order.ClientOrderId, ct);
             }
+            await OrderApprovalService.InvalidateAsync(db, order.Id, ct);
             order.Status = "CANCELLED";
             order.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct);
@@ -140,12 +153,18 @@ public sealed class HyperliquidExecutionAdapter(
     {
         await AccountAsync(selection, ct);
         var remaining = quantity - order.FilledQuantity;
-        var postOnly = order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits;
+        var postOnly = order.PendingTimeInForce != "Gtc" &&
+            (order.Kind == "ENTRY" ? config.PostOnlyEntries : config.PostOnlyTakeProfits);
         var result = await client.ModifyLimitAsync(selection.AccountId, order.Symbol, order.Side == "BUY", price,
             remaining, postOnly, order.ClientOrderId, ct);
         if (result.Status == "REJECTED" && order.Kind == "TAKE_PROFIT" && postOnly)
+        {
+            order.PendingTimeInForce = "Gtc";
             result = await client.ModifyLimitAsync(selection.AccountId, order.Symbol, order.Side == "BUY", price,
                 remaining, false, order.ClientOrderId, ct);
+        }
+        if (result.Status == "AWAITING_APPROVAL") { await db.SaveChangesAsync(ct); return; }
+        order.PendingTimeInForce = null;
         if (result.Status == "REJECTED")
             throw new TradingProblemException(422,
                 order.Kind == "TAKE_PROFIT" ? "PROTECTIVE_ORDER_REJECTED" : "ORDER_AMEND_REJECTED",
@@ -190,37 +209,52 @@ public sealed class HyperliquidExecutionAdapter(
         if (remainingOrders != 0)
             throw new TradingProblemException(503, "CANCEL_INCOMPLETE", "Strategy orders remain open.");
         var cycleOrders = await db.Orders.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
-        if (cycleOrders.Any(x => x.Kind == "FLATTEN" && IsActive(x)))
+        var queued = cycleOrders.SingleOrDefault(x => x.Kind == "FLATTEN" && x.Status == "PENDING_EXCHANGE");
+        if (cycleOrders.Any(x => x.Kind == "FLATTEN" && IsActive(x) && x != queued))
             throw new TradingProblemException(503, "FLATTEN_UNCERTAIN", "Reconcile the previous exit before submitting another.");
         var executions = await db.Executions.Where(x => x.CycleId == cycle.Id).ToListAsync(ct);
         if (cycleOrders.Any(x => executions.Where(e => e.OrderId == x.Id).Sum(e => e.Quantity) <
             Math.Max(x.FilledQuantity, x.ObservedFilledQuantity ?? 0m)))
             throw new TradingProblemException(503, "STRATEGY_LEDGER_INCOMPLETE", "Strategy order executions are missing.");
         var strategyPosition = executions.Sum(x => x.Side == "BUY" ? x.Quantity : -x.Quantity);
+        if (queued is not null && (queued.Quantity != Math.Abs(strategyPosition) ||
+            queued.Side != (strategyPosition < 0m ? "BUY" : "SELL")))
+        {
+            queued.Status = "CANCELLED";
+            await db.SaveChangesAsync(ct);
+            queued = null;
+        }
         if (strategyPosition == 0m) return 0m;
 
         var quote = await GetQuoteAsync(selection, config.Symbol, ct);
         var isBuy = strategyPosition < 0m;
-        var price = isBuy ? quote.Ask * 1.02m : quote.Bid * .98m;
+        var price = queued?.Price ?? (isBuy ? quote.Ask * 1.02m : quote.Bid * .98m);
         var rules = GridInstrumentRules.FromConfiguration(config);
         var quantity = Math.Abs(strategyPosition);
         if (quantity < rules.MinOrderQuantity || quantity * price < rules.MinOrderNotional ||
             (rules.QuantityStep > 0m && quantity % rules.QuantityStep != 0m))
             throw new TradingProblemException(422, "FLATTEN_RESIDUAL_UNTRADEABLE", "Strategy residual does not meet venue quantity/notional limits.");
-        var order = new OrderEntity
+        var order = queued ?? new OrderEntity
         {
             Id = Ids.New("order"), CycleId = cycle.Id, ClientOrderId = Ids.New("flatten"), ExchangeOrderId = "pending",
             Symbol = config.Symbol, Side = isBuy ? "BUY" : "SELL", Kind = "FLATTEN", Status = "UNKNOWN",
             GridLevel = -1, Price = price, Quantity = Math.Abs(strategyPosition),
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
         };
-        db.Orders.Add(order);
+        if (queued is null) db.Orders.Add(order);
+        order.Status = "UNKNOWN";
         await db.SaveChangesAsync(ct);
 
         // Offset the virtual strategy ledger, even if doing so increases the account position.
         // UNKNOWN was committed before I/O: a lost response must never authorize a duplicate exit.
         var result = await client.PlaceLimitAsync(selection.AccountId, config.Symbol, isBuy, price, order.Quantity,
             false, order.ClientOrderId, ct, immediateOrCancel: true, reduceOnly: false);
+        if (result.Status == "AWAITING_APPROVAL")
+        {
+            order.Status = "PENDING_EXCHANGE";
+            await db.SaveChangesAsync(ct);
+            throw new OrderApprovalPendingException();
+        }
         RememberOrderId(order, result.ExchangeOrderId);
         order.ExchangeOrderId = result.ExchangeOrderId ?? result.Cloid;
         if (result.Status == "REJECTED")

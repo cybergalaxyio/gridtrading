@@ -51,6 +51,23 @@ public sealed class GridReconciliationService(
             var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
             if (lifecycle.IsLedgerReady(cycle) && DateTimeOffset.UtcNow - cycle.LastReconciledAt <
                 TimeSpan.FromSeconds(Math.Max(2, config.ReconcileIntervalSeconds))) continue;
+            if (cycle.State == "CLOSING")
+            {
+                try
+                {
+                    await lifecycle.ReconcileAsync(cycle, ct);
+                    if (!lifecycle.IsLedgerReady(cycle)) continue;
+                    var closing = await db.Operations.FirstOrDefaultAsync(x => x.ResourceId == cycle.Id &&
+                        x.Status == "ACCEPTED" && (x.Type == "CLOSE" || x.Type == "EMERGENCY_FLATTEN"), ct);
+                    if (closing is not null)
+                        await trading.Command(cycle.Id, closing.Type, cycle.ExitReason, closing.IdempotencyKey,
+                            null, closing.Type == "EMERGENCY_FLATTEN", ct,
+                            automaticClose: cycle.ExitReason is "BASKET_TAKE_PROFIT" or "BASKET_STOP_LOSS");
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex) { logger.LogWarning(ex, "Pending close failed for cycle {CycleId}.", cycle.Id); }
+                continue;
+            }
             try
             {
                 var liquidationPnl = await lifecycle.ReconcileAsync(cycle, ct);

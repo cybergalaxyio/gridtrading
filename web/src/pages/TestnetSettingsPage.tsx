@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { Icon } from '../components/Icon'
+import { TradingControlPanel } from '../components/TradingControlPanel'
 import { AccountsPanel } from '../components/AccountsPanel'
 import type { TelegramSettings } from '../types'
 
-type SettingsSection = 'accounts' | 'notifications'
+type SettingsSection = 'accounts' | 'notifications' | 'trading-control'
 
 const emptyTelegram: TelegramSettings = {
   configured: false, enabled: false, tokenStored: false, chatId: '',
@@ -109,12 +110,14 @@ export function SettingsPage() {
     <aside className="settings-nav"><h2>SETTINGS</h2>
       <button className={section === 'accounts' ? 'active' : ''} onClick={() => setSection('accounts')}><Icon name="strategy" size={18} />交易所账户</button>
       <button className={section === 'notifications' ? 'active' : ''} onClick={() => setSection('notifications')}><Icon name="alert" size={18} />通知设置</button>
+      <button className={section === 'trading-control' ? 'active' : ''} onClick={() => setSection('trading-control')}><Icon name="shield" size={18} />交易控制</button>
       <button disabled><Icon name="dashboard" size={18} />系统状态</button>
       <button disabled><Icon name="settings" size={18} />界面设置</button>
       <button disabled><Icon name="alert" size={18} />审计与监控</button>
     </aside>
     {section === 'accounts'
       ? <AccountsPanel />
+      : section === 'trading-control' ? <TradingControlPanel />
       : <div className="settings-content telegram-settings">
           <div className="page-title"><div><h1>Telegram 通知</h1><p>每笔确认下单、完全成交（Entry、TP、平仓）和新风险告警都会推送到一个私聊、群组或频道。</p></div></div>
           <div className="system-cards">
