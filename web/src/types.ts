@@ -131,7 +131,7 @@ export type GridAdvisoryResponse = {
   scenarios: { interval: string; atrMultiple: number; loss: string; filledQuantity: string; side: string }[]; notice: string | null;
 }
 
-export type TradingControlSettings = { requireManualOrderConfirmation: boolean }
+export type TradingControlSettings = { requireManualOrderConfirmation: boolean; minimumConfirmationNotional: string }
 
 export type OrderApproval = {
   id: string; orderId: string; cycleId: string; strategyId: string; strategyName: string;

@@ -241,6 +241,72 @@ public sealed class OrderApprovalTests
         Assert.Equal("PENDING_EXCHANGE", order.Status);
     }
 
+    [Theory]
+    [InlineData("ENTRY")]
+    [InlineData("TAKE_PROFIT")]
+    public async Task OnlyOrdersStrictlyAboveThresholdAreHeld(string kind)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var fixture = await Fixture.Create(ct);
+        await new TradingControlSettingsService(fixture.Db).SaveAsync(new(true, 150m), ct);
+        var below = fixture.Order("below", kind); below.Quantity = .999m;
+        var equal = fixture.Order("equal", kind);
+        var above = fixture.Order("above", kind); above.Quantity = 1.001m;
+        fixture.Db.AddRange(below, equal, above);
+        await fixture.Db.SaveChangesAsync(ct);
+        await fixture.Adapter.PlaceOrdersAsync(fixture.Selection, fixture.Config, [below, equal, above], ct);
+        Assert.Equal("NEW", below.Status);
+        Assert.Equal("NEW", equal.Status);
+        Assert.Equal("PENDING_EXCHANGE", above.Status);
+        Assert.Equal("above", (await fixture.Db.OrderApprovals.SingleAsync(ct)).OrderId);
+    }
+
+    [Theory]
+    [InlineData("AMEND")]
+    [InlineData("FLATTEN")]
+    public async Task ThresholdUsesProposedWireAmountForEveryAction(string action)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var fixture = await Fixture.Create(ct);
+        await new TradingControlSettingsService(fixture.Db).SaveAsync(new(true, 150m), ct);
+        var order = fixture.Order("intent", action == "FLATTEN" ? "FLATTEN" : "TAKE_PROFIT");
+        order.Price = 999m; order.Quantity = 999m; // Stored values must not determine the new send's amount.
+        fixture.Db.Add(order);
+        await fixture.Db.SaveChangesAsync(ct);
+        foreach (var quantity in new[] { "1.99", "2", "2.01" })
+        {
+            var wire = new GridTrading.Api.Exchange.HyperliquidLimitOrder(0, false, "75", quantity, true, "Gtc", order.ClientOrderId);
+            var allowed = await OrderApprovalService.AuthorizeWireAsync(fixture.Db, fixture.Selection.AccountId,
+                order.ClientOrderId, action, wire, ct);
+            Assert.Equal(quantity != "2.01", allowed);
+        }
+        var pending = await fixture.Db.OrderApprovals.SingleAsync(ct);
+        Assert.Equal(75m, pending.Price);
+        Assert.Equal(2.01m, pending.Quantity);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RaisingThresholdDoesNotReleasePendingOrRejectedOrders(bool reject)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var fixture = await Fixture.Create(ct);
+        var order = fixture.Order("held", "ENTRY");
+        fixture.Db.Add(order);
+        await fixture.Db.SaveChangesAsync(ct);
+        await fixture.Adapter.PlaceOrdersAsync(fixture.Selection, fixture.Config, [order], ct);
+        var approval = await fixture.Db.OrderApprovals.SingleAsync(ct);
+        if (reject) await fixture.Approvals.RejectAsync(approval.Id, ct);
+        await new TradingControlSettingsService(fixture.Db).SaveAsync(new(true, 1000m), ct);
+        await fixture.Adapter.PlaceOrdersAsync(fixture.Selection, fixture.Config, [order], ct);
+        Assert.Equal("PENDING_EXCHANGE", order.Status);
+        Assert.Equal(reject ? "REJECTED" : "PENDING", approval.Status);
+        await fixture.Approvals.ApproveAsync(approval.Id, ct);
+        await fixture.Adapter.PlaceOrdersAsync(fixture.Selection, fixture.Config, [order], ct);
+        Assert.Equal("NEW", order.Status);
+    }
+
     private sealed class Fixture(SqliteConnection connection, TradingDbContext db) : IAsyncDisposable
     {
         public TradingDbContext Db => db;

@@ -112,6 +112,7 @@ public static class DatabaseCompatibility
             );
             CREATE INDEX IF NOT EXISTS "IX_OrderApprovals_OrderId_Status" ON "OrderApprovals" ("OrderId", "Status");
             """);
+        await AddColumnIfMissingAsync(db, "TradingControlSettings", "MinimumConfirmationNotional", "TEXT NOT NULL DEFAULT '0'");
         await AddColumnIfMissingAsync(db, "Orders", "PendingTimeInForce", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "OrderPlacementNotifications", "ExecutionAccountId", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "OrderPlacementNotifications", "Symbol", "TEXT NULL");

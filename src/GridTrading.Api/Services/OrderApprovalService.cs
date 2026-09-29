@@ -93,15 +93,17 @@ public sealed class OrderApprovalService(TradingDbContext db, ExecutionAccountOp
     public static async Task<bool> AuthorizeWireAsync(TradingDbContext db, string accountId,
         string stableClientOrderId, string action, HyperliquidLimitOrder wire, CancellationToken ct)
     {
-        // Keep the same boundary for every live send, including GTC fallback and amendments.
-        if (!(await new TradingControlSettingsService(db).GetAsync(ct)).RequireManualOrderConfirmation &&
+        // Evaluate the actual rounded wire values, including GTC fallback and amendments.
+        var price = decimal.Parse(wire.Price, CultureInfo.InvariantCulture);
+        var quantity = decimal.Parse(wire.Size, CultureInfo.InvariantCulture);
+        if (!(await new TradingControlSettingsService(db).GetAsync(ct)).RequiresConfirmation(price, quantity) &&
             !await db.OrderApprovals.AnyAsync(x => x.ExecutionAccountId == accountId &&
                 x.ClientOrderId == stableClientOrderId && (x.Status == "PENDING" || x.Status == "APPROVED" || x.Status == "REJECTED"), ct)) return true;
         var order = await db.Orders.SingleOrDefaultAsync(x => x.ClientOrderId == stableClientOrderId, ct)
             ?? throw new TradingProblemException(409, "ORDER_REVIEW_REQUIRED", "A tracked order is required for manual approval.");
         var cycle = await db.Cycles.SingleAsync(x => x.Id == order.CycleId && x.ExecutionAccountId == accountId, ct);
         return await AuthorizeAsync(db, new(cycle.ExecutionEnvironmentId, accountId), order, action,
-            decimal.Parse(wire.Price, CultureInfo.InvariantCulture), decimal.Parse(wire.Size, CultureInfo.InvariantCulture),
+            price, quantity,
             wire.Tif, wire.ReduceOnly, ct);
     }
 
@@ -110,7 +112,7 @@ public sealed class OrderApprovalService(TradingDbContext db, ExecutionAccountOp
     {
         var active = await db.OrderApprovals.Where(x => x.OrderId == order.Id &&
             (x.Status == "PENDING" || x.Status == "APPROVED" || x.Status == "REJECTED")).ToListAsync(ct);
-        if (active.Count == 0 && !(await new TradingControlSettingsService(db).GetAsync(ct)).RequireManualOrderConfirmation) return true;
+        if (active.Count == 0 && !(await new TradingControlSettingsService(db).GetAsync(ct)).RequiresConfirmation(price, quantity)) return true;
         var match = active.SingleOrDefault(x => x.Action == action && x.Price == price && x.Quantity == quantity &&
             x.TimeInForce == tif && x.ReduceOnly == reduceOnly && x.FilledQuantity == order.FilledQuantity &&
             x.ExchangeOrderId == order.ExchangeOrderId && x.Side == order.Side && x.Symbol == order.Symbol);

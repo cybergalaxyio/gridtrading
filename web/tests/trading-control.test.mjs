@@ -35,11 +35,12 @@ test('approval authorizes one exact queued order without resending editable orde
 test('settings use shared backend persistence and preserve the switch value', async () => {
   const { api, requests } = loadApi()
   assert.equal((await api.tradingControlSettings()).requireManualOrderConfirmation, true)
-  await api.saveTradingControlSettings({ requireManualOrderConfirmation: false })
+  await api.saveTradingControlSettings({ requireManualOrderConfirmation: false, minimumConfirmationNotional: "150.25" })
   assert.deepEqual(requests.map(x => [x.method, x.url]), [
     ['GET', '/api/v1/trading-control-settings'], ['PUT', '/api/v1/trading-control-settings'],
   ])
   assert.equal(requests[1].body.requireManualOrderConfirmation, false)
+  assert.equal(requests[1].body.minimumConfirmationNotional, "150.25")
 })
 
 test('per-order buttons target the chosen approval and disable actions already applied', () => {
