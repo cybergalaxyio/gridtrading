@@ -19,8 +19,15 @@ public static class OrderPlacementNotifications
             await db.OrderPlacementNotifications.AnyAsync(x => x.Id == id, ct)) return;
 
         var now = DateTimeOffset.UtcNow;
+        var icon = order.Kind switch
+        {
+            "ENTRY" => "📥",
+            "TAKE_PROFIT" => "🎯",
+            "FLATTEN" => "🚪",
+            _ => "📝"
+        };
         var message = FormattableString.Invariant($"""
-            ✅ GridTrading Order Placed
+            {icon} GridTrading Order Placed
             Environment: {selection.EnvironmentId}
             Account: {selection.AccountId}
             Symbol: {order.Symbol}
