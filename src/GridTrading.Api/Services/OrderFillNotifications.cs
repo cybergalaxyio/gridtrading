@@ -20,6 +20,7 @@ public static class OrderFillNotifications
         if (db.OrderPlacementNotifications.Local.Any(x => x.Id == id) ||
             await db.OrderPlacementNotifications.AnyAsync(x => x.Id == id, ct)) return;
 
+        var accountName = await TelegramOrderFormatting.AccountNameAsync(db, selection.AccountId, ct);
         db.OrderPlacementNotifications.Add(new OrderPlacementNotificationEntity
         {
             Id = id, ExecutionAccountId = selection.AccountId, Symbol = order.Symbol,
@@ -28,16 +29,12 @@ public static class OrderFillNotifications
             CreatedAt = completedAt,
             Message = FormattableString.Invariant($"""
                 ✅ GridTrading Order Fully Filled
-                Environment: {selection.EnvironmentId}
-                Account: {selection.AccountId}
+                Account: {accountName}
                 Symbol: {order.Symbol}
-                Side: {order.Side}
-                Type: {order.Kind}
+                Side: {TelegramOrderFormatting.SideAndType(order)}
                 Order Price: {order.Price:G29}
                 Filled Quantity: {order.Quantity:G29}
                 Order: {order.Id}
-                Exchange order: {venueId}
-                Cycle: {order.CycleId}
                 Filled at: {completedAt.UtcDateTime:yyyy-MM-dd HH:mm:ss 'UTC'}
                 """)
         });

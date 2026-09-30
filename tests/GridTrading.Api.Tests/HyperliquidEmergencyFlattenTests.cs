@@ -110,7 +110,10 @@ public sealed class HyperliquidEmergencyFlattenTests
         var notification = Assert.Single(notifications, x => x.Message.Contains("Order Placed"));
         var completion = Assert.Single(notifications, x => x.Message.Contains("Order Fully Filled"));
         Assert.Contains("Filled Quantity: 1.79", completion.Message);
-        Assert.Contains("Type: FLATTEN", notification.Message);
+        Assert.Contains("Side: BUY · Close\n", notification.Message);
+        Assert.Contains("Side: BUY · Close\n", completion.Message);
+        Assert.DoesNotContain("Type:", notification.Message);
+        Assert.DoesNotContain("Type:", completion.Message);
         Assert.Contains("Quantity: 1.79", notification.Message);
     }
 

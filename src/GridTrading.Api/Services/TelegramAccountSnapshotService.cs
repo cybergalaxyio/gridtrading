@@ -52,11 +52,8 @@ public sealed class TelegramAccountSnapshotService(
                 ? FormattableString.Invariant($"{state.AccountLeverage.Value:0.####}x") : "Unavailable (equity or exposure unavailable)";
             return FormattableString.Invariant($"""
                 Account Snapshot
-                Account: {state.AccountId}
                 Current Account Position ({coin}): {side} {Math.Abs(state.NetPosition):G29} {coin}
-                Unrealized PNL ({coin}): {state.UnrealizedPnl:0.########} USDC
                 Unified Account Leverage: {leverage}
-                Leverage Scope: Native USDC perpetuals
                 Account Available Balance: {state.AvailableBalance:0.########} USDC
                 As of: {state.AsOf.UtcDateTime:yyyy-MM-dd HH:mm:ss 'UTC'}
                 """);
@@ -76,7 +73,6 @@ public sealed class TelegramAccountSnapshotService(
     private static string Unavailable(string reason) => $"""
         Account Snapshot: Unavailable ({reason})
         Current Account Position: Unavailable
-        Unrealized PNL: Unavailable
         Unified Account Leverage: Unavailable
         Account Available Balance: Unavailable
         """;

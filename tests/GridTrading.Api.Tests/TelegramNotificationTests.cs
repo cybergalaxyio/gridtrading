@@ -34,6 +34,9 @@ public sealed partial class TelegramNotificationTests
             var adapter = new PaperExecutionAdapter(new MarketState(), db);
             var selection = new ExecutionSelection(ExecutionEnvironmentIds.PaperLocal, PaperExecutionAdapter.AccountId);
             var orders = new[] { NotificationOrder("entry", "ENTRY"), NotificationOrder("tp", "TAKE_PROFIT") };
+            orders[0].GridLevel = 3;
+            orders[1].GridLevel = 2;
+            orders[1].Side = "SELL";
             db.Orders.AddRange(orders);
             await db.SaveChangesAsync(ct);
             Assert.Empty(await db.OrderPlacementNotifications.ToListAsync(ct));
@@ -55,15 +58,17 @@ public sealed partial class TelegramNotificationTests
         Assert.Equal(2, messages.Length);
         Assert.All(messages, message =>
         {
-            Assert.Contains("Environment: paper-local", message.Text);
-            Assert.Contains("Account: acct_paper_01", message.Text);
+            Assert.DoesNotContain("Environment:", message.Text);
+            Assert.Contains("Account: Weekend Paper", message.Text);
             Assert.Contains("Symbol: SOLUSDT", message.Text);
             Assert.Contains("Price: 150.25", message.Text);
             Assert.Contains("Quantity: 0.2", message.Text);
-            Assert.Contains("Cycle: cycle-notifications", message.Text);
+            Assert.DoesNotContain("Type:", message.Text);
+            Assert.DoesNotContain("Cycle:", message.Text);
+            Assert.DoesNotContain("Exchange order:", message.Text);
         });
-        Assert.Contains(messages, x => x.Text.Contains("Type: ENTRY"));
-        Assert.Contains(messages, x => x.Text.Contains("Type: TAKE_PROFIT"));
+        Assert.Contains(messages, x => x.Text.Contains("Side: BUY(B3) · Entry\n"));
+        Assert.Contains(messages, x => x.Text.Contains("Side: SELL (B2-TP) · TP\n"));
         await InScope(provider, async scope =>
         {
             var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
@@ -125,6 +130,67 @@ public sealed partial class TelegramNotificationTests
             await settings.TestAndEnableAsync(ct);
         });
         Assert.False(await dispatcher.ProcessNextAsync(ct));
+    }
+
+    [Theory]
+    [InlineData("snapshot-account", "solana", "solana")]
+    [InlineData("snapshot-account", "", "snapshot-account")]
+    [InlineData("snapshot-account", "   ", "snapshot-account")]
+    [InlineData("snapshot-account", null, "snapshot-account")]
+    [InlineData(ExecutionEnvironmentIds.PaperAccount, null, "Weekend Paper")]
+    public async Task OrderNotificationsUseAccountNamesAndKeepStructuredContext(
+        string accountId, string? name, string expectedName)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = await OpenDatabaseAsync(ct);
+        await using var db = Database(connection);
+        if (name is not null)
+        {
+            var account = SnapshotAccount();
+            account.Name = name;
+            db.HyperliquidAccounts.Add(account);
+            await db.SaveChangesAsync(ct);
+        }
+        var selection = new ExecutionSelection(
+            accountId == ExecutionEnvironmentIds.PaperAccount
+                ? ExecutionEnvironmentIds.PaperLocal : ExecutionEnvironmentIds.HyperliquidMainnet, accountId);
+        var order = CompletionOrder("ENTRY");
+        await OrderPlacementNotifications.RecordAsync(db, selection, order, ct);
+        await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, DateTimeOffset.UtcNow, ct);
+        await db.SaveChangesAsync(ct);
+        var notifications = await db.OrderPlacementNotifications.ToListAsync(ct);
+        Assert.Equal(2, notifications.Count);
+        Assert.All(notifications, notification =>
+        {
+            Assert.Contains("Account: " + expectedName + "\n", notification.Message);
+            Assert.Equal(1, notification.Message.Split('\n').Count(line => line.StartsWith("Account:")));
+            Assert.DoesNotContain("Environment:", notification.Message);
+            Assert.DoesNotContain("Exchange order:", notification.Message);
+            Assert.DoesNotContain("Type:", notification.Message);
+            Assert.DoesNotContain("Cycle:", notification.Message);
+            Assert.Contains("Order: " + order.Id, notification.Message);
+            Assert.Equal(accountId, notification.ExecutionAccountId);
+            Assert.Equal(order.Symbol, notification.Symbol);
+        });
+        Assert.Contains(notifications, x => x.Message.StartsWith("📥 GridTrading Order Placed\n"));
+        Assert.Contains(notifications, x => x.Message.StartsWith("✅ GridTrading Order Fully Filled\n"));
+
+        // A rename affects new notifications, not an already recorded event.
+        if (name == "solana")
+        {
+            (await db.HyperliquidAccounts.SingleAsync(ct)).Name = "renamed account";
+            await db.SaveChangesAsync(ct);
+            await OrderPlacementNotifications.RecordAsync(db, selection, order, ct);
+            await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, DateTimeOffset.UtcNow, ct);
+            await OrderPlacementNotifications.RecordAsync(db, selection, order, ct, exchangeOrderId: "456");
+            await OrderFillNotifications.RecordConfirmedAsync(db, selection, order, DateTimeOffset.UtcNow, ct,
+                exchangeOrderId: "456");
+            await db.SaveChangesAsync(ct);
+            Assert.Equal(4, await db.OrderPlacementNotifications.CountAsync(ct));
+            Assert.All(notifications, notification => Assert.Contains("Account: solana\n", notification.Message));
+            Assert.Equal(2, (await db.OrderPlacementNotifications.ToListAsync(ct))
+                .Count(notification => notification.Message.Contains("Account: renamed account\n")));
+        }
     }
 
     private static OrderEntity NotificationOrder(string id, string kind) => new()

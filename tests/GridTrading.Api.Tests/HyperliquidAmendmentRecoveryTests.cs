@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using GridTrading.Api.Data;
@@ -57,8 +58,10 @@ public sealed class HyperliquidAmendmentRecoveryTests
         Assert.False(lot.ProtectionPending);
         Assert.Equal("8002", finalTp.ExchangeOrderId);
         var notifications = await verified.OrderPlacementNotifications.ToListAsync(ct);
-        Assert.Single(notifications, x => x.Message.Contains("Exchange order: 8001"));
-        var amendedNotification = Assert.Single(notifications, x => x.Message.Contains("Exchange order: 8002"));
+        var originalId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{finalTp.Id}:8001")));
+        var amendedId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{finalTp.Id}:8002")));
+        Assert.Single(notifications, x => x.Id == originalId);
+        var amendedNotification = Assert.Single(notifications, x => x.Id == amendedId);
         Assert.Contains("Quantity: " + quantityText, amendedNotification.Message);
         Assert.Equal(1, fixture.Handler.Placements);
         Assert.Equal(mode == "timeout-before" ? 2 : 1, fixture.Handler.Modifications);

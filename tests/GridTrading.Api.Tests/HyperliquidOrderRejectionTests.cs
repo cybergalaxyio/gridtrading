@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using GridTrading.Api.Data;
@@ -88,7 +89,8 @@ public sealed class HyperliquidOrderRejectionTests
 
         Assert.Equal("NEW", retryEntry.Status);
         Assert.Equal("9001", retryEntry.ExchangeOrderId);
-        Assert.Contains("Exchange order: 9001", (await db.OrderPlacementNotifications.SingleAsync(ct)).Message);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{retryEntry.Id}:9001"))),
+            (await db.OrderPlacementNotifications.SingleAsync(ct)).Id);
         Assert.Equal("RUNNING", cycle.State);
 
         var takeProfit = Order("tp_rejected", "tp-rejected", "TAKE_PROFIT", "SELL", 7);

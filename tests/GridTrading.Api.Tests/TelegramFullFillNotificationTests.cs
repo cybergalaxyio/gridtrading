@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
 using GridTrading.Api.Services;
@@ -12,16 +14,22 @@ namespace GridTrading.Api.Tests;
 public sealed partial class TelegramNotificationTests
 {
     [Theory]
-    [InlineData("ENTRY")]
-    [InlineData("TAKE_PROFIT")]
-    [InlineData("FLATTEN")]
-    public async Task FullStatusNotifiesOnceAndPartialCancellationDoesNot(string kind)
+    [InlineData("ENTRY", "BUY", 0, "BUY(B0) · Entry")]
+    [InlineData("ENTRY", "BUY", 3, "BUY(B3) · Entry")]
+    [InlineData("ENTRY", "SELL", 0, "SELL(S0) · Entry")]
+    [InlineData("TAKE_PROFIT", "SELL", 2, "SELL (B2-TP) · TP")]
+    [InlineData("TAKE_PROFIT", "BUY", 2, "BUY (S2-TP) · TP")]
+    [InlineData("FLATTEN", "SELL", -1, "SELL · Close")]
+    public async Task FullStatusNotifiesOnceAndPartialCancellationDoesNot(
+        string kind, string side, int level, string expectedSide)
     {
         var ct = TestContext.Current.CancellationToken;
         await using var connection = await OpenDatabaseAsync(ct);
         await using var db = Database(connection);
         var cycle = CompletionCycle();
         var order = CompletionOrder(kind);
+        order.Side = side;
+        order.GridLevel = level;
         db.Cycles.Add(cycle);
         db.Orders.Add(order);
         await db.SaveChangesAsync(ct);
@@ -41,9 +49,11 @@ public sealed partial class TelegramNotificationTests
         await lifecycle.ProcessOrderUpdatesAsync(cycle.ExecutionAccountId, [update, update], ct);
         var notification = await db.OrderPlacementNotifications.SingleAsync(ct);
         Assert.Contains("Order Fully Filled", notification.Message);
-        Assert.Contains("Type: " + kind, notification.Message);
+        Assert.DoesNotContain("Type:", notification.Message);
+        Assert.Contains("Side: " + expectedSide + "\n", notification.Message);
         Assert.Contains("Filled Quantity: 0.2", notification.Message);
-        Assert.Contains("Exchange order: 124", notification.Message);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"filled:{order.Id}:124"))), notification.Id);
+        Assert.DoesNotContain("Exchange order:", notification.Message);
         Assert.Equal(update.OccurredAt, notification.CreatedAt);
 
         await using var restartedDb = Database(connection);
@@ -69,6 +79,7 @@ public sealed partial class TelegramNotificationTests
             db.HyperliquidAccounts.Add(SnapshotAccount());
             var cycle = CompletionCycle();
             var order = CompletionOrder("FLATTEN");
+            order.GridLevel = -1;
             db.Cycles.Add(cycle);
             db.Orders.Add(order);
             await OrderPlacementNotifications.RecordAsync(db,
@@ -91,8 +102,12 @@ public sealed partial class TelegramNotificationTests
         Assert.False(await Dispatcher(provider, bot).ProcessNextAsync(ct));
         var filled = Assert.Single(bot.Messages, x => x.Text.Contains("Order Fully Filled"));
         Assert.Contains("Filled Quantity: 0.2", filled.Text);
-        AssertSnapshot(filled.Text, "SHORT 0.3 SOL", "-1.25", "4.5x", "80");
-        Assert.Single(bot.Messages, x => x.Text.Contains("Order Placed"));
+        AssertSnapshot(filled.Text, "SHORT 0.3 SOL", "4.5x", "80");
+        Assert.Contains("Account: Snapshot account", filled.Text);
+        Assert.Contains("Side: BUY · Close\n", filled.Text);
+        var placed = Assert.Single(bot.Messages, x => x.Text.Contains("Order Placed"));
+        Assert.Contains("Side: BUY · Close\n", placed.Text);
+        Assert.DoesNotContain("Type:", placed.Text);
     }
 
     [Fact]

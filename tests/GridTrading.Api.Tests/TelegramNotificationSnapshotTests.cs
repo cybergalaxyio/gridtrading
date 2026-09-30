@@ -47,7 +47,7 @@ public sealed partial class TelegramNotificationTests
 
         var dispatcher = Dispatcher(provider, bot);
         Assert.True(await dispatcher.ProcessNextAsync(ct));
-        AssertSnapshot(bot.Messages[^1].Text, "SHORT 0.3 SOL", "-1.25", "4.5x", "80");
+        AssertSnapshot(bot.Messages[^1].Text, "SHORT 0.3 SOL", "4.5x", "80");
         Assert.True(bot.Messages[^1].Text.EnumerateRunes().Count() <= 4096);
         // The next alert reflects account state at send time, not order creation time.
         market.Position = "0.4";
@@ -55,8 +55,9 @@ public sealed partial class TelegramNotificationTests
         market.TotalNotional = "600";
         market.Hold = "30";
         Assert.True(await dispatcher.ProcessNextAsync(ct));
-        AssertSnapshot(bot.Messages[^1].Text, "LONG 0.4 SOL", "2.75", "6x", "70");
+        AssertSnapshot(bot.Messages[^1].Text, "LONG 0.4 SOL", "6x", "70");
         Assert.Contains("GridTrading Order Placed", bot.Messages[^1].Text);
+        Assert.Contains("Account: Snapshot account", bot.Messages[^1].Text);
         Assert.False(await dispatcher.ProcessNextAsync(ct));
         Assert.Equal(6, market.Requests.Count);
         Assert.All(market.Requests, request =>
@@ -91,12 +92,12 @@ public sealed partial class TelegramNotificationTests
                 {
                     Id = "legacy", Message = "Account: snapshot-account\nSymbol: SOLUSDT"
                 }, ct);
-            AssertSnapshot(message, "FLAT 0 SOL", "0", leverage, balance);
+            AssertSnapshot(message, "FLAT 0 SOL", leverage, balance);
         });
     }
 
     [Fact]
-    public async Task SnapshotFailureStillSendsAlertWithAllFourFields()
+    public async Task SnapshotFailureStillSendsAlertWithAllThreeMetrics()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var connection = await OpenDatabaseAsync(ct);
@@ -147,10 +148,12 @@ public sealed partial class TelegramNotificationTests
         Assert.Empty(market.Requests);
     }
 
-    private static void AssertSnapshot(string message, string position, string pnl, string leverage, string balance)
+    private static void AssertSnapshot(string message, string position, string leverage, string balance)
     {
         Assert.Contains("Current Account Position (SOL): " + position, message);
-        Assert.Contains("Unrealized PNL (SOL): " + pnl + " USDC", message);
+        Assert.DoesNotContain("Unrealized PNL", message);
+        Assert.DoesNotContain("Leverage Scope:", message);
+        Assert.DoesNotContain("Account:", message[message.IndexOf("Account Snapshot", StringComparison.Ordinal)..]);
         Assert.Contains("Unified Account Leverage: " + leverage, message);
         Assert.Contains("Account Available Balance: " + balance + " USDC", message);
         Assert.Contains("As of:", message);
@@ -159,7 +162,9 @@ public sealed partial class TelegramNotificationTests
     private static void AssertUnavailableSnapshot(string message)
     {
         Assert.Contains("Current Account Position: Unavailable", message);
-        Assert.Contains("Unrealized PNL: Unavailable", message);
+        Assert.DoesNotContain("Unrealized PNL", message);
+        Assert.DoesNotContain("Leverage Scope:", message);
+        Assert.DoesNotContain("Account:", message[message.IndexOf("Account Snapshot", StringComparison.Ordinal)..]);
         Assert.Contains("Unified Account Leverage: Unavailable", message);
         Assert.Contains("Account Available Balance: Unavailable", message);
     }
