@@ -293,3 +293,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .live-cycle-fields input { width: 100%; min-width: 0; padding: 10px; color: inherit; background: #09151e; border: 1px solid #41648c; }
 .live-cycle-editor [role="alert"] { color: #f3b58e; }
 @media (max-width: 700px) { .live-cycle-fields { grid-template-columns: 1fr; } }
+
+.telegram-approval-destination { margin-top: 14px; }
+.telegram-approval-destination label { margin-bottom: 8px; font-size: 12px; }
+.telegram-approval-destination input { width: min(100%, 460px); height: 38px; padding: 0 10px; border: 1px solid #344756; border-radius: 3px; background: #08141d; color: var(--text); }
+.telegram-approval-destination input:focus { border-color: var(--blue); outline: 1px solid var(--blue); }

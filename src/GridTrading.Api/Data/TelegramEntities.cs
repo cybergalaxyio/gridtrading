@@ -9,6 +9,7 @@ public sealed class TelegramNotificationSettingsEntity
     public required string ChatId { get; set; }
     public bool Enabled { get; set; }
     public bool OrderActionsEnabled { get; set; }
+    public string OrderActionsChatId { get; set; } = "";
     public string ActionsGeneration { get; set; } = Guid.NewGuid().ToString("N");
     public string? VerifiedPrivateChatId { get; set; }
     public long NextUpdateId { get; set; }

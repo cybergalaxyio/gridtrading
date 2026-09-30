@@ -19,6 +19,10 @@ public sealed partial class TelegramNotificationSettingsService(
     {
         EnsureCredentialKey();
         var chatId = NormalizeChatId(request.ChatId);
+        var actionsChatId = request.OrderActionsChatId?.Trim() ?? "";
+        if (request.OrderActionsEnabled && actionsChatId.Length == 0)
+            throw Problem("TELEGRAM_ORDER_ACTIONS_CHAT_REQUIRED", "Enter an explicit Order Actions Chat ID before enabling order actions.");
+        if (actionsChatId.Length > 0) actionsChatId = NormalizeChatId(actionsChatId);
         var token = string.IsNullOrWhiteSpace(request.BotToken) ? null : request.BotToken.Trim();
         if (token is not null) ValidateToken(token);
 
@@ -28,7 +32,8 @@ public sealed partial class TelegramNotificationSettingsService(
             throw Problem("TELEGRAM_BOT_TOKEN_REQUIRED", "Enter a Telegram bot token before saving the first configuration.");
 
         var changed = item is null || !string.Equals(item.ChatId, chatId, StringComparison.Ordinal) || token is not null
-            || item.OrderActionsEnabled != request.OrderActionsEnabled;
+            || item.OrderActionsEnabled != request.OrderActionsEnabled
+            || !string.Equals(item.OrderActionsChatId, actionsChatId, StringComparison.Ordinal);
         if (item is null)
         {
             item = new TelegramNotificationSettingsEntity
@@ -47,6 +52,7 @@ public sealed partial class TelegramNotificationSettingsService(
         }
 
         item.OrderActionsEnabled = request.OrderActionsEnabled;
+        item.OrderActionsChatId = actionsChatId;
         if (changed)
         {
             InvalidateActions(item);
@@ -94,7 +100,9 @@ public sealed partial class TelegramNotificationSettingsService(
             var identity = await bot.GetIdentityAsync(token, ct);
             if (item.OrderActionsEnabled)
             {
-                var chat = await bot.GetChatAsync(token, item.ChatId, ct);
+                if (string.IsNullOrWhiteSpace(item.OrderActionsChatId))
+                    throw new TelegramBotApiException("Enter an explicit Order Actions Chat ID before enabling order actions.");
+                var chat = await bot.GetChatAsync(token, item.OrderActionsChatId, ct);
                 if (chat.Type != "private" || chat.Id <= 0)
                     throw new TelegramBotApiException("Order actions require a private chat with the bot. Groups and channels support notifications only.");
                 if (await bot.HasWebhookAsync(token, ct))
@@ -102,8 +110,15 @@ public sealed partial class TelegramNotificationSettingsService(
                 item.VerifiedPrivateChatId = chat.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 item.LastActionError = null;
             }
+            var sameDestination = item.OrderActionsEnabled &&
+                (item.ChatId == item.OrderActionsChatId || item.ChatId == item.VerifiedPrivateChatId);
+            var testDetails = $"\nBot: @{identity.Username}\nTime: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm:ss 'UTC'}";
             await bot.SendMessageAsync(token, item.ChatId,
-                $"✅ GridTrading Telegram notifications enabled.\nBot: @{identity.Username}\nTime: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm:ss 'UTC'}", ct);
+                (sameDestination ? "✅ GridTrading Telegram notifications and order actions enabled. Use /pending to review orders."
+                    : "✅ GridTrading Telegram notifications enabled.") + testDetails, ct);
+            if (item.OrderActionsEnabled && !sameDestination)
+                await bot.SendMessageAsync(token, item.VerifiedPrivateChatId!,
+                    "✅ GridTrading order actions enabled in this private chat. Use /pending to review orders." + testDetails, ct);
             var now = DateTimeOffset.UtcNow;
             item.BotUsername = identity.Username;
             item.VerifiedAt = now;
@@ -198,11 +213,12 @@ public sealed partial class TelegramNotificationSettingsService(
         LastDeliveryError: item?.LastDeliveryError,
         OrderActionsEnabled: item?.OrderActionsEnabled == true,
         OrderActionsReady: ActionsReady(item),
-        LastActionError: item?.LastActionError);
+        LastActionError: item?.LastActionError,
+        OrderActionsChatId: item?.OrderActionsChatId ?? "");
 
     public static bool ActionsReady(TelegramNotificationSettingsEntity? item) =>
         item is { Enabled: true, OrderActionsEnabled: true, VerifiedAt: not null, VerifiedPrivateChatId: not null }
-        && !string.IsNullOrEmpty(item.ActionsGeneration);
+        && !string.IsNullOrEmpty(item.ActionsGeneration) && !string.IsNullOrWhiteSpace(item.OrderActionsChatId);
 
     private static void InvalidateActions(TelegramNotificationSettingsEntity item)
     {

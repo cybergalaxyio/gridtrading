@@ -114,7 +114,7 @@ export type HyperliquidHistoricalOrder = HyperliquidOrderAttribution & {
 
 export type TelegramSettings = {
   configured: boolean; enabled: boolean; tokenStored: boolean; chatId: string;
-  orderActionsEnabled?: boolean; orderActionsReady?: boolean; lastActionError?: string | null;
+  orderActionsChatId?: string; orderActionsEnabled?: boolean; orderActionsReady?: boolean; lastActionError?: string | null;
   botUsername?: string | null; verifiedAt?: string | null; enabledAt?: string | null;
   lastTestedAt?: string | null; lastTestError?: string | null; lastDeliveryAt?: string | null;
   lastDeliveryStatus?: 'SUCCEEDED' | 'FAILED' | null; lastDeliveryError?: string | null;

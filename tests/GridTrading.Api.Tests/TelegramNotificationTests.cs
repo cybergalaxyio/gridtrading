@@ -408,6 +408,7 @@ public sealed partial class TelegramNotificationTests
     {
         public List<(string ChatId, string Text)> Messages { get; } = [];
         public TelegramBotApiException? Failure { get; set; }
+        public string? FailMessageChatId { get; set; }
 
         public Task<TelegramBotIdentity> GetIdentityAsync(string botToken, CancellationToken ct)
         {
@@ -419,6 +420,7 @@ public sealed partial class TelegramNotificationTests
         public Task SendMessageAsync(string botToken, string chatId, string text, CancellationToken ct)
         {
             if (Failure is not null) throw Failure;
+            if (chatId == FailMessageChatId) throw new TelegramBotApiException("Test destination is unavailable.");
             Messages.Add((chatId, text));
             return Task.CompletedTask;
         }

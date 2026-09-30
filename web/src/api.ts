@@ -67,7 +67,7 @@ export const api = {
     method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body),
   }),
   telegramSettings: () => call<TelegramSettings>('/notification-settings/telegram'),
-  saveTelegramSettings: (body: { botToken?: string; chatId: string; orderActionsEnabled?: boolean }) => call<TelegramSettings>('/notification-settings/telegram', {
+  saveTelegramSettings: (body: { botToken?: string; chatId: string; orderActionsEnabled?: boolean; orderActionsChatId?: string }) => call<TelegramSettings>('/notification-settings/telegram', {
     method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body),
   }),
   testAndEnableTelegram: () => call<TelegramSettings>('/notification-settings/telegram/test-and-enable', { method: 'POST' }),

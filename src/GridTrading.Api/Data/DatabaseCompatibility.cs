@@ -115,6 +115,7 @@ public static class DatabaseCompatibility
         await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "OrderActionsEnabled", "INTEGER NOT NULL DEFAULT 0");
         await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "ActionsGeneration", "TEXT NOT NULL DEFAULT ''");
         await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "VerifiedPrivateChatId", "TEXT NULL");
+        await EnsureTelegramActionDestinationAsync(db);
         await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "NextUpdateId", "INTEGER NOT NULL DEFAULT 0");
         await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "LastActionError", "TEXT NULL");
         await db.Database.ExecuteSqlRawAsync("""
@@ -180,6 +181,20 @@ public static class DatabaseCompatibility
                 ), "ExecutionEnvironmentId");
             """);
         await EnsureAccountExecutionIdentityAsync(db);
+    }
+
+    private static async Task EnsureTelegramActionDestinationAsync(TradingDbContext db)
+    {
+        // The one-time copy must commit with the column so an interrupted upgrade can retry.
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync() : null;
+        var added = await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "OrderActionsChatId", "TEXT NOT NULL DEFAULT ''");
+        if (added)
+            await db.Database.ExecuteSqlRawAsync("""
+                UPDATE "TelegramNotificationSettings" SET "OrderActionsChatId" = "VerifiedPrivateChatId"
+                WHERE "OrderActionsEnabled" = 1 AND "VerifiedPrivateChatId" IS NOT NULL;
+                """);
+        if (transaction is not null) await transaction.CommitAsync();
     }
 
     private static async Task EnsureAccountExecutionIdentityAsync(TradingDbContext db)

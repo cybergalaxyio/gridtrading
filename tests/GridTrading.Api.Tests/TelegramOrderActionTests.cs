@@ -23,13 +23,13 @@ public sealed partial class TelegramNotificationTests
         {
             var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
             Assert.False((await settings.GetAsync(Ct)).OrderActionsEnabled);
-            await settings.SaveAsync(new(Token, "-100123", true), Ct);
+            await settings.SaveAsync(new(Token, "-100123", true, "-100123"), Ct);
             await Assert.ThrowsAsync<TradingProblemException>(() => settings.TestAndEnableAsync(Ct));
             Assert.False((await settings.GetAsync(Ct)).OrderActionsReady);
             // Group notifications continue to work without actions.
             await settings.SaveAsync(new(null, "-100123", false), Ct);
             Assert.True((await settings.TestAndEnableAsync(Ct)).Enabled);
-            await settings.SaveAsync(new(null, "123", true), Ct);
+            await settings.SaveAsync(new(null, "123", true, "123"), Ct);
             bot.HasWebhook = true;
             var conflict = await Assert.ThrowsAsync<TradingProblemException>(() => settings.TestAndEnableAsync(Ct));
             Assert.Contains("webhook", conflict.Message);
@@ -162,7 +162,7 @@ public sealed partial class TelegramNotificationTests
         await InScope(provider, async scope =>
         {
             var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
-            await settings.SaveAsync(new(Token, "123", true), Ct);
+            await settings.SaveAsync(new(Token, "123", true, "123"), Ct);
             await settings.TestAndEnableAsync(Ct);
             var service = scope.ServiceProvider.GetRequiredService<TelegramOrderActionService>();
             Assert.Contains("unavailable", await service.HandleCallbackAsync(generation, callback with { Id = "new-click" }, Ct));
@@ -343,7 +343,7 @@ public sealed partial class TelegramNotificationTests
         Assert.True(settings.Enabled);
         Assert.False(settings.OrderActionsEnabled);
         Assert.False(settings.OrderActionsReady);
-        await service.SaveAsync(new(null, "123", true), Ct);
+        await service.SaveAsync(new(null, "123", true, "123"), Ct);
         await service.TestAndEnableAsync(Ct);
         await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
         Assert.True((await service.GetAsync(Ct)).OrderActionsReady);
@@ -484,13 +484,159 @@ public sealed partial class TelegramNotificationTests
         Assert.Contains("second", handler.Requests[1].Body);
     }
 
-    private static async Task<string> EnableActions(ServiceProvider provider)
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ActionsRequireExplicitDestinationEvenWithPrivateNotificationChat(string? chat)
+    {
+        await using var connection = await OpenDatabaseAsync(Ct);
+        await using var db = Database(connection);
+        var service = new TelegramNotificationSettingsService(db, Protector(), new FakeBot());
+        var error = await Assert.ThrowsAsync<TradingProblemException>(() => service.SaveAsync(new(Token, "123", true, chat), Ct));
+        Assert.Equal("TELEGRAM_ORDER_ACTIONS_CHAT_REQUIRED", error.Code);
+        Assert.Empty(await db.TelegramNotificationSettings.ToListAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData("-100123", 2)]
+    [InlineData("456", 2)]
+    [InlineData("123", 1)]
+    public async Task IndependentDestinationRoutesNotificationsAndApprovalsSeparately(string notificationChat, int testMessageCount)
+    {
+        await using var connection = await OpenDatabaseAsync(Ct);
+        var bot = new FakeBot();
+        await using var provider = Services(connection, bot);
+        var generation = await EnableActions(provider, notificationChat, "123");
+        Assert.Equal(testMessageCount, bot.Messages.Count);
+        Assert.Contains(bot.Messages, x => x.ChatId == notificationChat && x.Text.Contains("notifications"));
+        Assert.Contains(bot.Messages, x => x.ChatId == "123" && x.Text.Contains("order actions"));
+        await SeedReview(provider, "review"); await Dispatch(provider);
+        Assert.Equal("123", Assert.Single(bot.ButtonMessages).ChatId);
+        await InScope(provider, async scope =>
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            db.RiskAlerts.Add(Alert("separate-destination", "INFO", DateTimeOffset.UtcNow));
+            await db.SaveChangesAsync(Ct);
+            var dto = await scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>().GetAsync(Ct);
+            Assert.Equal(notificationChat, dto.ChatId);
+            Assert.Equal("123", dto.OrderActionsChatId);
+        });
+        await Dispatcher(provider, bot).ProcessNextAsync(Ct);
+        Assert.Equal(notificationChat, bot.Messages.Last().ChatId);
+        var before = bot.ButtonMessages.Count;
+        await Worker(provider, bot).ProcessUpdateAsync(generation, Token, new(1, new(456, "private", 456, 1, "/pending"), null), Ct);
+        Assert.Equal(before, bot.ButtonMessages.Count);
+        await Worker(provider, bot).ProcessUpdateAsync(generation, Token, new(2, new(123, "private", 123, 2, "/pending"), null), Ct);
+        Assert.True(bot.ButtonMessages.Count > before);
+        Assert.All(bot.ButtonMessages, x => Assert.Equal("123", x.ChatId));
+    }
+
+    [Fact]
+    public async Task FailedActionDestinationTestDoesNotEnableEitherDestination()
+    {
+        await using var connection = await OpenDatabaseAsync(Ct);
+        await using var db = Database(connection);
+        var bot = new FakeBot { FailMessageChatId = "123" };
+        var service = new TelegramNotificationSettingsService(db, Protector(), bot);
+        await service.SaveAsync(new(Token, "-100123", true, "123"), Ct);
+        var error = await Assert.ThrowsAsync<TradingProblemException>(() => service.TestAndEnableAsync(Ct));
+        Assert.Equal("TELEGRAM_VERIFICATION_FAILED", error.Code);
+        Assert.Equal("-100123", Assert.Single(bot.Messages).ChatId);
+        var settings = await service.GetAsync(Ct);
+        Assert.False(settings.Enabled);
+        Assert.False(settings.OrderActionsReady);
+        Assert.Null((await db.TelegramNotificationSettings.SingleAsync(Ct)).VerifiedPrivateChatId);
+    }
+
+    [Fact]
+    public async Task ChangingOnlyActionDestinationInvalidatesOldButtonsAndPersistsNewTarget()
+    {
+        await using var connection = await OpenDatabaseAsync(Ct);
+        var bot = new FakeBot();
+        await using var provider = Services(connection, bot);
+        var oldGeneration = await EnableActions(provider, "-100123");
+        await SeedReview(provider, "review"); await Dispatch(provider);
+        var oldCallback = Callback(bot.ButtonMessages.Single(), "old-target", true);
+        await InScope(provider, async scope =>
+        {
+            var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
+            var saved = await settings.SaveAsync(new(null, "-100123", true, " 456 "), Ct);
+            Assert.Equal("456", saved.OrderActionsChatId);
+            Assert.False(saved.OrderActionsReady);
+            Assert.False(saved.Enabled);
+            var actions = scope.ServiceProvider.GetRequiredService<TelegramOrderActionService>();
+            Assert.Contains("unavailable", await actions.HandleCallbackAsync(oldGeneration, oldCallback, Ct));
+        });
+        string generation = "";
+        await InScope(provider, async scope =>
+        {
+            var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
+            Assert.Equal("456", (await settings.GetAsync(Ct)).OrderActionsChatId);
+            Assert.True((await settings.TestAndEnableAsync(Ct)).OrderActionsReady);
+            var actions = scope.ServiceProvider.GetRequiredService<TelegramOrderActionService>();
+            generation = (await actions.SettingsAsync(Ct))!.ActionsGeneration;
+            Assert.Contains("unavailable", await actions.HandleCallbackAsync(generation, oldCallback, Ct));
+        });
+        await Dispatch(provider);
+        var newMessage = bot.ButtonMessages.Last();
+        Assert.Equal("456", newMessage.ChatId);
+        var callback = Callback(newMessage, "new-target", true);
+        callback = callback with { SenderId = 456, Message = callback.Message! with { ChatId = 456 } };
+        await InScope(provider, async scope => Assert.Contains("Approved", await scope.ServiceProvider.GetRequiredService<TelegramOrderActionService>()
+            .HandleCallbackAsync(generation, callback, Ct)));
+    }
+
+    [Theory]
+    [InlineData(true, "123", "123")]
+    [InlineData(false, "123", "")]
+    [InlineData(true, null, "")]
+    public async Task UpgradeCopiesOnlyPreviouslyVerifiedEnabledActionDestination(bool enabled, string? verified, string expected)
+    {
+        await using var connection = await OpenDatabaseAsync(Ct);
+        await using var db = Database(connection);
+        db.TelegramNotificationSettings.Add(new() { EncryptedBotToken = "not-used", ChatId = "-100123", OrderActionsEnabled = enabled,
+            VerifiedPrivateChatId = verified, Enabled = enabled, VerifiedAt = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync(Ct);
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE TelegramNotificationSettings DROP COLUMN OrderActionsChatId", Ct);
+        db.ChangeTracker.Clear();
+        await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
+        var settings = await db.TelegramNotificationSettings.SingleAsync(Ct);
+        Assert.Equal(expected, settings.OrderActionsChatId);
+        settings.OrderActionsChatId = "789";
+        await db.SaveChangesAsync(Ct);
+        await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
+        db.ChangeTracker.Clear();
+        Assert.Equal("789", (await db.TelegramNotificationSettings.SingleAsync(Ct)).OrderActionsChatId);
+    }
+
+    [Fact]
+    public async Task FailedDestinationBackfillRollsBackColumnAndRetriesOnNextStartup()
+    {
+        await using var connection = await OpenDatabaseAsync(Ct);
+        await using var db = Database(connection);
+        db.TelegramNotificationSettings.Add(new() { EncryptedBotToken = "not-used", ChatId = "123",
+            OrderActionsEnabled = true, VerifiedPrivateChatId = "123", Enabled = true, VerifiedAt = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync(Ct);
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE TelegramNotificationSettings DROP COLUMN OrderActionsChatId", Ct);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TRIGGER FailDestinationBackfill BEFORE UPDATE ON TelegramNotificationSettings
+            BEGIN SELECT RAISE(ABORT, 'Simulated upgrade interruption'); END;
+            """, Ct);
+        db.ChangeTracker.Clear();
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => DatabaseCompatibility.EnsureExecutionSchemaAsync(db));
+        await db.Database.ExecuteSqlRawAsync("DROP TRIGGER FailDestinationBackfill", Ct);
+        await DatabaseCompatibility.EnsureExecutionSchemaAsync(db);
+        Assert.Equal("123", (await db.TelegramNotificationSettings.SingleAsync(Ct)).OrderActionsChatId);
+    }
+
+    private static async Task<string> EnableActions(ServiceProvider provider, string notificationChatId = "123", string actionsChatId = "123")
     {
         string generation = "";
         await InScope(provider, async scope =>
         {
             var settings = scope.ServiceProvider.GetRequiredService<TelegramNotificationSettingsService>();
-            await settings.SaveAsync(new(Token, "123", true), Ct);
+            await settings.SaveAsync(new(Token, notificationChatId, true, actionsChatId), Ct);
             await settings.TestAndEnableAsync(Ct);
             generation = (await scope.ServiceProvider.GetRequiredService<TradingDbContext>().TelegramNotificationSettings.SingleAsync(Ct)).ActionsGeneration;
         });
