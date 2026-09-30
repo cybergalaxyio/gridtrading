@@ -261,6 +261,13 @@ api.MapGet("/cycles/{id}/risk-advisory", async (string id, TradingDbContext db, 
     await db.Cycles.AnyAsync(x => x.Id == id, ct) ? Results.Ok(new { color = "GREEN", reasons = Array.Empty<string>(), adx = 19.4m, atr = .84m, fundingRate = .0001m }) : Results.NotFound());
 api.MapGet("/cycles/{id}/reconciliation", async (string id, TradingDbContext db, GridOrderLifecycle lifecycle, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { status = lifecycle.IsLedgerReady(c) ? "IN_SYNC" : "RECOVERY_REQUIRED", c.LastReconciledAt, differences = c.LedgerError is null ? Array.Empty<string>() : new[] { c.LedgerError } }) : Results.NotFound());
+api.MapPost("/cycles/{id}/commands/update-parameters", async (string id, UpdateCycleParametersRequest request,
+    HttpRequest http, HttpResponse response, GridStrategyWorkflow workflow, CancellationToken ct) =>
+{
+    var operation = await workflow.UpdateParametersAsync(id, request, Header(http, "Idempotency-Key"), IfMatch(http), ct);
+    response.Headers.Location = $"/api/v1/operations/{operation.Id}";
+    return Results.Accepted(value: OperationDto(operation));
+});
 api.MapGet("/cycles/{id}/operator-actions", async (string id, TradingDbContext db, CancellationToken ct) => (await db.AuditLogs.Where(x => x.ResourceId == id).ToListAsync(ct)).OrderByDescending(x => x.OccurredAt).ToList());
 api.MapGet("/cycles/{id}/report", async (string id, TradingDbContext db, CancellationToken ct) =>
     await db.Cycles.FindAsync([id], ct) is { } c ? Results.Ok(new { cycle = CycleDto(c), c.ExitReason, c.MaximumAdverseExcursion, c.MaximumDrawdown, orders = await db.Orders.Where(x => x.CycleId == id).ToListAsync(ct), executions = await db.Executions.Where(x => x.CycleId == id).ToListAsync(ct) }) : Results.NotFound());
@@ -354,6 +361,7 @@ static object CycleDto(CycleEntity x) => new
     cycleId = x.Id, x.StrategyId, symbol = GridConfigurationCodec.ReadFrozen(x.FrozenConfigurationJson).Symbol, state = x.State, x.StateVersion, x.IsTerminal, x.OperatorResetRequired,
     x.RiskPaused, operatorPaused = x.IsOperatorPaused, x.EntryPauseReasons, x.RiskRecoveryChecks,
     x.ExecutionEnvironmentId, x.ExecutionAccountId, x.FixedCenterPrice,
+    effectiveConfiguration = x.EffectiveConfiguration,
     frozenConfiguration = GridConfigurationCodec.ReadFrozen(x.FrozenConfigurationJson),
     frozenPlan = JsonSerializer.Deserialize<GridPlan>(x.FrozenPlanJson, JsonSupport.Options),
     x.EntryGridPriceOffset, effectivePlan = x.EffectivePlan,

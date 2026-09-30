@@ -150,6 +150,9 @@ public static class DatabaseCompatibility
         await AddColumnIfMissingAsync(db, "Cycles", "RiskRecoveryChecks", "INTEGER NOT NULL DEFAULT 0");
         await AddColumnIfMissingAsync(db, "Cycles", "EntryGridPriceOffset", "TEXT NOT NULL DEFAULT '0'");
         await AddColumnIfMissingAsync(db, "Cycles", "EntryGridMovePendingOrderId", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "Cycles", "LiveConfigurationJson", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "Cycles", "LivePlanJson", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "Orders", "EntryTakeProfitPoints", "TEXT NULL");
 
         await EnsureOrderCompletionSchemaAsync(db);
 

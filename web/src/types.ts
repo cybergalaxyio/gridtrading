@@ -21,6 +21,7 @@ export type Cycle = {
   riskPaused?: boolean; operatorPaused?: boolean; entryPauseReasons?: string[]; riskRecoveryChecks?: number;
   operatorResetRequired: boolean; fixedCenterPrice: string; startedAt: string; endedAt?: string;
   executionEnvironmentId: string; executionAccountId: string;
+  effectiveConfiguration?: StrategyConfig | null;
   frozenConfiguration?: StrategyConfig | null;
   frozenPlan?: { levels: GridLevel[] } | null;
   entryGridPriceOffset?: string; effectivePlan?: { centerPrice: string; levels: GridLevel[] } | null;

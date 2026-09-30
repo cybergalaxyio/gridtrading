@@ -25,6 +25,7 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<OrderEntity>().Property(x => x.EntryTakeProfitPoints).HasConversion<string>();
         modelBuilder.Entity<TelegramNotificationSettingsEntity>().Property(x => x.ActionsGeneration).IsConcurrencyToken();
         modelBuilder.Entity<TelegramApprovalMessageEntity>().HasIndex(x => new { x.Generation, x.ApprovalId });
         modelBuilder.Entity<OrderApprovalEntity>().HasIndex(x => new { x.OrderId, x.Status });
@@ -106,8 +107,13 @@ public sealed class CycleEntity
     public string? EntryGridMovePendingOrderId { get; set; }
     [System.ComponentModel.DataAnnotations.Schema.NotMapped]
     public GridTrading.Domain.GridPlan EffectivePlan => GridTrading.Domain.SingleModeEntryRules.ShiftPlan(
-        System.Text.Json.JsonSerializer.Deserialize<GridTrading.Domain.GridPlan>(FrozenPlanJson,
+        System.Text.Json.JsonSerializer.Deserialize<GridTrading.Domain.GridPlan>(LivePlanJson ?? FrozenPlanJson,
             GridTrading.Api.Infrastructure.JsonSupport.Options)!, EntryGridPriceOffset);
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public GridTrading.Domain.GridConfiguration EffectiveConfiguration =>
+        GridTrading.Api.Strategies.Grid.Configuration.GridConfigurationCodec.ReadFrozen(LiveConfigurationJson ?? FrozenConfigurationJson);
+    public string? LiveConfigurationJson { get; set; }
+    public string? LivePlanJson { get; set; }
     public string LedgerStatus { get; set; } = "RECOVERY_REQUIRED";
     public string? LedgerError { get; set; }
     public decimal ActualNetQuantity { get; set; }
@@ -127,6 +133,7 @@ public sealed class CycleEntity
 
 public sealed class OrderEntity
 {
+    public decimal? EntryTakeProfitPoints { get; set; }
     public string? PendingTimeInForce { get; set; }
     public bool CancellationPending { get; set; }
     public string ExchangeOrderIdsJson { get; set; } = "[]";

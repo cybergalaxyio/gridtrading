@@ -27,6 +27,7 @@ public sealed class GridAutoRestartTests
     public async Task RestartUsesCorrectCenterAndOnlyStartsOnce(string reason, string mode)
     {
         await using var f = await Fixture.CreateAsync(mode);
+        await f.Workflow.UpdateParametersAsync(f.Cycle.Id, new(100m, 4, .2m), "live-edit", f.Cycle.StateVersion, Ct);
         await f.CloseAsync(reason);
         var pending = await f.PendingAsync();
         f.ResetWorkflow();
@@ -34,6 +35,11 @@ public sealed class GridAutoRestartTests
         await f.Workflow.ProcessAutoRestartAsync(pending.Id, Ct);
         var next = await f.Db.Cycles.SingleAsync(x => !x.IsTerminal, Ct);
         Assert.NotEqual(f.Cycle.Id, next.Id);
+        Assert.Null(next.LiveConfigurationJson);
+        Assert.Null(next.LivePlanJson);
+        Assert.Equal(f.Request.BaseLotSize, next.EffectiveConfiguration.BaseLotSize);
+        Assert.Equal(f.Request.TakeProfitPoints, next.EffectiveConfiguration.TakeProfitPoints);
+        Assert.Equal(f.Request.MaxLevelsPerSide, next.EffectiveConfiguration.MaxLevelsPerSide);
         Assert.Equal(f.Cycle.ExecutionAccountId, next.ExecutionAccountId);
         Assert.Equal(f.Cycle.ExecutionEnvironmentId, next.ExecutionEnvironmentId);
         Assert.Equal(mode == "MANUAL" ? 100.015m : 101.125m, next.FixedCenterPrice);

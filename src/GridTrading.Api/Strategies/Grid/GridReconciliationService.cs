@@ -48,7 +48,7 @@ public sealed class GridReconciliationService(
             var trading = scope.ServiceProvider.GetRequiredService<TradingService>();
             var cycle = await db.Cycles.SingleAsync(x => x.Id == cycleId, ct);
             if (cycle.IsTerminal) continue;
-            var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
+            var config = cycle.EffectiveConfiguration;
             if (lifecycle.IsLedgerReady(cycle) && DateTimeOffset.UtcNow - cycle.LastReconciledAt <
                 TimeSpan.FromSeconds(Math.Max(2, config.ReconcileIntervalSeconds))) continue;
             if (cycle.State == "CLOSING")

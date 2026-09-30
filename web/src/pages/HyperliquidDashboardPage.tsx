@@ -464,7 +464,7 @@ export function DashboardPage({ strategies, loadedStrategyId, reload, notify, re
       </section>
     </div>
     {parametersOpen && strategy && <Modal title="策略参数" icon="strategy" className="strategy-modal" onClose={() => setParametersOpen(false)}>
-      <StrategyParameters strategy={strategy} tickSize={strategyMatchesMarket ? instrumentRules?.tickSize : null} quantityStep={strategyMatchesMarket ? instrumentRules?.quantityStep : null} onClose={() => setParametersOpen(false)} />
+      <StrategyParameters onUpdated={() => { notify('当前 Cycle 参数已更新；新建 Entry 使用新设置'); void reload(); void refresh() }} strategy={strategy} tickSize={strategyMatchesMarket ? instrumentRules?.tickSize : null} quantityStep={strategyMatchesMarket ? instrumentRules?.quantityStep : null} onClose={() => setParametersOpen(false)} />
     </Modal>}
   </div>
 }
@@ -630,7 +630,7 @@ function MetricCard({ title, rows, accent }: { title: string; rows: MetricRow[];
 function format(value: string | number, digits = 2) { const n = +value; return Number.isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : String(value) }
 function signed(value: string) { return +value >= 0 ? `+${format(value)}` : format(value) }
 function signedUsd(value: string) { return +value >= 0 ? `+$${format(value)}` : `-$${format(Math.abs(+value))}` }
-function plannedLevelCount(strategy: Strategy) { const config = strategy.activeCycle?.frozenConfiguration ?? strategy.configuration; return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }
+function plannedLevelCount(strategy: Strategy) { const config = strategy.activeCycle?.effectiveConfiguration ?? strategy.activeCycle?.frozenConfiguration ?? strategy.configuration; return config.maxLevelsPerSide * ((config.gridMode ?? 'TWO_WAY') === 'TWO_WAY' ? 2 : 1) }
 function time(value?: string) { return value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—' }
 function dateTime(value?: string) {
   if (!value) return '—'

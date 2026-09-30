@@ -76,3 +76,6 @@ public sealed record TelegramSettingsDto(
     bool OrderActionsEnabled = false,
     bool OrderActionsReady = false,
     string? LastActionError = null);
+
+public sealed record UpdateCycleParametersRequest(decimal? TakeProfitPoints = null,
+    int? MaxLevelsPerSide = null, decimal? BaseLotSize = null);

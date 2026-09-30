@@ -134,6 +134,7 @@ test('preview, save, and edit carry the custom settings and preview confirmation
 test('parameter details show frozen settings and legacy fallback from the frozen spacing', () => {
   const { StrategyParameters } = load('../src/components/StrategyParameters.tsx', {
     './GridPreview': { buildGridPreview: () => [], GridPreview: () => null },
+    './LiveCycleEditor': { LiveCycleEditor: () => null },
   })
   const { defaultConfig } = client()
   for (const [frozenSettings, distance, seconds] of [[{}, '25', 30], [{ singleModeMoveDistancePoints: '50', singleModeMoveIntervalSeconds: 60 }, '50', 60]]) {

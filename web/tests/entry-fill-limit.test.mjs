@@ -54,7 +54,7 @@ test('legacy frozen cycle displays disabled defaults instead of edited template 
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
   }).outputText, {
     module, exports: module.exports,
-    require: name => name === './GridPreview' ? { buildGridPreview: () => [], GridPreview: () => null } : require(name),
+    require: name => name === './LiveCycleEditor' ? { LiveCycleEditor: () => null } : name === './GridPreview' ? { buildGridPreview: () => [], GridPreview: () => null } : require(name),
   })
   const { defaultConfig } = loadApi()
   const strategy = {

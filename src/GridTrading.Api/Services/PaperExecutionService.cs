@@ -31,7 +31,7 @@ public sealed class PaperExecutionService(IServiceScopeFactory scopeFactory, Mar
 
         foreach (var cycle in cycles)
         {
-            var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
+            var config = cycle.EffectiveConfiguration;
             var quote = market.Snapshot(config.Symbol);
             if (quote.IsStale) continue;
             var active = await db.Orders.Where(x => x.CycleId == cycle.Id && x.Status == "NEW").ToListAsync(ct);

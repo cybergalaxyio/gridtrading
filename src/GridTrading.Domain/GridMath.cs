@@ -3,6 +3,13 @@ namespace GridTrading.Domain;
 public static class GridMath
 {
     public static GridPlan BuildPlan(GridConfiguration config, InstrumentRules rules)
+        => BuildPlanCore(config, rules, null);
+
+    // Preserve saved entry prices while extending the grid and updating future sizing.
+    public static GridPlan UpdatePlan(GridConfiguration config, InstrumentRules rules, GridPlan current)
+        => BuildPlanCore(config with { CenterPrice = current.CenterPrice }, rules, current);
+
+    private static GridPlan BuildPlanCore(GridConfiguration config, InstrumentRules rules, GridPlan? current)
     {
         Validate(config, rules);
         var initialGap = (config.InitialGapPoints > 0m
@@ -27,6 +34,8 @@ public static class GridMath
                 sellPrice = RoundUp(sellPrice + spacing, rules.TickSize);
             }
 
+            buyPrice = current?.Levels.FirstOrDefault(x => x.Side == OrderSide.Buy && x.LevelIndex == i)?.EntryPrice ?? buyPrice;
+            sellPrice = current?.Levels.FirstOrDefault(x => x.Side == OrderSide.Sell && x.LevelIndex == i)?.EntryPrice ?? sellPrice;
             var quantity = PlannedQuantity(config, rules, i);
             if ((includeBuy && buyPrice <= 0m) || (includeSell && sellPrice <= 0m))
             {

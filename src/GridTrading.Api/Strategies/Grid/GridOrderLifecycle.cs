@@ -12,6 +12,9 @@ public sealed partial class GridOrderLifecycle(
     ExecutionEnvironmentRegistry environments,
     ExecutionAccountOperationGate accountGate, TimeProvider? timeProvider = null)
 {
+    internal Task<T> RunAccountOperationAsync<T>(string accountId, Func<Task<T>> action, CancellationToken ct) =>
+        accountGate.RunAsync(accountId, action, ct);
+
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     public Task<int> ProcessFillsAsync(string accountId, IReadOnlyList<NormalizedExecutionFill> fills, CancellationToken ct) =>
         accountGate.RunAsync(accountId, () => ProcessFillsCoreAsync(accountId, fills, ct), ct);
@@ -20,10 +23,12 @@ public sealed partial class GridOrderLifecycle(
     {
         var processed = 0;
         var affected = new Dictionary<string, (CycleEntity Cycle, GridConfiguration Config)>();
+        var refreshedCycles = new HashSet<string>();
         foreach (var fill in fills.OrderBy(x => x.OccurredAt))
         {
             var cycle = await FindCycleAsync(accountId, fill.ExchangeOrderId, fill.ClientOrderId, ct, fill.ExecutionEnvironmentId);
             if (cycle is null) continue;
+            if (refreshedCycles.Add(cycle.Id)) await RefreshLiveParametersAsync(cycle, ct);
             var config = DeserializeConfig(cycle);
             if (!await ApplyFillAsync(cycle, config, fill, ct, allowExchangeActions: IsLedgerReady(cycle))) continue;
             processed++;
@@ -54,12 +59,14 @@ public sealed partial class GridOrderLifecycle(
     {
         var processed = 0;
         var affected = new Dictionary<string, (CycleEntity Cycle, GridConfiguration Config)>();
+        var refreshedCycles = new HashSet<string>();
         var completedEntries = new Dictionary<(string CycleId, string Side), CycleEntity>();
         foreach (var update in updates)
         {
             var order = await FindOrderAsync(accountId, update.ExchangeOrderId, update.ClientOrderId, ct, update.ExecutionEnvironmentId);
             if (order is null) continue;
             var cycle = await db.Cycles.SingleAsync(x => x.Id == order.CycleId, ct);
+            if (refreshedCycles.Add(cycle.Id)) await RefreshLiveParametersAsync(cycle, ct);
             // A cancel/open from an earlier amendment generation must not roll
             // the current OID back. REST resolves unknown/new generations by CLOID.
             if (order.ExchangeOrderId != update.ExchangeOrderId || update.OccurredAt < order.LastExchangeUpdateAt) continue;
@@ -282,8 +289,22 @@ public sealed partial class GridOrderLifecycle(
         return normalized;
     }
 
+    private async Task RefreshLiveParametersAsync(CycleEntity cycle, CancellationToken ct)
+    {
+        // Callers may have loaded the cycle before acquiring the gate. Refresh the
+        // editable settings and their movement state together without discarding
+        // in-memory ledger recovery decisions.
+        var saved = await db.Cycles.AsNoTracking().Where(x => x.Id == cycle.Id)
+            .Select(x => new { x.LiveConfigurationJson, x.LivePlanJson, x.EntryGridPriceOffset, x.EntryGridMovePendingOrderId, x.StateVersion }).SingleAsync(ct);
+        cycle.LiveConfigurationJson = saved.LiveConfigurationJson;
+        cycle.LivePlanJson = saved.LivePlanJson;
+        cycle.EntryGridPriceOffset = saved.EntryGridPriceOffset;
+        cycle.EntryGridMovePendingOrderId = saved.EntryGridMovePendingOrderId;
+        cycle.StateVersion = Math.Max(cycle.StateVersion, saved.StateVersion);
+    }
+
     private static GridConfiguration DeserializeConfig(CycleEntity cycle) =>
-        GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
+        cycle.EffectiveConfiguration;
     private static ExecutionSelection Selection(CycleEntity cycle) =>
         new(cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId);
 

@@ -46,6 +46,10 @@ export const api = {
   hyperliquidOrderHistory: (id: string, environment = "hyperliquid-testnet") => call<HyperliquidHistoricalOrder[]>(`/${environment}/accounts/${id}/order-history`),
   instrumentRules: (accountId: string, symbol: string, referencePrice?: string) => call<ExchangeInstrumentRules>(`/exchange-accounts/${encodeURIComponent(accountId)}/instruments/${encodeURIComponent(symbol)}${referencePrice ? `?referencePrice=${encodeURIComponent(referencePrice)}` : ''}`),
   strategies: () => call<Strategy[]>('/strategies'),
+  cycle: (id: string) => call<Cycle>(`/cycles/${encodeURIComponent(id)}`),
+  updateCycleParameters: (id: string, body: { takeProfitPoints?: string; maxLevelsPerSide?: number; baseLotSize?: string }, version: number, key: string) => call(`/cycles/${encodeURIComponent(id)}/commands/update-parameters`, {
+    method: 'POST', headers: { ...JSON_HEADERS, 'Idempotency-Key': key, 'If-Match': `"${version}"` }, body: JSON.stringify(body),
+  }),
   cycles: () => call<Cycle[]>('/cycles'),
   activeCycles: () => call<Cycle[]>('/cycles?activeOnly=true'),
   createStrategy: (body: StrategyConfig) => call<Strategy>('/strategies', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ...body, ...moveSettings(body) }) }),

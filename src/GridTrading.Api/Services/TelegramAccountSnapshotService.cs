@@ -16,7 +16,7 @@ public sealed class TelegramAccountSnapshotService(
         {
             var cycle = await db.Cycles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == cycleId, ct);
             if (cycle is null) return Unavailable("cycle unavailable");
-            var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
+            var config = cycle.EffectiveConfiguration;
             return await ForAccountAsync(cycle.ExecutionAccountId, config?.Symbol, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

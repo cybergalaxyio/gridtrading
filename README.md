@@ -25,6 +25,16 @@
 - **Initial Gap** 单位为 pts，表示完整初始间距，每侧使用一半；`0` 自动使用 Grid Spacing 作为完整间距。Buy 向下、Sell 向上按 Tick Size 取整。Current Mid 的首层买卖价差还包含启动时的 Bid / Ask spread。
 - Cycle 启动后冻结中心、Bid / Ask 基准和实际 Grid，不随市场或策略编辑移动。已有运行中 Cycle 保留原计划。此前未保存中心价格的 Manual 策略需要编辑并补填价格后才能启动。
 
+## 当前 Cycle 参数调整
+
+在策略参数窗口选择 **Edit current cycle**，可调整 Take Profit、Base Lot Size，并增加单侧最大层数（最多 200 层）。仅 RUNNING / PAUSED Cycle 可编辑；暂停状态不会因保存而解除。
+
+TP 和基础数量只用于保存后新建的 Entry，包括正常网格运行中的替换单。已有挂单、部分成交订单及持仓保留原数量和 TP 距离；后续部分成交仍按原距离和更新后的成交均价计算 TP。Grid Preview 展示未来订单的计划数量，沿用每层增长、数量步长、单笔上限和 MaxNetLot。增加层数保留原价格与中心，向外扩展网格。
+
+修改保存在当前 Cycle，重启后恢复；原始冻结配置与计划保留用于追溯。策略模板及后续手动 / 自动启动的 Cycle 不受影响。
+
+接口：`POST /api/v1/cycles/{id}/commands/update-parameters`，字段 `takeProfitPoints`、`baseLotSize` 为十进制字符串，`maxLevelsPerSide` 为整数；至少提供一个字段。需要 `Idempotency-Key` 和 `If-Match` 当前版本。成功返回已完成的 Operation；相同请求重试返回原结果，版本过期返回 412 并要求刷新。保存本身不发送交易所撤单或改单。
+
 ## Entry Fill Limit
 
 在“资金与风控”中启用 **Enable Entry Fill Limit**，配置 **Lookback Window (min)** 和 **Max Filled Entries per Side**。默认关闭，初始值为 60 分钟、3 张；买卖分别计数，共用参数。

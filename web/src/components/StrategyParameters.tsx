@@ -1,11 +1,17 @@
 import { useMemo, useState } from 'react'
 import { buildGridPreview, GridPreview } from './GridPreview'
-import type { Strategy } from '../types'
+import { LiveCycleEditor } from './LiveCycleEditor'
+import type { Cycle, Strategy } from '../types'
 
-export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, onOpen, onEdit }: {
-  strategy: Strategy; tickSize?: string | null; quantityStep?: string | null; onClose: () => void; onOpen?: () => void; onEdit?: () => void
+export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, onOpen, onEdit, onUpdated }: {
+  strategy: Strategy; tickSize?: string | null; quantityStep?: string | null; onClose: () => void; onOpen?: () => void; onEdit?: () => void; onUpdated?: () => void
 }) {
-  const frozen = strategy.activeCycle?.frozenConfiguration
+  const [savedCycle, setSavedCycle] = useState<Cycle | null>(null)
+  const [editingCycleId, setEditingCycleId] = useState<string | null>(null)
+  const activeCycle = savedCycle?.cycleId === strategy.activeCycle?.cycleId && savedCycle && savedCycle.stateVersion > (strategy.activeCycle?.stateVersion ?? 0)
+    ? savedCycle : strategy.activeCycle
+  const editingCycle = !!activeCycle && editingCycleId === activeCycle.cycleId
+  const frozen = activeCycle?.effectiveConfiguration ?? activeCycle?.frozenConfiguration
   const config = { ...strategy.configuration, ...frozen }
   // Old frozen cycles omit the new fields and must stay disabled even if the template is edited.
   const entryFillLimit = frozen ?? strategy.configuration
@@ -14,17 +20,17 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
   const effectiveTick = frozen?.tickSize ?? tickSize ?? strategy.configuration.tickSize
   const effectiveQuantityStep = frozen?.quantityStep ?? quantityStep ?? strategy.configuration.quantityStep
   const initialGap = +config.initialGapPoints === 0 ? +config.gridSpacingPoints : +config.initialGapPoints
-  const center = strategy.activeCycle?.effectivePlan?.centerPrice ?? strategy.activeCycle?.fixedCenterPrice
+  const center = activeCycle?.effectivePlan?.centerPrice ?? activeCycle?.fixedCenterPrice
   const [tab, setTab] = useState<'parameters' | 'grid'>('parameters')
-  const frozenLevels = strategy.activeCycle?.effectivePlan?.levels ?? strategy.activeCycle?.frozenPlan?.levels
+  const frozenLevels = activeCycle?.effectivePlan?.levels ?? activeCycle?.frozenPlan?.levels
   const previewLevels = useMemo(() => frozenLevels
     ? frozenLevels.map(level => ({ side: level.side as 'BUY' | 'SELL', level: level.levelIndex, price: +level.entryPrice, quantity: +level.plannedQuantity }))
     : buildGridPreview(config, center ?? '', effectiveTick, effectiveQuantityStep), [frozenLevels, config, center, effectiveTick, effectiveQuantityStep])
   const groups: { title: string; rows: [string, string][] }[] = [
     { title: '基础信息', rows: [
-      ['Strategy ID', strategy.strategyId], ['版本', `v${strategy.version}`], ['交易账户', strategy.activeCycle?.executionAccountId ?? strategy.defaultExecutionAccountId],
-      ['环境', (strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'PAPER' : (strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'hyperliquid-mainnet' ? 'MAINNET · LIVE' : 'TESTNET'], ['交易对', `${coin(strategy.symbol)}-USDC`],
-      ['Cycle 状态', strategy.activeCycle?.state ?? '未运行'], ['网格模式', gridModeLabel(config.gridMode)], ['中心模式', config.centerSuggestionMode],
+      ['Strategy ID', strategy.strategyId], ['版本', `v${strategy.version}`], ['交易账户', activeCycle?.executionAccountId ?? strategy.defaultExecutionAccountId],
+      ['环境', (activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'PAPER' : (activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'hyperliquid-mainnet' ? 'MAINNET · LIVE' : 'TESTNET'], ['交易对', `${coin(strategy.symbol)}-USDC`],
+      ['Cycle 状态', activeCycle?.state ?? '未运行'], ['网格模式', gridModeLabel(config.gridMode)], ['中心模式', config.centerSuggestionMode],
       ['Tick Size', effectiveTick ?? '等待市场规则'], ['Quantity Step', effectiveQuantityStep ?? '等待市场规则'],
     ] },
     { title: '网格参数', rows: [
@@ -58,9 +64,10 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
     ] },
   ]
   return <div className="strategy-parameters">
-    <div className="parameter-summary"><div><b>{strategy.name}</b><span>{coin(strategy.symbol)}-USDC · {(strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'Paper Simulator' : (strategy.activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'hyperliquid-mainnet' ? 'Hyperliquid Mainnet · LIVE' : 'Hyperliquid Testnet'}</span></div>
-      <span className={`parameter-source ${frozen ? 'frozen' : ''}`}>{frozen ? 'FROZEN CYCLE' : 'STRATEGY'}</span></div>
-    <p className="parameter-note">{frozen ? '当前展示运行中 Cycle 的冻结参数；策略修改只影响未来 Cycle。' : '当前展示策略实例参数；启动 Cycle 时会冻结一份独立副本。'}</p>
+    <div className="parameter-summary"><div><b>{strategy.name}</b><span>{coin(strategy.symbol)}-USDC · {(activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'Paper Simulator' : (activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'hyperliquid-mainnet' ? 'Hyperliquid Mainnet · LIVE' : 'Hyperliquid Testnet'}</span></div>
+      <span className={`parameter-source ${frozen ? 'frozen' : ''}`}>{frozen ? 'CURRENT CYCLE' : 'STRATEGY'}</span></div>
+    <p className="parameter-note">{frozen ? '当前展示本 Cycle 的有效参数；可单独编辑当前 Cycle，策略修改只影响未来 Cycle。' : '当前展示策略实例参数；启动 Cycle 时会冻结一份独立副本。'}</p>
+    {editingCycle && activeCycle && <LiveCycleEditor key={activeCycle.cycleId} cycle={activeCycle} config={config} onCancel={() => setEditingCycleId(null)} onSaved={cycle => { setSavedCycle(cycle); setEditingCycleId(null); onUpdated?.() }} />}
     <div className="parameter-tabs" role="tablist" aria-label="策略参数视图">
       <button type="button" role="tab" aria-selected={tab === 'parameters'} className={tab === 'parameters' ? 'active' : ''} onClick={() => setTab('parameters')}>参数</button>
       <button type="button" role="tab" aria-selected={tab === 'grid'} className={tab === 'grid' ? 'active' : ''} onClick={() => setTab('grid')}>Grid Preview <i>{previewLevels.length || '—'}</i></button>
@@ -70,10 +77,10 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
       {center && effectiveTick && effectiveQuantityStep ? <>
         <div className="parameter-grid-meta"><span>{singleMode ? '当前网格中心' : '固定中心'} <b>{center}</b></span><span>Tick Size <b>{effectiveTick}</b></span><span>Quantity Step <b>{effectiveQuantityStep}</b></span></div>
         <GridPreview levels={previewLevels} center={center} tickSize={effectiveTick} quantityStep={effectiveQuantityStep} symbol={coin(strategy.symbol)} />
-        <p>{singleMode ? '该 Grid 显示当前有效网格；空仓时按冻结的距离和时间设置跟随，持仓期间固定；全部平仓后按实时行情和初始挂单距离，从第一层、基础数量重新开始。策略编辑只影响未来 Cycle。' : '该 Grid 显示当前 Cycle 启动时保存的实际计划；价格与 Lot Size 不会随策略实例后续修改而变化。'}</p>
+        <p>{singleMode ? '该 Grid 显示当前有效网格和未来订单数量；空仓时按距离和时间设置跟随，持仓期间价格固定；全部平仓后从第一层、当前基础数量重新开始。已有挂单可能保留原数量。' : '该 Grid 显示当前 Cycle 的有效计划；数量用于未来新建订单，已有挂单可能保留原数量。'}</p>
       </> : <div className="parameter-grid-empty"><b>尚无固定 Grid</b><span>策略启动前还没有确认中心价格。请通过 Edit 生成预览；启动 Cycle 后这里会显示冻结 Grid。</span></div>}
     </div>}
-    <div className="parameter-actions"><button className="secondary" onClick={onClose}>关闭</button>{onEdit && <button className="secondary" onClick={onEdit}>Edit</button>}{onOpen && <button className="primary" onClick={onOpen}>打开控制台</button>}</div>
+    <div className="parameter-actions"><button className="secondary" onClick={onClose}>关闭</button>{activeCycle && !activeCycle.isTerminal && ['RUNNING', 'PAUSED'].includes(activeCycle.state) && !editingCycle && <button className="primary" onClick={() => setEditingCycleId(activeCycle.cycleId)}>Edit current cycle</button>}{onEdit && <button className="secondary" onClick={onEdit}>Edit</button>}{onOpen && <button className="primary" onClick={onOpen}>打开控制台</button>}</div>
   </div>
 }
 

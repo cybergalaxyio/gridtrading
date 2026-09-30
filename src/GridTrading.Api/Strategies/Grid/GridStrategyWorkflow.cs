@@ -269,7 +269,7 @@ public sealed partial class GridStrategyWorkflow(
         var operation = await NewOperationAsync(command, cycleId, key, new { command, reason }, ct);
         if (operation.Status == "COMPLETED") return operation;
 
-        var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
+        var config = cycle.EffectiveConfiguration;
         var selection = new ExecutionSelection(cycle.ExecutionEnvironmentId, cycle.ExecutionAccountId);
         var adapter = environments.Adapter(selection.EnvironmentId);
         var restartAfterClose = automaticClose && command == "CLOSE" && config.AutoRestart &&
@@ -313,12 +313,14 @@ public sealed partial class GridStrategyWorkflow(
 
     public async Task<object> SnapshotAsync(CycleEntity cycle, CancellationToken ct)
     {
-        var config = GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson);
+        var config = cycle.EffectiveConfiguration;
         var quote = market.Snapshot(config.Symbol);
         var active = db.Orders.Where(x => x.CycleId == cycle.Id &&
             (x.Status == "NEW" || x.Status == "PARTIALLY_FILLED" || x.Status == "UNKNOWN")).ToArray();
         var openLots = db.VirtualLots
             .Where(x => x.CycleId == cycle.Id && x.Status != "CLOSED" && x.RemainingQuantity > 0m).ToArray();
+        var usedBuyLevels = openLots.Where(x => x.Side == "BUY").Select(x => x.GridLevel).Distinct().Count();
+        var usedSellLevels = openLots.Where(x => x.Side == "SELL").Select(x => x.GridLevel).Distinct().Count();
         var takeProfits = db.Orders.Where(x => x.CycleId == cycle.Id && x.Kind == "TAKE_PROFIT")
             .ToDictionary(x => x.Id);
         var unprotectedExposureNotionalUsdt =
@@ -334,6 +336,7 @@ public sealed partial class GridStrategyWorkflow(
                 state = cycle.State, cycle.StateVersion, cycle.IsTerminal, cycle.OperatorResetRequired,
                 cycle.RiskPaused, operatorPaused = cycle.IsOperatorPaused, cycle.EntryPauseReasons, cycle.RiskRecoveryChecks,
                 cycle.StartedAt, fixedCenterPrice = cycle.FixedCenterPrice,
+                effectiveConfiguration = config,
                 cycle.EntryGridPriceOffset, effectivePlan = cycle.EffectivePlan
             },
             entryHolds = await lifecycle.ReadEntryHoldsAsync(cycle, config, ct),
@@ -363,10 +366,10 @@ public sealed partial class GridStrategyWorkflow(
             risk = new
             {
                 color, reasons = color == "GREEN" ? Array.Empty<string>() : new[] { "INVENTORY_ELEVATED" },
-                usedBuyLevels = db.Orders.Count(x => x.CycleId == cycle.Id && x.Side == "BUY"),
-                remainingBuyLevels = config.MaxLevelsPerSide,
-                usedSellLevels = db.Orders.Count(x => x.CycleId == cycle.Id && x.Side == "SELL"),
-                remainingSellLevels = config.MaxLevelsPerSide,
+                usedBuyLevels,
+                remainingBuyLevels = config.GridMode == GridMode.SellOnly ? 0 : Math.Max(0, config.MaxLevelsPerSide - usedBuyLevels),
+                usedSellLevels,
+                remainingSellLevels = config.GridMode == GridMode.BuyOnly ? 0 : Math.Max(0, config.MaxLevelsPerSide - usedSellLevels),
                 unprotectedExposureNotionalUsdt,
                 faultExposureThresholdUsdt = config.FaultExposureThresholdUsdt,
                 faultExposureThresholdExceeded = unprotectedExposureNotionalUsdt > config.FaultExposureThresholdUsdt

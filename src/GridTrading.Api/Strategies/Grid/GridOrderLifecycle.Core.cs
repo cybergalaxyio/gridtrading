@@ -1,5 +1,6 @@
 using GridTrading.Api.Data;
 using GridTrading.Api.Execution;
+using GridTrading.Api.Strategies.Grid.Configuration;
 using GridTrading.Domain;
 using GridTrading.Domain.Strategies.Grid;
 using Microsoft.EntityFrameworkCore;
@@ -94,7 +95,8 @@ public sealed partial class GridOrderLifecycle
             lot.EntryFee += execution.Fee;
         }
         lot.TakeProfitPrice = GridMath.TakeProfitPrice(entrySide, lot.EntryFillPrice,
-            config.TakeProfitPoints, GridInstrumentRules.FromConfiguration(config).TickSize);
+            entry.EntryTakeProfitPoints ?? GridConfigurationCodec.ReadFrozen(cycle.FrozenConfigurationJson).TakeProfitPoints,
+            GridInstrumentRules.FromConfiguration(config).TickSize);
         lot.ProtectionPending = true;
         // Commit the execution, lot, and protection intent together BEFORE external I/O.
         await db.SaveChangesAsync(ct);
@@ -318,6 +320,7 @@ public sealed partial class GridOrderLifecycle
         ClientOrderId = Ids.New($"grid-{level.Side.ToString()[0]}-{level.LevelIndex}"), ExchangeOrderId = "pending",
         Symbol = symbol, Side = level.Side.ToString().ToUpperInvariant(), Kind = "ENTRY", Status = "PENDING_EXCHANGE",
         GridLevel = level.LevelIndex, Price = level.EntryPrice, Quantity = quantity,
+        EntryTakeProfitPoints = cycle.EffectiveConfiguration.TakeProfitPoints,
         CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
     };
 }
