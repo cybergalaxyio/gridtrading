@@ -1,11 +1,11 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import type { Cycle, StrategyConfig } from '../types'
 import { liveCyclePreview } from '../lib/liveCyclePreview'
 import { GridPreview } from './GridPreview'
 
-export function LiveCycleEditor({ cycle, config, onSaved, onCancel }: {
-  cycle: Cycle; config: StrategyConfig; onSaved: (cycle: Cycle) => void; onCancel: () => void
+export function LiveCycleEditor({ cycle, config, onSaved, onCancel, children }: {
+  cycle: Cycle; config: StrategyConfig; onSaved: (cycle: Cycle) => void; onCancel: () => void; children?: ReactNode
 }) {
   const [baseline, setBaseline] = useState({ cycle, config })
   const [tp, setTp] = useState(config.takeProfitPoints)
@@ -50,6 +50,8 @@ export function LiveCycleEditor({ cycle, config, onSaved, onCancel }: {
     finally { setBusy(false) }
   }
   return <section className="live-cycle-editor">
+    <div className="live-cycle-editor-scroll" role="region" aria-label="当前 Cycle 编辑内容" tabIndex={0}>
+    {children}
     <h3>Edit current cycle · 编辑当前 Cycle</h3>
     <p>仅影响本 Cycle。TP 和 Base Lot Size 用于保存后新建的 Entry（包括正常网格替换单）；已有挂单、部分成交订单和持仓保留原数量与 TP 距离。未来 Cycle 使用策略设置。</p>
     <div className="live-cycle-fields">
@@ -62,6 +64,7 @@ export function LiveCycleEditor({ cycle, config, onSaved, onCancel }: {
     {!eligible && <p role="alert">当前 Cycle 状态不允许修改。</p>}
     {!valid && eligible && <p role="alert">请输入正数 TP / Base Lot Size，层数须为当前层数至 200 的整数，数量须满足步长要求。</p>}
     {error && <p role="alert">{error} <button type="button" className="link" disabled={busy} onClick={() => void refresh()}>重新加载当前值</button></p>}
-    <div className="parameter-actions"><button type="button" className="secondary" disabled={busy} onClick={onCancel}>取消</button><button type="button" className="primary" disabled={busy || !valid || !changed} onClick={() => void save()}>{busy ? '保存中…' : '保存到当前 Cycle'}</button></div>
+    </div>
+    <div className="parameter-actions live-cycle-editor-actions"><button type="button" className="secondary" disabled={busy} onClick={onCancel}>取消</button><button type="button" className="primary" disabled={busy || !valid || !changed} onClick={() => void save()}>{busy ? '保存中…' : '保存到当前 Cycle'}</button></div>
   </section>
 }

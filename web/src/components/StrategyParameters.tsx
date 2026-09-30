@@ -63,11 +63,16 @@ export function StrategyParameters({ strategy, tickSize, quantityStep, onClose, 
       ['自动重启', yesNo(config.autoRestart)],
     ] },
   ]
-  return <div className="strategy-parameters">
+  const summary = <>
     <div className="parameter-summary"><div><b>{strategy.name}</b><span>{coin(strategy.symbol)}-USDC · {(activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'paper-local' ? 'Paper Simulator' : (activeCycle?.executionEnvironmentId ?? strategy.defaultExecutionEnvironmentId) === 'hyperliquid-mainnet' ? 'Hyperliquid Mainnet · LIVE' : 'Hyperliquid Testnet'}</span></div>
       <span className={`parameter-source ${frozen ? 'frozen' : ''}`}>{frozen ? 'CURRENT CYCLE' : 'STRATEGY'}</span></div>
     <p className="parameter-note">{frozen ? '当前展示本 Cycle 的有效参数；可单独编辑当前 Cycle，策略修改只影响未来 Cycle。' : '当前展示策略实例参数；启动 Cycle 时会冻结一份独立副本。'}</p>
-    {editingCycle && activeCycle && <LiveCycleEditor key={activeCycle.cycleId} cycle={activeCycle} config={config} onCancel={() => setEditingCycleId(null)} onSaved={cycle => { setSavedCycle(cycle); setEditingCycleId(null); onUpdated?.() }} />}
+  </>
+  if (editingCycle && activeCycle) return <div className="strategy-parameters">
+    <LiveCycleEditor key={activeCycle.cycleId} cycle={activeCycle} config={config} onCancel={() => setEditingCycleId(null)} onSaved={cycle => { setSavedCycle(cycle); setEditingCycleId(null); onUpdated?.() }}>{summary}</LiveCycleEditor>
+  </div>
+  return <div className="strategy-parameters">
+    {summary}
     <div className="parameter-tabs" role="tablist" aria-label="策略参数视图">
       <button type="button" role="tab" aria-selected={tab === 'parameters'} className={tab === 'parameters' ? 'active' : ''} onClick={() => setTab('parameters')}>参数</button>
       <button type="button" role="tab" aria-selected={tab === 'grid'} className={tab === 'grid' ? 'active' : ''} onClick={() => setTab('grid')}>Grid Preview <i>{previewLevels.length || '—'}</i></button>
