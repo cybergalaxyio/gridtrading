@@ -27,7 +27,8 @@ public sealed partial class TelegramNotificationSettingsService(
         if (item is null && token is null)
             throw Problem("TELEGRAM_BOT_TOKEN_REQUIRED", "Enter a Telegram bot token before saving the first configuration.");
 
-        var changed = item is null || !string.Equals(item.ChatId, chatId, StringComparison.Ordinal) || token is not null;
+        var changed = item is null || !string.Equals(item.ChatId, chatId, StringComparison.Ordinal) || token is not null
+            || item.OrderActionsEnabled != request.OrderActionsEnabled;
         if (item is null)
         {
             item = new TelegramNotificationSettingsEntity
@@ -45,8 +46,11 @@ public sealed partial class TelegramNotificationSettingsService(
             item.UpdatedAt = DateTimeOffset.UtcNow;
         }
 
+        item.OrderActionsEnabled = request.OrderActionsEnabled;
         if (changed)
         {
+            InvalidateActions(item);
+            if (token is not null) item.NextUpdateId = 0;
             item.Enabled = false;
             item.BotUsername = null;
             item.VerifiedAt = null;
@@ -55,7 +59,7 @@ public sealed partial class TelegramNotificationSettingsService(
             item.LastTestError = null;
         }
 
-        await db.SaveChangesAsync(ct);
+        await SaveChangesAsync(ct);
         return ToDto(item);
     }
 
@@ -73,13 +77,14 @@ public sealed partial class TelegramNotificationSettingsService(
         }
         catch (Exception ex) when (ex is CryptographicException or FormatException)
         {
+            InvalidateActions(item);
             item.Enabled = false;
             item.EnabledAt = null;
             item.VerifiedAt = null;
             item.LastTestedAt = DateTimeOffset.UtcNow;
             item.LastTestError = "The stored Telegram bot token cannot be decrypted with the current credential key.";
             item.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
+            await SaveChangesAsync(ct);
             throw Problem("TELEGRAM_TOKEN_UNREADABLE", item.LastTestError);
         }
 
@@ -87,6 +92,16 @@ public sealed partial class TelegramNotificationSettingsService(
         try
         {
             var identity = await bot.GetIdentityAsync(token, ct);
+            if (item.OrderActionsEnabled)
+            {
+                var chat = await bot.GetChatAsync(token, item.ChatId, ct);
+                if (chat.Type != "private" || chat.Id <= 0)
+                    throw new TelegramBotApiException("Order actions require a private chat with the bot. Groups and channels support notifications only.");
+                if (await bot.HasWebhookAsync(token, ct))
+                    throw new TelegramBotApiException("This bot has an active webhook. Use a dedicated bot without a webhook for order actions.");
+                item.VerifiedPrivateChatId = chat.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                item.LastActionError = null;
+            }
             await bot.SendMessageAsync(token, item.ChatId,
                 $"✅ GridTrading Telegram notifications enabled.\nBot: @{identity.Username}\nTime: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm:ss 'UTC'}", ct);
             var now = DateTimeOffset.UtcNow;
@@ -97,18 +112,19 @@ public sealed partial class TelegramNotificationSettingsService(
             if (!item.Enabled || item.EnabledAt is null) item.EnabledAt = activationWatermark;
             item.Enabled = true;
             item.UpdatedAt = now;
-            await db.SaveChangesAsync(ct);
+            await SaveChangesAsync(ct);
             return ToDto(item);
         }
         catch (TelegramBotApiException ex)
         {
+            InvalidateActions(item);
             item.Enabled = false;
             item.EnabledAt = null;
             item.VerifiedAt = null;
             item.LastTestedAt = DateTimeOffset.UtcNow;
             item.LastTestError = ex.Message;
             item.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
+            await SaveChangesAsync(ct);
             throw new TradingProblemException(ex.ServiceUnavailable ? 503 : 422,
                 "TELEGRAM_VERIFICATION_FAILED", ex.Message);
         }
@@ -119,10 +135,11 @@ public sealed partial class TelegramNotificationSettingsService(
         var item = await db.TelegramNotificationSettings
             .SingleOrDefaultAsync(x => x.Id == TelegramNotificationSettingsEntity.SingletonId, ct);
         if (item is null) return ToDto(null);
+        InvalidateActions(item);
         item.Enabled = false;
         item.EnabledAt = null;
         item.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(ct);
+        await SaveChangesAsync(ct);
         return ToDto(item);
     }
 
@@ -132,7 +149,16 @@ public sealed partial class TelegramNotificationSettingsService(
             .SingleOrDefaultAsync(x => x.Id == TelegramNotificationSettingsEntity.SingletonId, ct);
         if (item is null) return;
         db.TelegramNotificationSettings.Remove(item);
-        await db.SaveChangesAsync(ct);
+        await SaveChangesAsync(ct);
+    }
+
+    private async Task SaveChangesAsync(CancellationToken ct)
+    {
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException)
+        {
+            throw new TradingProblemException(409, "TELEGRAM_SETTINGS_CHANGED", "Telegram settings changed during this request. Reload the settings and test again.");
+        }
     }
 
     private void EnsureCredentialKey()
@@ -169,7 +195,21 @@ public sealed partial class TelegramNotificationSettingsService(
         LastTestError: item?.LastTestError,
         LastDeliveryAt: item?.LastDeliveryAt,
         LastDeliveryStatus: item?.LastDeliveryStatus,
-        LastDeliveryError: item?.LastDeliveryError);
+        LastDeliveryError: item?.LastDeliveryError,
+        OrderActionsEnabled: item?.OrderActionsEnabled == true,
+        OrderActionsReady: ActionsReady(item),
+        LastActionError: item?.LastActionError);
+
+    public static bool ActionsReady(TelegramNotificationSettingsEntity? item) =>
+        item is { Enabled: true, OrderActionsEnabled: true, VerifiedAt: not null, VerifiedPrivateChatId: not null }
+        && !string.IsNullOrEmpty(item.ActionsGeneration);
+
+    private static void InvalidateActions(TelegramNotificationSettingsEntity item)
+    {
+        item.ActionsGeneration = Guid.NewGuid().ToString("N");
+        item.VerifiedPrivateChatId = null;
+        item.LastActionError = null;
+    }
 
     private static TradingProblemException Problem(string code, string message) => new(422, code, message);
 

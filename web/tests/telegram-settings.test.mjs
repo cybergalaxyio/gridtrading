@@ -26,7 +26,7 @@ test('Telegram settings client uses the local settings and command endpoints', a
   const { api, requests } = loadApi()
 
   await api.telegramSettings()
-  await api.saveTelegramSettings({ botToken: 'secret', chatId: '-100123' })
+  await api.saveTelegramSettings({ botToken: 'secret', chatId: '123', orderActionsEnabled: true })
   await api.testAndEnableTelegram()
   await api.disableTelegram()
   await api.removeTelegram()
@@ -38,7 +38,7 @@ test('Telegram settings client uses the local settings and command endpoints', a
     ['POST', '/api/v1/notification-settings/telegram/disable'],
     ['DELETE', '/api/v1/notification-settings/telegram'],
   ])
-  assert.deepEqual(requests[1].body, { botToken: 'secret', chatId: '-100123' })
+  assert.deepEqual(requests[1].body, { botToken: 'secret', chatId: '123', orderActionsEnabled: true })
 })
 
 test('Settings UI masks the bot token and exposes explicit activation controls', () => {

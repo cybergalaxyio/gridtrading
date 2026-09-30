@@ -16,6 +16,7 @@ export function SettingsPage() {
   const [telegram, setTelegram] = useState<TelegramSettings>(emptyTelegram)
   const [botToken, setBotToken] = useState('')
   const [chatId, setChatId] = useState('')
+  const [orderActionsEnabled, setOrderActionsEnabled] = useState(false)
   const [telegramError, setTelegramError] = useState('')
   const [telegramNotice, setTelegramNotice] = useState('')
   const [telegramBusy, setTelegramBusy] = useState(false)
@@ -25,6 +26,7 @@ export function SettingsPage() {
     void api.telegramSettings().then(value => {
       setTelegram(value)
       setChatId(value.chatId)
+      setOrderActionsEnabled(value.orderActionsEnabled ?? false)
     }).catch(e => setTelegramError(message(e, 'Telegram 设置读取失败')))
   }, [])
 
@@ -37,11 +39,12 @@ export function SettingsPage() {
     setConfirmRemove(false)
     try {
       const saved = await api.saveTelegramSettings({
-        chatId,
+        chatId, orderActionsEnabled,
         ...(botToken.trim() ? { botToken: botToken.trim() } : {}),
       })
       setTelegram(saved)
       setChatId(saved.chatId)
+      setOrderActionsEnabled(saved.orderActionsEnabled ?? false)
       setBotToken('')
       if (testAndEnable) {
         const enabled = await api.testAndEnableTelegram()
@@ -66,7 +69,7 @@ export function SettingsPage() {
     try {
       const value = await api.disableTelegram()
       setTelegram(value)
-      setTelegramNotice('Telegram 通知已禁用；禁用期间的通知不会补发')
+      setTelegramNotice('Telegram 通知及订单操作已禁用；旧订单按钮已失效')
     } catch (e) {
       setTelegramError(message(e, '禁用 Telegram 通知失败'))
     } finally {
@@ -86,6 +89,7 @@ export function SettingsPage() {
       await api.removeTelegram()
       setTelegram(emptyTelegram)
       setChatId('')
+      setOrderActionsEnabled(false)
       setBotToken('')
       setConfirmRemove(false)
       setTelegramNotice('Telegram 配置已清除')
@@ -101,6 +105,7 @@ export function SettingsPage() {
       const value = await api.telegramSettings()
       setTelegram(value)
       setChatId(value.chatId)
+      setOrderActionsEnabled(value.orderActionsEnabled ?? false)
     } catch {
       // Preserve the actionable error from the original operation.
     }
@@ -131,6 +136,12 @@ export function SettingsPage() {
               <label><span>Bot Token</span><input type="password" autoComplete="off" value={botToken} onChange={event => setBotToken(event.target.value)} placeholder={telegram.tokenStored ? '已安全保存；留空则保持不变' : '123456789:AA…'} disabled={telegramBusy} /><small>Token 仅在保存时发送到本机后端，读取设置时绝不返回。</small></label>
               <label><span>Chat ID / Channel</span><input value={chatId} onChange={event => setChatId(event.target.value)} placeholder="-1001234567890 或 @channel" disabled={telegramBusy} /><small>支持私聊、群组的数字 ID，或机器人有发言权限的 @频道用户名。</small></label>
             </div>
+            <div className="telegram-order-actions">
+              <label><input type="checkbox" checked={orderActionsEnabled} disabled={telegramBusy}
+                onChange={event => setOrderActionsEnabled(event.target.checked)} /> 启用订单操作 / Enable order actions</label>
+              <p className="dim">仅限上方配置的私聊。先向机器人发送 /start，再填写你的私聊 Chat ID，点击“测试并启用”。待确认订单会附带 Confirm / Reject 按钮；发送 /pending 可分页查看当前订单，包括已拒绝订单。</p>
+              <p className="dim">遵循交易控制的金额门槛。确认仅授权该笔订单，实际提交由交易系统完成。Telegram 不可用时，订单仍可在控制台处理。</p>
+            </div>
             <div className="telegram-actions">
               <button className="secondary" disabled={telegramBusy} onClick={() => void saveTelegram(false)}>保存设置</button>
               <button className="primary" disabled={telegramBusy} onClick={() => void saveTelegram(true)}>{telegramBusy ? '处理中…' : '测试并启用'}</button>
@@ -143,6 +154,8 @@ export function SettingsPage() {
           <section className="panel telegram-status">
             <h2>投递状态</h2>
             <dl>
+              <div><dt>订单操作</dt><dd>{telegram.orderActionsReady ? 'READY · 私聊订单操作已启用' : telegram.orderActionsEnabled ? '需要测试并验证私聊' : 'DISABLED'}</dd></div>
+              {telegram.lastActionError && <div><dt>最近订单操作错误</dt><dd className="warning-text">{telegram.lastActionError}</dd></div>}
               <div><dt>目标</dt><dd>{telegram.chatId || '—'}</dd></div>
               <div><dt>最近测试</dt><dd>{telegram.lastTestedAt ? formatTime(telegram.lastTestedAt) : '—'}</dd></div>
               <div><dt>测试结果</dt><dd className={telegram.lastTestError ? 'warning-text' : ''}>{telegram.lastTestError ?? (telegram.verifiedAt ? '成功' : '—')}</dd></div>

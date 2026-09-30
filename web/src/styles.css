@@ -279,3 +279,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .confirmation-threshold-input { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .confirmation-threshold-input input { width: 240px; max-width: 100%; min-height: 36px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; background: var(--bg); color: var(--text); }
 .confirmation-threshold p { margin-bottom: 0; }
+
+.telegram-order-actions { margin-top: 18px; padding: 14px 14px 0; border-top: 1px solid var(--line); }
+.telegram-order-actions label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.telegram-order-actions input[type="checkbox"] { width: 16px; height: 16px; margin: 0; }
+.telegram-order-actions p { font-size: 12px; line-height: 1.6; }

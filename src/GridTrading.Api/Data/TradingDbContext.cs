@@ -4,6 +4,8 @@ namespace GridTrading.Api.Data;
 
 public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options) : DbContext(options)
 {
+    public DbSet<TelegramApprovalMessageEntity> TelegramApprovalMessages => Set<TelegramApprovalMessageEntity>();
+    public DbSet<TelegramCallbackReceiptEntity> TelegramCallbackReceipts => Set<TelegramCallbackReceiptEntity>();
     public DbSet<OrderApprovalEntity> OrderApprovals => Set<OrderApprovalEntity>();
     public DbSet<TradingControlSettingsEntity> TradingControlSettings => Set<TradingControlSettingsEntity>();
     public DbSet<StrategyEntity> Strategies => Set<StrategyEntity>();
@@ -23,6 +25,8 @@ public sealed class TradingDbContext(DbContextOptions<TradingDbContext> options)
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<TelegramNotificationSettingsEntity>().Property(x => x.ActionsGeneration).IsConcurrencyToken();
+        modelBuilder.Entity<TelegramApprovalMessageEntity>().HasIndex(x => new { x.Generation, x.ApprovalId });
         modelBuilder.Entity<OrderApprovalEntity>().HasIndex(x => new { x.OrderId, x.Status });
         modelBuilder.Entity<CycleEntity>().Property(x => x.LedgerStatus).HasDefaultValue("RECOVERY_REQUIRED");
         modelBuilder.Entity<OrderEntity>().Property(x => x.ExchangeOrderIdsJson).HasDefaultValue("[]");

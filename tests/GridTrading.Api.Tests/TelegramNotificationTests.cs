@@ -373,6 +373,9 @@ public sealed partial class TelegramNotificationTests
         services.AddSingleton<ITelegramBotClient>(bot);
         services.AddDbContext<TradingDbContext>(options => options.UseSqlite(connection));
         services.AddScoped<TelegramNotificationSettingsService>();
+        services.AddSingleton<ExecutionAccountOperationGate>();
+        services.AddScoped<OrderApprovalService>();
+        services.AddScoped<TelegramOrderActionService>();
         services.AddLogging();
         services.AddScoped<TelegramAccountSnapshotService>();
         services.AddScoped(sp => new HyperliquidMarketDataClient(
@@ -401,7 +404,7 @@ public sealed partial class TelegramNotificationTests
             ["GRID_TRADING_CREDENTIAL_KEY"] = Convert.ToBase64String(Enumerable.Range(1, 32).Select(x => (byte)x).ToArray())
         }).Build();
 
-    private sealed class FakeBot : ITelegramBotClient
+    private sealed partial class FakeBot : ITelegramBotClient
     {
         public List<(string ChatId, string Text)> Messages { get; } = [];
         public TelegramBotApiException? Failure { get; set; }

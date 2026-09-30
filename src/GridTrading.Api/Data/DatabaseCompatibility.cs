@@ -112,6 +112,24 @@ public static class DatabaseCompatibility
             );
             CREATE INDEX IF NOT EXISTS "IX_OrderApprovals_OrderId_Status" ON "OrderApprovals" ("OrderId", "Status");
             """);
+        await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "OrderActionsEnabled", "INTEGER NOT NULL DEFAULT 0");
+        await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "ActionsGeneration", "TEXT NOT NULL DEFAULT ''");
+        await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "VerifiedPrivateChatId", "TEXT NULL");
+        await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "NextUpdateId", "INTEGER NOT NULL DEFAULT 0");
+        await AddColumnIfMissingAsync(db, "TelegramNotificationSettings", "LastActionError", "TEXT NULL");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TelegramApprovalMessages" (
+                "Id" TEXT NOT NULL PRIMARY KEY, "ApprovalId" TEXT NOT NULL, "Generation" TEXT NOT NULL,
+                "ChatId" TEXT NOT NULL, "MessageId" INTEGER NULL, "AttemptedAt" TEXT NOT NULL,
+                "RenderedStatus" TEXT NULL, "Finished" INTEGER NOT NULL, "Error" TEXT NULL, "RetryAt" TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_TelegramApprovalMessages_Generation_ApprovalId"
+                ON "TelegramApprovalMessages" ("Generation", "ApprovalId");
+            CREATE TABLE IF NOT EXISTS "TelegramCallbackReceipts" (
+                "Id" TEXT NOT NULL PRIMARY KEY, "Generation" TEXT NOT NULL,
+                "Result" TEXT NOT NULL, "ProcessedAt" TEXT NOT NULL
+            );
+            """);
         await AddColumnIfMissingAsync(db, "TradingControlSettings", "MinimumConfirmationNotional", "TEXT NOT NULL DEFAULT '0'");
         await AddColumnIfMissingAsync(db, "Orders", "PendingTimeInForce", "TEXT NULL");
         await AddColumnIfMissingAsync(db, "OrderPlacementNotifications", "ExecutionAccountId", "TEXT NULL");

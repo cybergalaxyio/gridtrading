@@ -58,7 +58,7 @@ public sealed record AcknowledgementRequest(string Note);
 public sealed record PreviewCacheItem(string Id, string? StrategyId, int StrategyVersion, string ExecutionEnvironmentId, string ExecutionAccountId,
     DateTimeOffset ExpiresAt, GridConfiguration Configuration, GridPlan Plan);
 
-public sealed record TelegramSettingsRequest(string? BotToken, string ChatId);
+public sealed record TelegramSettingsRequest(string? BotToken, string ChatId, bool OrderActionsEnabled = false);
 
 public sealed record TelegramSettingsDto(
     bool Configured,
@@ -72,4 +72,7 @@ public sealed record TelegramSettingsDto(
     string? LastTestError,
     DateTimeOffset? LastDeliveryAt,
     string? LastDeliveryStatus,
-    string? LastDeliveryError);
+    string? LastDeliveryError,
+    bool OrderActionsEnabled = false,
+    bool OrderActionsReady = false,
+    string? LastActionError = null);

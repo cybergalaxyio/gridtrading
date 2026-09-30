@@ -11,7 +11,7 @@ public sealed class OrderApprovalPendingException() : Exception("The closing ord
 // Approval is bound to one exact send, not to a command, strategy, or trading session.
 public sealed class OrderApprovalService(TradingDbContext db, ExecutionAccountOperationGate gate)
 {
-    private static bool Current(OrderApprovalEntity approval, OrderEntity order, CycleEntity cycle) =>
+    internal static bool Current(OrderApprovalEntity approval, OrderEntity order, CycleEntity cycle) =>
         !cycle.IsTerminal && !order.CancellationPending && order.FilledQuantity == approval.FilledQuantity &&
         order.ExchangeOrderId == approval.ExchangeOrderId &&
         (approval.Action == "AMEND" ? order.Status is "NEW" or "PARTIALLY_FILLED" : order.Status == "PENDING_EXCHANGE") &&
@@ -38,48 +38,32 @@ public sealed class OrderApprovalService(TradingDbContext db, ExecutionAccountOp
             }).ToArray();
     }
 
-    public async Task ApproveAsync(string id, CancellationToken ct)
+    public Task ApproveAsync(string id, CancellationToken ct) => DecideAsync(id, true, ct);
+    public Task RejectAsync(string id, CancellationToken ct) => DecideAsync(id, false, ct);
+
+    private async Task DecideAsync(string id, bool approve, CancellationToken ct)
     {
         var accountId = await db.OrderApprovals.Where(x => x.Id == id).Select(x => x.ExecutionAccountId)
             .SingleOrDefaultAsync(ct) ?? throw new TradingProblemException(404, "APPROVAL_NOT_FOUND", "Order approval was not found.");
-        await gate.RunAsync(accountId, async () =>
-        {
-            var approval = await db.OrderApprovals.SingleAsync(x => x.Id == id, ct);
-            var order = await db.Orders.SingleAsync(x => x.Id == approval.OrderId, ct);
-            var cycle = await db.Cycles.SingleAsync(x => x.Id == approval.CycleId, ct);
-            if (approval.Status is "APPROVED" or "SUBMITTED") return; // Repeated clicks cannot authorize another send.
-            if (approval.Status is not ("PENDING" or "REJECTED") || !Current(approval, order, cycle))
-                throw new TradingProblemException(409, "ORDER_APPROVAL_STALE", "This order changed or was cancelled. Refresh the pending orders.");
-            approval.Status = "APPROVED";
-            approval.ApprovedAt = DateTimeOffset.UtcNow;
-            db.AuditLogs.Add(new AuditEntity { ResourceId = order.Id, Action = "ORDER_APPROVED", Actor = "operator",
-                Detail = $"{approval.Id}: {approval.Action} {approval.Side} {approval.Quantity} {approval.Symbol} @ {approval.Price} {approval.TimeInForce}",
-                OccurredAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync(ct);
-        }, ct);
+        await gate.RunAsync(accountId, () => DecideCoreAsync(id, approve, "operator", ct), ct);
     }
 
-    public async Task RejectAsync(string id, CancellationToken ct)
+    // Caller holds the account gate. Telegram additionally wraps this save and its receipt in one transaction.
+    internal async Task DecideCoreAsync(string id, bool approve, string actor, CancellationToken ct)
     {
-        var accountId = await db.OrderApprovals.Where(x => x.Id == id).Select(x => x.ExecutionAccountId)
-            .SingleOrDefaultAsync(ct) ?? throw new TradingProblemException(404, "APPROVAL_NOT_FOUND", "Order approval was not found.");
-        await gate.RunAsync(accountId, async () =>
-        {
-            var approval = await db.OrderApprovals.SingleAsync(x => x.Id == id, ct);
-            var order = await db.Orders.SingleAsync(x => x.Id == approval.OrderId, ct);
-            var cycle = await db.Cycles.SingleAsync(x => x.Id == approval.CycleId, ct);
-            if (approval.Status == "REJECTED") return;
-            if (approval.Status is not ("PENDING" or "APPROVED") || !Current(approval, order, cycle))
-                throw new TradingProblemException(409, "ORDER_APPROVAL_STALE", "This order changed or was already sent. Refresh the order list.");
-            // Retain this exact intent as a durable denial. Strategy maintenance must not
-            // requeue or send it, even if confirmation is subsequently switched off.
-            approval.Status = "REJECTED";
-            approval.ApprovedAt = null;
-            db.AuditLogs.Add(new AuditEntity { ResourceId = order.Id, Action = "ORDER_REJECTED", Actor = "operator",
-                Detail = $"{approval.Id}: rejected {approval.Action} {approval.Side} {approval.Quantity} {approval.Symbol} @ {approval.Price} {approval.TimeInForce}",
-                OccurredAt = DateTimeOffset.UtcNow });
-            await db.SaveChangesAsync(ct);
-        }, ct);
+        var approval = await db.OrderApprovals.SingleAsync(x => x.Id == id, ct);
+        var order = await db.Orders.SingleAsync(x => x.Id == approval.OrderId, ct);
+        var cycle = await db.Cycles.SingleAsync(x => x.Id == approval.CycleId, ct);
+        if (approve && approval.Status is "APPROVED" or "SUBMITTED" || !approve && approval.Status == "REJECTED") return;
+        if ((approve ? approval.Status is not ("PENDING" or "REJECTED") : approval.Status is not ("PENDING" or "APPROVED"))
+            || !Current(approval, order, cycle))
+            throw new TradingProblemException(409, "ORDER_APPROVAL_STALE", "This order changed, was cancelled, or was already sent. Refresh the order list.");
+        approval.Status = approve ? "APPROVED" : "REJECTED";
+        approval.ApprovedAt = approve ? DateTimeOffset.UtcNow : null;
+        db.AuditLogs.Add(new AuditEntity { ResourceId = order.Id, Action = approve ? "ORDER_APPROVED" : "ORDER_REJECTED", Actor = actor,
+            Detail = $"{approval.Id}: {approval.Status} {approval.Action} {approval.Side} {approval.Quantity} {approval.Symbol} @ {approval.Price} {approval.TimeInForce}",
+            OccurredAt = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync(ct);
     }
 
     public static async Task InvalidateAsync(TradingDbContext db, string orderId, CancellationToken ct)

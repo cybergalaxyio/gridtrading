@@ -32,6 +32,8 @@ builder.Services.AddSingleton<ITelegramBotClient, TelegramBotClient>();
 builder.Services.AddScoped<TelegramNotificationSettingsService>();
 builder.Services.AddScoped<TradingControlSettingsService>();
 builder.Services.AddScoped<OrderApprovalService>();
+builder.Services.AddScoped<TelegramOrderActionService>();
+builder.Services.AddHostedService<TelegramOrderActionWorker>();
 builder.Services.AddScoped<TelegramAccountSnapshotService>();
 builder.Services.AddSingleton<GridTrading.Api.Exchange.HyperliquidL1Signer>();
 builder.Services.AddScoped<HyperliquidNonceManager>();
